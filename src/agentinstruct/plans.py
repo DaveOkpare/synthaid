@@ -1,0 +1,147 @@
+"""Immutable execution inputs, with deterministic JSON serialization."""
+
+import hashlib
+import json
+from collections.abc import Mapping
+from dataclasses import dataclass, fields, is_dataclass
+from types import MappingProxyType
+
+type JsonValue = (
+    bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
+)
+type FrozenJsonValue = (
+    bool
+    | int
+    | float
+    | str
+    | tuple[FrozenJsonValue, ...]
+    | Mapping[str, FrozenJsonValue]
+    | None
+)
+
+
+def freeze(value: JsonValue) -> FrozenJsonValue:
+    """Copy JSON data into recursively immutable containers."""
+    if isinstance(value, dict):
+        return MappingProxyType({key: freeze(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(freeze(item) for item in value)
+    return value
+
+
+def json_value(value: object) -> JsonValue:
+    """Project plan dataclasses and immutable containers into plain JSON data."""
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            field.name: json_value(getattr(value, field.name))
+            for field in fields(value)
+        }
+    if isinstance(value, Mapping):
+        return {key: json_value(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [json_value(item) for item in value]
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    raise TypeError(f"Cannot serialize {type(value).__name__} as plan data")
+
+
+def canonical_json(value: object) -> str:
+    return json.dumps(
+        json_value(value), sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
+
+
+def content_digest(value: object) -> str:
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class TaskIdentity:
+    id: str
+    version: str
+    digest: str
+
+
+@dataclass(frozen=True)
+class SeedOrigin:
+    path: str
+    record: int = 1
+
+
+@dataclass(frozen=True)
+class Seed:
+    id: str
+    data: Mapping[str, FrozenJsonValue]
+    origin: SeedOrigin
+    digest: str
+
+
+@dataclass(frozen=True)
+class ProviderPlan:
+    id: str
+    type: str
+    api: str
+    base_url: str | None
+    api_key_env: str | None
+
+
+@dataclass(frozen=True)
+class ModelPlan:
+    provider: str
+    name: str
+    temperature: float | None = None
+    max_tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class AgentPlan:
+    id: str
+    target: bool
+    model: ModelPlan
+    base_instruction: str
+
+
+@dataclass(frozen=True)
+class EnvironmentPlan:
+    type: str
+    max_turns: int
+
+
+@dataclass(frozen=True)
+class RuntimePlan:
+    type: str = "local"
+
+
+@dataclass(frozen=True)
+class PlanProvenance:
+    package_version: str
+    python_version: str
+
+
+@dataclass(frozen=True)
+class RunPlan:
+    """Inputs for one Trace attempt; execution assigns Run and Trace identities."""
+
+    schema_version: str
+    task: TaskIdentity
+    seed: Seed
+    variables: Mapping[str, FrozenJsonValue]
+    providers: Mapping[str, ProviderPlan]
+    agents: Mapping[str, AgentPlan]
+    environment: EnvironmentPlan
+    runtime: RuntimePlan
+    provenance: PlanProvenance
+
+    @property
+    def digest(self) -> str:
+        return content_digest(self)
+
+    def to_dict(self) -> dict[str, JsonValue]:
+        """Return a detached JSON-compatible snapshot, including the plan digest."""
+        result = json_value(self)
+        assert isinstance(result, dict)
+        result["digest"] = self.digest
+        return result
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())

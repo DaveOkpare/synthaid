@@ -32,7 +32,7 @@ import agentinstruct
 if sys.argv[1] != "import":
     from agentinstruct.cli import main
     try:
-        main([sys.argv[1]])
+        assert main(sys.argv[1:]) == 0
     except SystemExit as exc:
         assert exc.code == 0
 
@@ -40,12 +40,15 @@ assert not violations, violations
 """
 
 
-@pytest.mark.parametrize("operation", ["import", "--help", "--version"])
+@pytest.mark.parametrize("operation", ["import", "--help", "--version", "validate"])
 def test_startup_has_no_external_effects(operation: str, tmp_path: Path) -> None:
     # -B excludes interpreter bytecode caching from application effects; -I
     # prevents user site packages and PYTHONPATH from influencing the check.
+    args = [sys.executable, "-I", "-B", "-c", STARTUP_CHECK, operation]
+    if operation == "validate":
+        args.append(str(Path(__file__).resolve().parents[1] / "examples/single-agent"))
     result = subprocess.run(
-        [sys.executable, "-I", "-B", "-c", STARTUP_CHECK, operation],
+        args,
         cwd=tmp_path,
         capture_output=True,
         text=True,

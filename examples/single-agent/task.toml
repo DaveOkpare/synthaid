@@ -1,0 +1,32 @@
+schema_version = "1"
+
+[task]
+id = "seeded-greeting"
+version = "1"
+
+[seed]
+path = "seed.json"
+id_variable = "case_id"
+
+[variables]
+case_id = "case.id"
+name = "person.name"
+topic = "scenario.topic"
+
+[providers.default]
+type = "openai"
+api_key_env = "OPENAI_API_KEY"
+
+[model]
+provider = "default"
+name = "example-model"
+
+[runtime]
+type = "local"
+
+[environment]
+type = "single"
+max_turns = 1
+
+[agents.assistant]
+target = true

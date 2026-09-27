@@ -7,7 +7,10 @@ authors = [
     { name = "daveokpare", email = "okparedave@gmail.com" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "jinja2>=3.1.6,<4",
+    "pydantic>=2.12,<3",
+]
 
 [project.scripts]
 agentinstruct = "agentinstruct.cli:main"
