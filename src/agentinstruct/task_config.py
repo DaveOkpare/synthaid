@@ -5,6 +5,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from agentinstruct.plans import JsonValue
 from agentinstruct.quality import Criterion, Rubric
 
 Identifier = Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]*$")]
@@ -89,6 +90,7 @@ class AgentConfig(ConfigModel):
     type: Literal["model", "scripted"] = "model"
     responses: list[str | ScriptedResponseConfig] = Field(default_factory=list)
     reviewer: ReviewerConfig | None = None
+    tools: list[Identifier] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_script(self) -> Self:
@@ -147,6 +149,12 @@ class VerifierConfig(ConfigModel):
     ] = Field(default_factory=dict)
 
 
+class ToolConfig(ConfigModel):
+    description: NonemptyString
+    input_schema: dict[str, JsonValue] | bool
+    output_schema: dict[str, JsonValue] | bool | None = None
+
+
 class PackageConfig(ConfigModel):
     schema_version: Literal["1"]
     task: TaskConfig
@@ -158,6 +166,7 @@ class PackageConfig(ConfigModel):
     environment: EnvironmentConfig
     runtime: RuntimeConfig
     verifier: VerifierConfig | None = None
+    tools: dict[Identifier, ToolConfig] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_references(self) -> Self:
@@ -175,9 +184,18 @@ class PackageConfig(ConfigModel):
             and self.seed.id_variable not in self.variables
         ):
             raise ValueError("seed.id_variable must name a declared Variable alias")
-        for kind, names in (("agents", self.agents), ("providers", self.providers)):
+        for kind, names in (
+            ("agents", self.agents),
+            ("providers", self.providers),
+            ("tools", self.tools),
+        ):
             if len({name.casefold() for name in names}) != len(names):
                 raise ValueError(f"{kind} identifiers collide after case normalization")
+        for agent in self.agents.values():
+            if len(set(agent.tools)) != len(agent.tools):
+                raise ValueError("Agent Tool assignments must be unique")
+            if set(agent.tools) - self.tools.keys():
+                raise ValueError("Agent tools reference an undeclared Tool")
         references = [self.model.provider] + [
             agent.model.provider
             for agent in self.agents.values()

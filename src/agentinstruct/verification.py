@@ -29,7 +29,13 @@ from agentinstruct.traces import (
 
 
 def component_provenance(kind: str, component: object) -> ComponentProvenance:
-    cls = type(component)
+    cls = (
+        component
+        if inspect.isfunction(component)
+        or inspect.ismethod(component)
+        or inspect.isbuiltin(component)
+        else type(component)
+    )
     try:
         source = inspect.getsource(cls).encode("utf-8")
         digest = hashlib.sha256(source).hexdigest()

@@ -3,7 +3,7 @@
 from collections.abc import Iterable, Mapping, Set
 from pathlib import Path
 
-from agentinstruct.plans import canonical_json
+from agentinstruct.plans import JsonValue, canonical_json, json_value
 from agentinstruct.store import load_trace
 from agentinstruct.traces import TraceStatus
 
@@ -51,19 +51,27 @@ def export_openai(
             if len(targets) != 1:
                 raise ValueError("Trace Run Plan must contain exactly one Target Agent")
             target = targets[0]
-            messages: list[dict[str, str]] = []
+            messages: list[dict[str, JsonValue]] = []
             for commit in trace.conversation:
                 message = commit.message
                 if commit.visibility == "private" and message.actor_id != target:
                     continue
                 if message.actor_id not in agents:
                     raise ValueError("Trace Message must name a declared Agent")
-                projected = {
-                    "role": "assistant" if message.actor_id == target else "user",
+                projected: dict[str, JsonValue] = {
+                    "role": "tool"
+                    if message.role == "tool"
+                    else "assistant"
+                    if message.actor_id == target
+                    else "user",
                     "content": message.content,
                 }
                 if message.name is not None:
                     projected["name"] = message.name
+                if message.tool_calls:
+                    projected["tool_calls"] = json_value(message.tool_calls)
+                if message.tool_call_id is not None:
+                    projected["tool_call_id"] = message.tool_call_id
                 messages.append(projected)
             if messages:
                 stream.write(canonical_json({"messages": messages}) + "\n")

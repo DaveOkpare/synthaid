@@ -44,4 +44,13 @@
   [review usage](../../README.md#review-and-revise-messages) and the
   [offline reviewed dialogue](../../examples/reviewed-dialogue/task.toml).
 
-Tickets 07–19 remain unimplemented.
+- **07 — resolved:** [Review Tool calls before executing effects](issues/07-review-tool-calls-before-effects.md#answer).
+  Task-wide Tool declarations and Agent assignments compile into immutable Plans.
+  Per-Message review now gates durable private intent before argument validation
+  and effects, followed by validated private results and independently reviewed
+  shared replies. Actor-aware custom Tools and the function adapter retain
+  callable provenance; Observation/export projections enforce ownership. See
+  [Tool usage](../../README.md#review-tool-calls-before-effects) and the
+  [offline function example](../../examples/function-tool/run.py).
+
+Tickets 08–19 remain unimplemented.

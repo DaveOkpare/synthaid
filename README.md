@@ -3,7 +3,8 @@
 A Python framework for generating verified traces from agent interactions.
 
 Task Package validation, compilation, deterministic single-Agent and dialogue
-generation, per-Agent Review and revision, final Verification, reverification,
+generation, reviewed private function Tools, per-Agent Review and revision,
+final Verification, reverification,
 and native/OpenAI JSONL export
 are available through the typed library
 and CLI. Further capabilities follow the
@@ -65,7 +66,7 @@ needs no live Runner or original package.
 Generation without a configured Verifier is **unverified**, with a separate
 `terminated` or `truncated` generation outcome. Export requires explicit selection
 of `unverified` or other non-accepted statuses; its default selects only accepted
-Traces. Live model adapters and tools arrive in later tickets. Current
+Traces. Live model adapters arrive in later tickets. Current
 generation handles one JSON-object Seed per Run.
 
 ## Generate and export a dialogue
@@ -168,7 +169,7 @@ processed before any remaining Messages from the earlier Action.
 Exhaustion normally yields `truncated/review_exhausted`. Explicitly enabling
 `accept_on_revision_exhaustion` permits the final rejected conversational Message
 to commit with `review_exhausted = true`; it never force-accepts a completion
-control. Missing, unknown, duplicate, or non-Boolean verdicts produce a
+control or Tool call. Missing, unknown, duplicate, or non-Boolean verdicts produce a
 `failed/review_malformed` Trace, and Reviewer exceptions produce
 `failed/review_execution`. Neither error retries or uses the fallback. Previously
 accepted Messages remain durable if a later Message fails.
@@ -178,6 +179,72 @@ The example uses `type = "deterministic"` with a
 `"nonempty_content"`. This built-in check only requires non-whitespace text; it
 does not assess semantic quality. Custom Reviewers omit `checks`.
 Provider-backed judges arrive in a later ticket.
+
+## Review Tool calls before effects
+
+The [function Tool example](examples/function-tool/run.py) runs an async Python
+function through the same reviewed Interaction boundary as a custom Tool:
+
+```sh
+uv run python examples/function-tool/run.py --output runs
+```
+
+Declare Tools Task-wide in `task.toml`, with `description`, JSON `input_schema`,
+and optional `output_schema`, then assign their identifiers using an Agent's
+`tools` list. The [example package](examples/function-tool/task.toml) includes
+both schemas and a deterministic Reviewer. Declarations and assignments are
+compiled into the immutable Run Plan. Schema syntax and assignment references
+are checked before generation; JSON Schema references use an offline registry
+and never fetch remote resources.
+
+Pass `Runner(tool_factory=...)` to construct fresh Tools from their `ToolPlan`.
+A custom `Tool` exposes `id`, `description`, `input_schema`, `output_schema`, and
+`async call(args, context) -> JsonValue`; its declaration must match the compiled
+plan. `FunctionTool(plan, async_function)` adapts a function with that same
+arguments/context signature. Its provenance records the wrapped callable's
+identity and available source digest. Explicit import-reference loading comes
+in a later ticket; the example wires its runtime factories in Python.
+
+The Agent receives only its assigned `ToolPlan` declarations in
+`Observation.tools`. It proposes an assistant `Message` with a `tool_calls`
+tuple, for example:
+
+```python
+Message(
+    "assistant",
+    tool_calls=(ToolCall("call-1", FunctionCall("lookup", {"label": "Ada"})),),
+)
+```
+
+`FunctionCall.arguments` stays structured JSON, copied into immutable containers;
+it is not a provider wire-format JSON string. `ToolContext` supplies the invoking
+`actor_id`, Task/Seed/Run/Trace identities, extracted Variables, and turn/call
+identifiers, without exposing storage or credentials.
+
+The Tool-call Message gets its own review and revision budget. Rejection records
+Events without committing or executing the call. Acceptance durably commits the
+private call **before** assignment and argument validation, then executes the
+Tool. Its result must be JSON data and satisfy any output schema; the framework
+commits a private `role="tool"` Message with the matching `tool_call_id`. Results
+are not LLM-reviewed. The Agent then observes that accepted exchange and proposes
+its independently reviewed conversational reply.
+
+A Tool-call Message must be the **last pending Message** in an ordered Action.
+For example, `[conversational_message, tool_call_message]` is valid, while
+`[tool_call_message, conversational_message]` fails before the Tool call commits
+or executes. This rule also applies to revised Actions, including Messages still
+pending from the original Action, and to Actions generated after a Tool result.
+Previously accepted Messages remain durable. Every successful Tool exchange
+triggers a fresh Agent generation request before any later reply or completion
+control can be accepted; pending Messages are never silently dropped or reordered.
+
+Only the invoking Agent sees the private exchange. The peer sees the later
+accepted shared reply, and OpenAI export includes private calls/results only
+when their owner is the Target Agent. Assignment, argument, execution, and result
+failures retain accepted intent with typed `tool_*` reasons and linked Events.
+An exhausted Tool-call review never uses conversational fallback. This ticket
+supports one Tool call per Message; multi-call workflows and Agent-wrapped Tools
+follow in ticket 08.
 
 ## Verify and reverify Traces
 
@@ -295,8 +362,8 @@ print(plan.to_json())
 The current implementation supports schema version `"1"`, a `single` or `dialogue`
 Environment, exactly one explicit Target Agent, the `local` Runtime, and a JSON
 object Seed. Every Agent requires `agents/<id>/instruction.md`. Unknown configuration
-fields and unsupported component selections fail validation. Multi-step Tasks,
-collections, tools, and review arrive in later tickets.
+fields and unsupported component selections fail validation. Multi-step Tasks and
+Seed collections arrive in later tickets.
 
 `[variables]` maps template aliases to dot paths through nested JSON mappings.
 Array indexing and empty path segments are unsupported. Every selector must
@@ -339,7 +406,8 @@ Python 3.13 or newer is required. `.python-version` selects Python 3.13 for
 contributors; uv can install it if it is missing. `uv sync` installs the package
 and development dependencies into `.venv`. Commit `uv.lock` with dependency
 changes, using `uv add` for runtime dependencies and `uv add --dev` for development
-tools. Jinja supplies instruction templating and Pydantic validates configuration.
+tools. Jinja supplies instruction templating, Pydantic validates configuration,
+and jsonschema validates Tool contracts with an offline referencing registry.
 
 Run the quality checks from the repository root:
 

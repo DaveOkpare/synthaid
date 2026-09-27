@@ -6,7 +6,7 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, is_dataclass
 from types import MappingProxyType
-from typing import Literal
+from typing import Literal, cast
 
 from agentinstruct.quality import Rubric
 
@@ -126,6 +126,25 @@ class ReviewerPlan:
             )
 
 
+type JsonSchema = bool | Mapping[str, FrozenJsonValue]
+
+
+@dataclass(frozen=True)
+class ToolPlan:
+    id: str
+    description: str
+    input_schema: JsonSchema
+    output_schema: JsonSchema | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("input_schema", "output_schema"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(
+                    self, name, cast(JsonSchema, freeze(json_value(value)))
+                )
+
+
 @dataclass(frozen=True)
 class AgentPlan:
     id: str
@@ -136,6 +155,7 @@ class AgentPlan:
     responses: tuple[str | ScriptedResponse, ...] = ()
     reviewer: ReviewerPlan | None = None
     rubric: Rubric | None = None
+    tools: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -203,6 +223,10 @@ class RunPlan:
     runtime: RuntimePlan
     provenance: PlanProvenance
     verifier: VerifierPlan | None = None
+    tools: Mapping[str, ToolPlan] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "tools", MappingProxyType(dict(self.tools)))
 
     @property
     def digest(self) -> str:

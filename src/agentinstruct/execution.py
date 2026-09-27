@@ -12,6 +12,7 @@ from agentinstruct.plans import (
     EnvironmentPlan,
     FrozenJsonValue,
     TaskIdentity,
+    ToolPlan,
 )
 from agentinstruct.quality import score_verdicts
 from agentinstruct.review import (
@@ -22,11 +23,20 @@ from agentinstruct.review import (
     ReviewResult,
 )
 from agentinstruct.store import TraceRecorder, timestamp
+from agentinstruct.tools import (
+    Tool,
+    ToolContext,
+    ToolError,
+    tool_result_content,
+    validate_tool_data,
+)
 from agentinstruct.traces import (
     Event,
+    FunctionCall,
     GenerationOutcome,
     Message,
     MessageCommit,
+    ToolCall,
     TraceSnapshot,
     immutable_data,
 )
@@ -38,6 +48,7 @@ class Observation:
     instruction: str
     messages: tuple[Message, ...]
     review_feedback: str | None = None
+    tools: tuple[ToolPlan, ...] = ()
 
 
 class Agent(Protocol):
@@ -97,11 +108,17 @@ class Interaction:
         agent: Agent,
         recorder: TraceRecorder,
         reviewer: Reviewer | None = None,
+        tools: Mapping[str, Tool] | None = None,
+        tool_plans: Mapping[str, ToolPlan] | None = None,
+        tool_context: ToolContext | None = None,
     ) -> None:
         self._plan = plan
         self._agent = agent
         self._recorder = recorder
         self._reviewer = reviewer
+        self._tools = tools or {}
+        self._tool_plans = tool_plans or {}
+        self._tool_context = tool_context
 
     def _observation(self, feedback: str | None = None) -> Observation:
         return Observation(
@@ -113,6 +130,7 @@ class Interaction:
                 if item.visibility == "shared" or item.message.actor_id == self._plan.id
             ),
             feedback,
+            tuple(self._tool_plans[tool_id] for tool_id in self._plan.tools),
         )
 
     def _event(self, kind: str, data: object, turn_id: str) -> None:
@@ -133,7 +151,25 @@ class Interaction:
             or proposal.role not in {"assistant", "user"}
             or not isinstance(proposal.content, str)
         ):
-            raise ValueError("Agent must return conversational Messages")
+            raise ValueError("Agent must return participant Messages")
+        if proposal.tool_call_id is not None or (
+            proposal.tool_calls
+            and (proposal.role != "assistant" or proposal.control is not None)
+        ):
+            raise ValueError("Invalid Tool-call Message shape")
+        for call in proposal.tool_calls:
+            if (
+                not isinstance(call, ToolCall)
+                or call.type != "function"
+                or not isinstance(call.id, str)
+                or not call.id.strip()
+                or not isinstance(call.function, FunctionCall)
+                or not isinstance(call.function.name, str)
+                or not call.function.name.strip()
+            ):
+                raise ValueError(
+                    "Tool calls require function names and stable identifiers"
+                )
         if proposal.control not in {None, "complete"}:
             raise ValueError("Unknown Message control proposal")
         if proposal.control == "complete" and not self._plan.target:
@@ -223,6 +259,11 @@ class Interaction:
             revisions = 0
             review_exhausted = False
             while True:
+                if message.tool_calls and proposals:
+                    raise ValueError(
+                        "Tool-call Message must be the last pending Message; "
+                        "the Agent must observe its result before continuing"
+                    )
                 review_id, feedback = await self._review(message, turn_id)
                 if feedback is None:
                     break
@@ -231,6 +272,7 @@ class Interaction:
                     review_exhausted = (
                         self._plan.reviewer.accept_on_revision_exhaustion
                         and message.control is None
+                        and not message.tool_calls
                     )
                     self._event(
                         "review_exhausted",
@@ -272,14 +314,79 @@ class Interaction:
                     causal_message_id=incoming.id if incoming else None,
                     review_id=review_id,
                     review_exhausted=review_exhausted,
+                    visibility="private" if message.tool_calls else "shared",
                 )
             )
             self._event("message_committed", {"message_id": message.id}, turn_id)
+            if message.tool_calls:
+                await self._execute_tool(message, turn_id)
+                continuation = await self._agent.generate(self._observation())
+                proposals.extend(
+                    continuation if isinstance(continuation, list) else [continuation]
+                )
+                if not proposals:
+                    raise ValueError("Agent returned no Messages")
+                continue
             last_reply = message
             if message.control == "complete":
                 return TurnResult(message, terminated=True)
         assert last_reply is not None
         return TurnResult(last_reply)
+
+    async def _execute_tool(self, message: Message, turn_id: str) -> None:
+        if len(message.tool_calls) != 1:
+            raise ToolError("unsupported")
+        call = message.tool_calls[0]
+        stage: Literal["assignment", "arguments", "execution", "result"] = "assignment"
+        try:
+            if call.function.name not in self._plan.tools:
+                raise ValueError("Tool is not assigned to the invoking Agent")
+            tool_plan = self._tool_plans[call.function.name]
+            stage = "arguments"
+            validate_tool_data(call.function.arguments, tool_plan.input_schema)
+            assert self._tool_context is not None
+            stage = "execution"
+            self._event(
+                "tool_started",
+                {"message_id": message.id, "tool_call_id": call.id},
+                turn_id,
+            )
+            result = await self._tools[call.function.name].call(
+                call.function.arguments,
+                replace(self._tool_context, turn_id=turn_id, tool_call_id=call.id),
+            )
+            stage = "result"
+            content = tool_result_content(result, tool_plan.output_schema)
+        except Exception as exc:
+            self._event(
+                "tool_error",
+                {
+                    "message_id": message.id,
+                    "tool_call_id": call.id,
+                    "kind": stage,
+                    "exception": type(exc).__name__,
+                    "message": str(exc),
+                },
+                turn_id,
+            )
+            raise ToolError(stage) from exc
+        response = Message(
+            "tool",
+            content,
+            id=uuid4().hex,
+            actor_id=self._plan.id,
+            tool_call_id=call.id,
+        )
+        self._recorder.commit(
+            MessageCommit(
+                response,
+                turn_id,
+                timestamp(),
+                visibility="private",
+                causal_message_id=message.id,
+            )
+        )
+        self._event("message_committed", {"message_id": response.id}, turn_id)
 
 
 class AgentHandle:
@@ -291,8 +398,13 @@ class AgentHandle:
         agent: Agent,
         recorder: TraceRecorder,
         reviewer: Reviewer | None = None,
+        tools: Mapping[str, Tool] | None = None,
+        tool_plans: Mapping[str, ToolPlan] | None = None,
+        tool_context: ToolContext | None = None,
     ) -> None:
-        self._interaction = Interaction(plan, agent, recorder, reviewer)
+        self._interaction = Interaction(
+            plan, agent, recorder, reviewer, tools, tool_plans, tool_context
+        )
 
     @asynccontextmanager
     async def interaction(self, task: TaskContext) -> AsyncIterator[Interaction]:

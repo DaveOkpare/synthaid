@@ -26,14 +26,35 @@ def immutable_data(value: object) -> Mapping[str, FrozenJsonValue]:
 
 
 @dataclass(frozen=True)
+class FunctionCall:
+    name: str
+    arguments: Mapping[str, FrozenJsonValue]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "arguments", immutable_data(self.arguments))
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    id: str
+    function: FunctionCall
+    type: Literal["function"] = "function"
+
+
+@dataclass(frozen=True)
 class Message:
     role: Literal["system", "user", "assistant", "tool"]
-    content: str
+    content: str = ""
     name: str | None = None
     id: str = ""
     actor_id: str | None = None
     # A single-step completion proposal, effective only after Message acceptance.
     control: Literal["complete"] | None = None
+    tool_calls: tuple[ToolCall, ...] = ()
+    tool_call_id: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "tool_calls", tuple(self.tool_calls))
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,50 @@
+schema_version = "1"
+
+[task]
+id = "function-tool"
+version = "1"
+
+[seed]
+path = "seed.json"
+
+[variables]
+name = "name"
+
+[providers.default]
+type = "openai"
+
+[model]
+provider = "default"
+name = "unused"
+
+[runtime]
+type = "local"
+
+[environment]
+type = "single"
+
+[tools.uppercase]
+description = "Return the supplied text in uppercase."
+
+[tools.uppercase.input_schema]
+type = "object"
+properties = { text = { type = "string" } }
+required = ["text"]
+additionalProperties = false
+
+[tools.uppercase.output_schema]
+type = "object"
+properties = { text = { type = "string" }, actor = { type = "string" } }
+required = ["text", "actor"]
+additionalProperties = false
+
+[agents.assistant]
+target = true
+tools = ["uppercase"]
+
+[agents.assistant.reviewer]
+type = "deterministic"
+max_revisions = 0
+
+[agents.assistant.reviewer.checks]
+nonempty = "nonempty_content"

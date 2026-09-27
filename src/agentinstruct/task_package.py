@@ -5,7 +5,7 @@ import math
 import platform
 import tomllib
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import wraps
 from importlib.metadata import version
 from pathlib import Path
@@ -20,6 +20,7 @@ from agentinstruct.plans import (
     AgentPlan,
     EnvironmentPlan,
     FrozenJsonValue,
+    JsonSchema,
     JsonValue,
     ModelPlan,
     PlanProvenance,
@@ -31,12 +32,14 @@ from agentinstruct.plans import (
     Seed,
     SeedOrigin,
     TaskIdentity,
+    ToolPlan,
     VerifierPlan,
     content_digest,
     freeze,
 )
 from agentinstruct.quality import Rubric
 from agentinstruct.task_config import PackageConfig, RubricConfig
+from agentinstruct.tools import schema_validator
 
 
 class TaskValidationError(ValueError):
@@ -160,6 +163,7 @@ class AgentSource:
     responses: tuple[str | ScriptedResponse, ...]
     reviewer: ReviewerPlan | None = None
     rubric: Rubric | None = None
+    tools: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -181,6 +185,7 @@ class TaskPackage:
     runtime: RuntimePlan
     source_files: Mapping[str, str]
     verifier: VerifierPlan | None = None
+    tools: Mapping[str, ToolPlan] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str | Path) -> Self:
@@ -285,6 +290,7 @@ class TaskPackage:
                 ),
                 reviewer,
                 rubric,
+                tuple(agent.tools),
             )
 
         verifier = None
@@ -302,6 +308,24 @@ class TaskPackage:
             except ValueError as exc:
                 raise TaskValidationError(f"verifier: {exc}") from exc
 
+        tools = {
+            tool_id: ToolPlan(
+                tool_id,
+                tool.description,
+                cast(JsonSchema, freeze(tool.input_schema)),
+                cast(JsonSchema | None, freeze(tool.output_schema)),
+            )
+            for tool_id, tool in config.tools.items()
+        }
+        for tool_id, tool in tools.items():
+            try:
+                schema_validator(tool.input_schema)
+                if tool.output_schema is not None:
+                    schema_validator(tool.output_schema)
+            except Exception as exc:
+                raise TaskValidationError(
+                    f"tools/{tool_id}: invalid JSON Schema"
+                ) from exc
         package_digest = content_digest(
             {
                 "config": config.model_dump(mode="json"),
@@ -338,6 +362,7 @@ class TaskPackage:
             runtime=RuntimePlan(config.runtime.type),
             source_files=MappingProxyType(source_files),
             verifier=verifier,
+            tools=MappingProxyType(tools),
         )
 
     def compile(self, *, seed_path: str | Path | None = None) -> RunPlan:
@@ -424,6 +449,7 @@ class TaskPackage:
                 source.responses,
                 reviewer,
                 source.rubric,
+                source.tools,
             )
 
         frozen_data = cast(Mapping[str, FrozenJsonValue], freeze(seed_data))
@@ -441,4 +467,5 @@ class TaskPackage:
                 version("agentinstruct"), platform.python_version()
             ),
             verifier=self.verifier,
+            tools=self.tools,
         )
