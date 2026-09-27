@@ -1,2 +1,1 @@
-def hello() -> str:
-    return "Hello from agentinstruct!"
+"""Generate verified traces from agent interactions."""
