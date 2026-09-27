@@ -35,4 +35,13 @@
   [verification usage](../../README.md#verify-and-reverify-traces) and the
   [offline verified example](../../examples/verified-single/task.toml).
 
-Tickets 06–19 remain unimplemented.
+- **06 — resolved:** [Review and revise conversational Messages](issues/06-review-revise-conversational-messages.md#answer).
+  Each Agent may use a fresh Reviewer with stable rendered instructions and a
+  weighted Rubric. Per-Message review, private revision feedback, exact rejected
+  proposal Events, explicit conversational exhaustion fallback, and linked review
+  evidence now guard commits and completion. Initial and revised list Actions
+  retain independent Message budgets. See
+  [review usage](../../README.md#review-and-revise-messages) and the
+  [offline reviewed dialogue](../../examples/reviewed-dialogue/task.toml).
+
+Tickets 07–19 remain unimplemented.

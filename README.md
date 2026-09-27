@@ -3,7 +3,8 @@
 A Python framework for generating verified traces from agent interactions.
 
 Task Package validation, compilation, deterministic single-Agent and dialogue
-generation, final Verification, reverification, and native/OpenAI JSONL export
+generation, per-Agent Review and revision, final Verification, reverification,
+and native/OpenAI JSONL export
 are available through the typed library
 and CLI. Further capabilities follow the
 [V1 specification](.scratch/v1-agent-trace-generation/spec.md).
@@ -43,7 +44,7 @@ existing event loop. Both accept a `seed_path` override, equivalent to CLI
 five terminal status counts. A completed unverified Run exits 0; execution
 failures exit 1 and package or Seed validation failures exit 2.
 
-Each execution creates a fresh Run, Trace, Agent, Environment, Interaction,
+Each execution creates a fresh Run, Trace, Agent, Reviewer, Environment, Interaction,
 recorder, and Conversation. `type = "scripted"` Agents consume literal
 `responses` strings without calling a Provider. Library callers can supply
 `Runner(agent_factory=...)` with a factory accepting an `AgentPlan`; each fresh
@@ -64,7 +65,7 @@ needs no live Runner or original package.
 Generation without a configured Verifier is **unverified**, with a separate
 `terminated` or `truncated` generation outcome. Export requires explicit selection
 of `unverified` or other non-accepted statuses; its default selects only accepted
-Traces. Live model adapters, tools, and review arrive in later tickets. Current
+Traces. Live model adapters and tools arrive in later tickets. Current
 generation handles one JSON-object Seed per Run.
 
 ## Generate and export a dialogue
@@ -115,6 +116,68 @@ per nonempty selected Trace: Target Agent replies map to `assistant`, and shared
 replies from the other participant map to `user`. Native IDs, control metadata,
 and Events stay out of training Messages. The Python equivalent is
 `export_openai(trace_paths, "dialogue.jsonl", statuses={"unverified"})`.
+
+## Review and revise Messages
+
+The [reviewed dialogue](examples/reviewed-dialogue/task.toml) rejects an empty
+scripted greeting, accepts its revision, and verifies the completed Trace offline:
+
+```sh
+uv run agentinstruct run examples/reviewed-dialogue --output runs --json
+```
+
+Review is optional and configured independently for each Agent. Add
+`agents/<agent-id>/reviewer.md` for its stable instructions and
+`agents/<agent-id>/rubric.toml` for weighted Criteria and a threshold, using the
+same Rubric format as final Verification. Reviewer instructions may use declared
+Variables; they are strictly rendered before generation and retained in the Run
+Plan. Configure the policy in `task.toml`:
+
+```toml
+[agents.user.reviewer]
+type = "custom"
+max_revisions = 1
+accept_on_revision_exhaustion = false
+```
+
+For custom Review, pass `Runner(reviewer_factory=...)`. The factory receives a
+`ReviewerPlan` and constructs a fresh instance per Agent per Trace implementing
+`async review(request: ReviewRequest) -> ReviewResult`. The request contains the
+stable Reviewer `instruction`, active `rubric`, exact proposed `message`, accepted
+`messages` visible to that Agent, and `agent_instruction`. Return
+`ReviewResult(criteria={"criterion_id": True, ...}, feedback="...")`, or use a
+sequence of ID/Boolean pairs. The framework validates complete, unique, known
+Boolean verdicts and computes the weighted score. Review accepts an inclusive
+threshold independently of final Verification.
+
+A rejected Message stays in Events. The next generation request carries its
+Reviewer feedback in `Observation.review_feedback`, separate from the accepted
+`messages`; this field is cleared on the next ordinary turn. Rejected drafts and
+review feedback never enter accepted history or the peer's Observation. Only
+accepted Messages are committed and available for relay or training export.
+Requests, verdicts, rejections, revisions, and errors retain review, Message,
+Agent, and turn references; accepted commits retain their `review_id`.
+
+`max_revisions` defaults to 1 and counts additional proposals after the initial
+rejection; zero allows only the initial proposal. Every Message in an ordered
+Action is reviewed separately. If a revision returns a list, its first Message
+replaces the rejected proposal using that proposal's remaining revision budget.
+Additional Messages are subsequent review subjects with their own budgets,
+processed before any remaining Messages from the earlier Action.
+
+Exhaustion normally yields `truncated/review_exhausted`. Explicitly enabling
+`accept_on_revision_exhaustion` permits the final rejected conversational Message
+to commit with `review_exhausted = true`; it never force-accepts a completion
+control. Missing, unknown, duplicate, or non-Boolean verdicts produce a
+`failed/review_malformed` Trace, and Reviewer exceptions produce
+`failed/review_execution`. Neither error retries or uses the fallback. Previously
+accepted Messages remain durable if a later Message fails.
+
+The example uses `type = "deterministic"` with a
+`[agents.user.reviewer.checks]` mapping from its Criterion IDs to
+`"nonempty_content"`. This built-in check only requires non-whitespace text; it
+does not assess semantic quality. Custom Reviewers omit `checks`.
+Provider-backed judges arrive in a later ticket.
 
 ## Verify and reverify Traces
 

@@ -1,0 +1,6 @@
+threshold = 1.0
+
+[[criteria]]
+id = "completed"
+description = "The dialogue terminated normally."
+weight = 1.0

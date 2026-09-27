@@ -1,0 +1,6 @@
+threshold = 1.0
+
+[[criteria]]
+id = "nonempty"
+description = "The Message has nonempty text."
+weight = 1.0

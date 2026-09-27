@@ -76,11 +76,19 @@ class ScriptedResponseConfig(ConfigModel):
     control: Literal["complete"] | None = None
 
 
+class ReviewerConfig(ConfigModel):
+    type: Literal["custom", "deterministic"]
+    max_revisions: Annotated[int, Field(ge=0)] = 1
+    accept_on_revision_exhaustion: bool = False
+    checks: dict[Identifier, Literal["nonempty_content"]] = Field(default_factory=dict)
+
+
 class AgentConfig(ConfigModel):
     target: bool
     model: ModelOverride = Field(default_factory=ModelOverride)
     type: Literal["model", "scripted"] = "model"
     responses: list[str | ScriptedResponseConfig] = Field(default_factory=list)
+    reviewer: ReviewerConfig | None = None
 
     @model_validator(mode="after")
     def validate_script(self) -> Self:

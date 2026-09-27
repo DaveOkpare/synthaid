@@ -2,8 +2,14 @@
 
 from agentinstruct.execution import Agent, Agents, Environment, Observation, TaskContext
 from agentinstruct.export import export_native, export_openai
-from agentinstruct.plans import RunPlan, VerifierPlan
+from agentinstruct.plans import ReviewerPlan, RunPlan, VerifierPlan
 from agentinstruct.quality import Criterion, Rubric
+from agentinstruct.review import (
+    DeterministicReviewer,
+    Reviewer,
+    ReviewRequest,
+    ReviewResult,
+)
 from agentinstruct.runner import Runner, generate, generate_sync
 from agentinstruct.store import load_trace
 from agentinstruct.task_package import TaskPackage, TaskValidationError
@@ -19,10 +25,15 @@ __all__ = [
     "Agent",
     "Agents",
     "Criterion",
+    "DeterministicReviewer",
     "DeterministicVerifier",
     "Environment",
     "Message",
     "Observation",
+    "ReviewRequest",
+    "ReviewResult",
+    "Reviewer",
+    "ReviewerPlan",
     "Rubric",
     "RunPlan",
     "RunResult",

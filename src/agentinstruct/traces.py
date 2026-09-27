@@ -44,6 +44,8 @@ class MessageCommit:
     step_id: str | None = None
     visibility: Literal["shared", "private"] = "shared"
     causal_message_id: str | None = None
+    review_id: str | None = None
+    review_exhausted: bool = False
 
 
 @dataclass(frozen=True)

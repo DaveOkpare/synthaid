@@ -104,6 +104,29 @@ class ScriptedResponse:
 
 
 @dataclass(frozen=True)
+class ReviewerPlan:
+    type: Literal["custom", "deterministic"]
+    instruction: str
+    max_revisions: int = 1
+    accept_on_revision_exhaustion: bool = False
+    checks: Mapping[str, Literal["nonempty_content"]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if type(self.max_revisions) is not int or self.max_revisions < 0:
+            raise ValueError("Reviewer max_revisions must be a nonnegative integer")
+        if type(self.accept_on_revision_exhaustion) is not bool:
+            raise ValueError("Reviewer exhaustion fallback must be a Boolean")
+        object.__setattr__(self, "checks", MappingProxyType(dict(self.checks)))
+        if self.type == "deterministic":
+            if set(self.checks.values()) - {"nonempty_content"}:
+                raise ValueError("Unknown deterministic Reviewer check")
+        elif self.type != "custom" or self.checks:
+            raise ValueError(
+                "Custom Reviewers require a factory and no built-in checks"
+            )
+
+
+@dataclass(frozen=True)
 class AgentPlan:
     id: str
     target: bool
@@ -111,6 +134,8 @@ class AgentPlan:
     base_instruction: str
     type: str = "model"
     responses: tuple[str | ScriptedResponse, ...] = ()
+    reviewer: ReviewerPlan | None = None
+    rubric: Rubric | None = None
 
 
 @dataclass(frozen=True)

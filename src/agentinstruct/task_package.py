@@ -5,7 +5,7 @@ import math
 import platform
 import tomllib
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import wraps
 from importlib.metadata import version
 from pathlib import Path
@@ -24,6 +24,7 @@ from agentinstruct.plans import (
     ModelPlan,
     PlanProvenance,
     ProviderPlan,
+    ReviewerPlan,
     RunPlan,
     RuntimePlan,
     ScriptedResponse,
@@ -34,6 +35,7 @@ from agentinstruct.plans import (
     content_digest,
     freeze,
 )
+from agentinstruct.quality import Rubric
 from agentinstruct.task_config import PackageConfig, RubricConfig
 
 
@@ -61,6 +63,23 @@ def _package_path(root: Path, relative: str) -> Path:
     if not resolved.is_relative_to(root):
         raise TaskValidationError(f"{relative}: path escapes the Task Package")
     return resolved
+
+
+def _load_rubric(root: Path, label: str) -> tuple[Rubric, str]:
+    """Load weighted Criteria and source text with input-scrubbed diagnostics."""
+    text = _read_text(_package_path(root, label), label)
+    try:
+        rubric = RubricConfig.model_validate(tomllib.loads(text))
+    except tomllib.TOMLDecodeError as exc:
+        raise TaskValidationError(f"{label}: malformed TOML: {exc}") from exc
+    except ValidationError as exc:
+        problems = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc']) or 'rubric'}: "
+            f"{error['msg']}"
+            for error in exc.errors(include_input=False, include_url=False)
+        )
+        raise TaskValidationError(f"{label}: invalid Rubric: {problems}") from exc
+    return rubric.to_rubric(), text
 
 
 def _external_path(path: str | Path) -> Path:
@@ -139,6 +158,8 @@ class AgentSource:
     instruction: str
     type: str
     responses: tuple[str | ScriptedResponse, ...]
+    reviewer: ReviewerPlan | None = None
+    rubric: Rubric | None = None
 
 
 @dataclass(frozen=True)
@@ -195,6 +216,46 @@ class TaskPackage:
                     )
             except TemplateError as exc:
                 raise TaskValidationError(f"{label}: invalid template: {exc}") from exc
+            reviewer = None
+            rubric = None
+            if agent.reviewer is not None:
+                label = f"agents/{agent_id}/reviewer.md"
+                reviewer_instruction = _read_text(_package_path(root, label), label)
+                source_files[label] = reviewer_instruction
+                try:
+                    unknown = meta.find_undeclared_variables(
+                        env.parse(reviewer_instruction)
+                    ) - set(config.variables)
+                    if unknown:
+                        raise TaskValidationError(
+                            f"{label}: undeclared Variables: "
+                            f"{', '.join(sorted(unknown))}"
+                        )
+                except TemplateError as exc:
+                    raise TaskValidationError(
+                        f"{label}: invalid template: {exc}"
+                    ) from exc
+                label = f"agents/{agent_id}/rubric.toml"
+                rubric, rubric_text = _load_rubric(root, label)
+                source_files[label] = rubric_text
+                try:
+                    reviewer = ReviewerPlan(
+                        agent.reviewer.type,
+                        reviewer_instruction,
+                        agent.reviewer.max_revisions,
+                        agent.reviewer.accept_on_revision_exhaustion,
+                        agent.reviewer.checks,
+                    )
+                    if reviewer.type == "deterministic" and set(reviewer.checks) != {
+                        criterion.id for criterion in rubric.criteria
+                    }:
+                        raise ValueError(
+                            "Deterministic checks must match every Criterion ID"
+                        )
+                except ValueError as exc:
+                    raise TaskValidationError(
+                        f"agents/{agent_id}/reviewer: {exc}"
+                    ) from exc
             override = agent.model
             model = ModelPlan(
                 provider=override.provider or config.model.provider,
@@ -222,28 +283,19 @@ class TaskPackage:
                     else ScriptedResponse(response.content, response.control)
                     for response in agent.responses
                 ),
+                reviewer,
+                rubric,
             )
 
         verifier = None
         if config.verifier is not None:
             label = "verifier/rubric.toml"
-            rubric_text = _read_text(_package_path(root, label), label)
+            verifier_rubric, rubric_text = _load_rubric(root, label)
             source_files[label] = rubric_text
-            try:
-                rubric = RubricConfig.model_validate(tomllib.loads(rubric_text))
-            except tomllib.TOMLDecodeError as exc:
-                raise TaskValidationError(f"{label}: malformed TOML: {exc}") from exc
-            except ValidationError as exc:
-                problems = "; ".join(
-                    f"{'.'.join(str(part) for part in error['loc']) or 'rubric'}: "
-                    f"{error['msg']}"
-                    for error in exc.errors(include_input=False, include_url=False)
-                )
-                raise TaskValidationError(f"{label}: {problems}") from exc
             try:
                 verifier = VerifierPlan(
                     config.verifier.type,
-                    rubric.to_rubric(),
+                    verifier_rubric,
                     config.verifier.timeout_seconds,
                     config.verifier.checks,
                 )
@@ -349,6 +401,20 @@ class TaskPackage:
                     f"agents/{agent_id}/instruction.md: rendering failed "
                     f"({type(exc).__name__}): {exc}"
                 ) from exc
+            reviewer = source.reviewer
+            if reviewer is not None:
+                try:
+                    reviewer = replace(
+                        reviewer,
+                        instruction=env.from_string(reviewer.instruction).render(
+                            extracted
+                        ),
+                    )
+                except (TemplateError, TypeError, ValueError, ArithmeticError) as exc:
+                    raise TaskValidationError(
+                        f"agents/{agent_id}/reviewer.md: rendering failed "
+                        f"({type(exc).__name__}): {exc}"
+                    ) from exc
             agents[agent_id] = AgentPlan(
                 agent_id,
                 source.target,
@@ -356,6 +422,8 @@ class TaskPackage:
                 instruction,
                 source.type,
                 source.responses,
+                reviewer,
+                source.rubric,
             )
 
         frozen_data = cast(Mapping[str, FrozenJsonValue], freeze(seed_data))

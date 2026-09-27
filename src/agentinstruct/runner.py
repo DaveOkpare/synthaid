@@ -17,7 +17,8 @@ from agentinstruct.execution import (
     create_agent,
     create_environment,
 )
-from agentinstruct.plans import AgentPlan, EnvironmentPlan, VerifierPlan
+from agentinstruct.plans import AgentPlan, EnvironmentPlan, ReviewerPlan, VerifierPlan
+from agentinstruct.review import Reviewer, ReviewError, ReviewExhausted, create_reviewer
 from agentinstruct.store import LocalRunStore, TraceRecorder, load_trace, timestamp
 from agentinstruct.task_package import TaskPackage
 from agentinstruct.traces import (
@@ -47,11 +48,13 @@ class Runner:
         agent_factory: Callable[[AgentPlan], Agent] = create_agent,
         environment_factory: Callable[[EnvironmentPlan], Environment] | None = None,
         verifier_factory: Callable[[VerifierPlan], Verifier] = create_verifier,
+        reviewer_factory: Callable[[ReviewerPlan], Reviewer] = create_reviewer,
     ) -> None:
         self._store = LocalRunStore(output_dir)
         self._agent_factory = agent_factory
         self._environment_factory = environment_factory
         self._verifier_factory = verifier_factory
+        self._reviewer_factory = reviewer_factory
 
     async def run(
         self, package: TaskPackage, *, seed_path: str | Path | None = None
@@ -102,7 +105,13 @@ class Runner:
             for agent_id, agent_plan in plan.agents.items():
                 agent = self._agent_factory(agent_plan)
                 components.append(component_provenance(f"agent:{agent_id}", agent))
-                handles[agent_id] = AgentHandle(agent_plan, agent, recorder)
+                reviewer = None
+                if agent_plan.reviewer is not None:
+                    reviewer = self._reviewer_factory(agent_plan.reviewer)
+                    components.append(
+                        component_provenance(f"reviewer:{agent_id}", reviewer)
+                    )
+                handles[agent_id] = AgentHandle(agent_plan, agent, recorder, reviewer)
             agents = Agents(handles)
             environment = (
                 self._environment_factory(plan.environment)
@@ -119,6 +128,11 @@ class Runner:
                 outcome = await environment.run(context, agents) or outcome
             if outcome.state == "failed":
                 status = "failed"
+        except ReviewExhausted:
+            outcome = GenerationOutcome("truncated", "review_exhausted")
+        except ReviewError as exc:
+            status = "failed"
+            outcome = GenerationOutcome("failed", f"review_{exc.kind}")
         except Exception as exc:
             if isinstance(exc, TimeoutError) and deadline.expired():
                 outcome = GenerationOutcome("truncated", "timeout")

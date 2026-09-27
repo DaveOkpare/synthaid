@@ -1,0 +1,49 @@
+schema_version = "1"
+
+[task]
+id = "reviewed-greeting"
+version = "1"
+
+[seed]
+path = "seed.json"
+
+[variables]
+name = "name"
+
+# Scripted Agents and deterministic quality checks make no Provider calls.
+[providers.default]
+type = "openai"
+
+[model]
+provider = "default"
+name = "unused-model"
+
+[runtime]
+type = "local"
+
+[environment]
+type = "dialogue"
+max_rounds = 1
+
+[agents.user]
+target = false
+type = "scripted"
+responses = ["", "Hello, Ada."]
+
+[agents.user.reviewer]
+type = "deterministic"
+max_revisions = 1
+
+[agents.user.reviewer.checks]
+nonempty = "nonempty_content"
+
+[agents.assistant]
+target = true
+type = "scripted"
+responses = [{ content = "Welcome, Ada.", control = "complete" }]
+
+[verifier]
+type = "deterministic"
+
+[verifier.checks]
+completed = "generation_terminated"
