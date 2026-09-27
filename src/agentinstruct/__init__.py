@@ -1,5 +1,6 @@
 """Generate verified traces from agent interactions."""
 
+from agentinstruct.agent_tool import AgentTool
 from agentinstruct.execution import Agent, Agents, Environment, Observation, TaskContext
 from agentinstruct.export import export_native, export_openai
 from agentinstruct.plans import ReviewerPlan, RunPlan, ToolPlan, VerifierPlan
@@ -13,7 +14,7 @@ from agentinstruct.review import (
 from agentinstruct.runner import Runner, generate, generate_sync
 from agentinstruct.store import load_trace
 from agentinstruct.task_package import TaskPackage, TaskValidationError
-from agentinstruct.tools import FunctionTool, Tool, ToolContext
+from agentinstruct.tools import FunctionTool, Tool, ToolContext, ToolExecutionFailure
 from agentinstruct.traces import (
     FunctionCall,
     Message,
@@ -31,6 +32,7 @@ from agentinstruct.verification import (
 
 __all__ = [
     "Agent",
+    "AgentTool",
     "Agents",
     "Criterion",
     "DeterministicReviewer",
@@ -54,6 +56,7 @@ __all__ = [
     "Tool",
     "ToolCall",
     "ToolContext",
+    "ToolExecutionFailure",
     "ToolPlan",
     "TraceSnapshot",
     "VerificationAttempt",

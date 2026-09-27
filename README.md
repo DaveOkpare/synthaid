@@ -198,7 +198,8 @@ are checked before generation; JSON Schema references use an offline registry
 and never fetch remote resources.
 
 Pass `Runner(tool_factory=...)` to construct fresh Tools from their `ToolPlan`.
-A custom `Tool` exposes `id`, `description`, `input_schema`, `output_schema`, and
+A custom `Tool` exposes `id`, `description`, `input_schema`, `output_schema`,
+`execution_errors`, and
 `async call(args, context) -> JsonValue`; its declaration must match the compiled
 plan. `FunctionTool(plan, async_function)` adapts a function with that same
 arguments/context signature. Its provenance records the wrapped callable's
@@ -242,9 +243,49 @@ Only the invoking Agent sees the private exchange. The peer sees the later
 accepted shared reply, and OpenAI export includes private calls/results only
 when their owner is the Target Agent. Assignment, argument, execution, and result
 failures retain accepted intent with typed `tool_*` reasons and linked Events.
-An exhausted Tool-call review never uses conversational fallback. This ticket
-supports one Tool call per Message; multi-call workflows and Agent-wrapped Tools
-follow in ticket 08.
+An exhausted Tool-call or control-action review never uses conversational fallback.
+
+Multiple calls in one Message are reviewed **together, exactly as proposed**,
+then executed sequentially in their declared order. Each validated result commits
+before the next call starts. Call IDs must be nonempty and unique across accepted
+calls by that Agent; another Agent may use its own identical IDs. A later failure
+or rejected reply retains the accepted call and already committed results.
+
+Tools default to `execution_errors = "fail"`. A Tool may explicitly declare
+`execution_errors = "result"` in `task.toml` to represent execution exceptions as
+private results using this fixed contract:
+
+```json
+{"error":{"kind":"execution","exception":"ValueError"}}
+```
+
+The `error` object follows the `ToolExecutionFailure` type. The framework records
+the exception class without exposing exception text in
+Agent context. This error contract is independent of `output_schema`, which
+validates successful output. The Agent observes the failure through the matching
+`tool_call_id`, and remaining calls proceed in order. Assignment, argument,
+malformed-output, unsupported-action, and persistence failures do not become
+successful error results. The failure policy is part of the immutable Tool Plan
+and must match the runtime Tool declaration.
+
+`AgentTool(plan, agent_factory, instruction="...")` exposes a subordinate Agent
+through the same Tool protocol. Its factory must create a fresh Agent per call.
+The subordinate receives only the explicit instruction and one user Message
+containing the current arguments as JSON. It receives no parent history or Tool
+assignments, and must return one assistant Message containing valid JSON that
+satisfies the Tool's output schema. A singleton list is also accepted. Nested
+Tool calls, Tool-result Messages, completion controls, and multiple replies fail
+without causing further effects. Factory identity and available source digest
+are retained in Trace provenance. Normal subordinate execution exceptions follow
+the declared failure policy; malformed replies fail with `tool_result`.
+
+The [multi-Tool example](examples/multi-tool/run.py) uses isolated subordinate
+Agents for three reviewed calls, retains a typed failure for the second, and
+continues to the third without network access:
+
+```sh
+uv run python examples/multi-tool/run.py --output runs
+```
 
 ## Verify and reverify Traces
 

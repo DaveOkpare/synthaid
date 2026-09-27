@@ -153,6 +153,7 @@ class ToolConfig(ConfigModel):
     description: NonemptyString
     input_schema: dict[str, JsonValue] | bool
     output_schema: dict[str, JsonValue] | bool | None = None
+    execution_errors: Literal["fail", "result"] = "fail"
 
 
 class PackageConfig(ConfigModel):

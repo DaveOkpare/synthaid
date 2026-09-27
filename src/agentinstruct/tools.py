@@ -49,6 +49,9 @@ class Tool(Protocol):
     @property
     def output_schema(self) -> JsonSchema | None: ...
 
+    @property
+    def execution_errors(self) -> Literal["fail", "result"]: ...
+
     async def call(
         self, args: Mapping[str, FrozenJsonValue], context: ToolContext
     ) -> JsonValue: ...
@@ -67,6 +70,7 @@ class FunctionTool:
         self.description = plan.description
         self.input_schema = plan.input_schema
         self.output_schema = plan.output_schema
+        self.execution_errors = plan.execution_errors
         self.function = function
 
     async def call(
@@ -86,6 +90,14 @@ class ToolError(RuntimeError):
     ) -> None:
         self.kind = kind
         super().__init__(f"Tool {kind} failed")
+
+
+@dataclass(frozen=True)
+class ToolExecutionFailure:
+    """Fixed error-result contract; exception text is never Agent-visible."""
+
+    exception: str
+    kind: Literal["execution"] = "execution"
 
 
 def schema_validator(schema: JsonSchema) -> Validator:

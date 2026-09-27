@@ -13,6 +13,7 @@ from agentinstruct.plans import (
     FrozenJsonValue,
     TaskIdentity,
     ToolPlan,
+    canonical_json,
 )
 from agentinstruct.quality import score_verdicts
 from agentinstruct.review import (
@@ -27,6 +28,7 @@ from agentinstruct.tools import (
     Tool,
     ToolContext,
     ToolError,
+    ToolExecutionFailure,
     tool_result_content,
     validate_tool_data,
 )
@@ -170,6 +172,15 @@ class Interaction:
                 raise ValueError(
                     "Tool calls require function names and stable identifiers"
                 )
+        call_ids = [call.id for call in proposal.tool_calls]
+        accepted_ids = {
+            call.id
+            for commit in self._recorder.conversation
+            if commit.message.actor_id == self._plan.id
+            for call in commit.message.tool_calls
+        }
+        if len(set(call_ids)) != len(call_ids) or accepted_ids.intersection(call_ids):
+            raise ValueError("Tool call identifiers must be unique for each Agent")
         if proposal.control not in {None, "complete"}:
             raise ValueError("Unknown Message control proposal")
         if proposal.control == "complete" and not self._plan.target:
@@ -319,7 +330,8 @@ class Interaction:
             )
             self._event("message_committed", {"message_id": message.id}, turn_id)
             if message.tool_calls:
-                await self._execute_tool(message, turn_id)
+                for call in message.tool_calls:
+                    await self._execute_tool(call, message, turn_id)
                 continuation = await self._agent.generate(self._observation())
                 proposals.extend(
                     continuation if isinstance(continuation, list) else [continuation]
@@ -333,10 +345,9 @@ class Interaction:
         assert last_reply is not None
         return TurnResult(last_reply)
 
-    async def _execute_tool(self, message: Message, turn_id: str) -> None:
-        if len(message.tool_calls) != 1:
-            raise ToolError("unsupported")
-        call = message.tool_calls[0]
+    async def _execute_tool(
+        self, call: ToolCall, message: Message, turn_id: str
+    ) -> None:
         stage: Literal["assignment", "arguments", "execution", "result"] = "assignment"
         try:
             if call.function.name not in self._plan.tools:
@@ -345,12 +356,12 @@ class Interaction:
             stage = "arguments"
             validate_tool_data(call.function.arguments, tool_plan.input_schema)
             assert self._tool_context is not None
-            stage = "execution"
             self._event(
                 "tool_started",
                 {"message_id": message.id, "tool_call_id": call.id},
                 turn_id,
             )
+            stage = "execution"
             result = await self._tools[call.function.name].call(
                 call.function.arguments,
                 replace(self._tool_context, turn_id=turn_id, tool_call_id=call.id),
@@ -358,18 +369,30 @@ class Interaction:
             stage = "result"
             content = tool_result_content(result, tool_plan.output_schema)
         except Exception as exc:
+            kind = exc.kind if isinstance(exc, ToolError) else stage
             self._event(
                 "tool_error",
                 {
                     "message_id": message.id,
                     "tool_call_id": call.id,
-                    "kind": stage,
+                    "kind": kind,
                     "exception": type(exc).__name__,
-                    "message": str(exc),
+                    "message": "Tool execution failed"
+                    if stage == "execution"
+                    else str(exc),
                 },
                 turn_id,
             )
-            raise ToolError(stage) from exc
+            if (
+                stage == "execution"
+                and kind == "execution"
+                and tool_plan.execution_errors == "result"
+            ):
+                content = canonical_json(
+                    {"error": ToolExecutionFailure(type(exc).__name__)}
+                )
+            else:
+                raise ToolError(kind) from exc
         response = Message(
             "tool",
             content,

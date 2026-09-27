@@ -314,6 +314,7 @@ class TaskPackage:
                 tool.description,
                 cast(JsonSchema, freeze(tool.input_schema)),
                 cast(JsonSchema | None, freeze(tool.output_schema)),
+                tool.execution_errors,
             )
             for tool_id, tool in config.tools.items()
         }

@@ -34,6 +34,7 @@ def component_provenance(kind: str, component: object) -> ComponentProvenance:
         if inspect.isfunction(component)
         or inspect.ismethod(component)
         or inspect.isbuiltin(component)
+        or inspect.isclass(component)
         else type(component)
     )
     try:

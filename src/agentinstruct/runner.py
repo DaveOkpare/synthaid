@@ -7,6 +7,7 @@ from time import monotonic
 from typing import cast
 from uuid import uuid4
 
+from agentinstruct.agent_tool import AgentTool
 from agentinstruct.execution import (
     Agent,
     AgentHandle,
@@ -115,7 +116,11 @@ class Runner:
                 tool = self._tool_factory(tool_plan)
                 if (
                     ToolPlan(
-                        tool.id, tool.description, tool.input_schema, tool.output_schema
+                        tool.id,
+                        tool.description,
+                        tool.input_schema,
+                        tool.output_schema,
+                        tool.execution_errors,
                     )
                     != tool_plan
                 ):
@@ -126,7 +131,11 @@ class Runner:
                 components.append(
                     component_provenance(
                         f"tool:{tool_id}",
-                        tool.function if isinstance(tool, FunctionTool) else tool,
+                        tool.function
+                        if isinstance(tool, FunctionTool)
+                        else tool.agent_factory
+                        if isinstance(tool, AgentTool)
+                        else tool,
                     )
                 )
             handles: dict[str, AgentHandle] = {}

@@ -135,8 +135,11 @@ class ToolPlan:
     description: str
     input_schema: JsonSchema
     output_schema: JsonSchema | None = None
+    execution_errors: Literal["fail", "result"] = "fail"
 
     def __post_init__(self) -> None:
+        if self.execution_errors not in {"fail", "result"}:
+            raise ValueError("Tool execution_errors must be fail or result")
         for name in ("input_schema", "output_schema"):
             value = getattr(self, name)
             if value is not None:

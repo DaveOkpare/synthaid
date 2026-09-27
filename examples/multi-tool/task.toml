@@ -1,0 +1,51 @@
+schema_version = "1"
+
+[task]
+id = "multi-tool"
+version = "1"
+
+[seed]
+path = "seed.json"
+
+[variables]
+name = "name"
+
+[providers.default]
+type = "openai"
+
+[model]
+provider = "default"
+name = "unused"
+
+[runtime]
+type = "local"
+
+[environment]
+type = "single"
+
+[tools.summarize]
+description = "Ask an isolated subordinate Agent to summarize a label."
+execution_errors = "result"
+
+[tools.summarize.input_schema]
+type = "object"
+properties = { text = { type = "string" } }
+required = ["text"]
+additionalProperties = false
+
+[tools.summarize.output_schema]
+type = "object"
+properties = { summary = { type = "string" } }
+required = ["summary"]
+additionalProperties = false
+
+[agents.assistant]
+target = true
+tools = ["summarize"]
+
+[agents.assistant.reviewer]
+type = "deterministic"
+max_revisions = 0
+
+[agents.assistant.reviewer.checks]
+nonempty = "nonempty_content"

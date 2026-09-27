@@ -53,4 +53,13 @@
   [Tool usage](../../README.md#review-tool-calls-before-effects) and the
   [offline function example](../../examples/function-tool/run.py).
 
-Tickets 08–19 remain unimplemented.
+- **08 — resolved:** [Support robust multi-Tool interactions](issues/08-support-robust-multi-tool-interactions.md#answer).
+  Whole-Message review now gates ordered multi-call execution, with separate
+  durable results, actor-scoped stable call IDs, optional typed execution-error
+  results, and retained partial progress. `AgentTool` uses fresh isolated
+  subordinates, rejects nested effects, and records factory provenance.
+  Target-only private export preserves matching IDs. See
+  [Tool usage](../../README.md#review-tool-calls-before-effects) and the
+  [offline multi-Tool example](../../examples/multi-tool/run.py).
+
+Tickets 09–19 remain unimplemented.
