@@ -1,0 +1,1843 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trace generation lifecycle — prototype</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #18221d;
+      --muted: #627168;
+      --line: #d8e0db;
+      --soft: #f5f8f6;
+      --paper: #ffffff;
+      --accent: #176b4d;
+      --accent-soft: #e6f4ed;
+      --warning: #8a4b08;
+      --warning-soft: #fff4df;
+      --danger: #9b2c2c;
+      --danger-soft: #fff0f0;
+      --shadow: 0 14px 34px rgba(28, 51, 39, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: #edf2ef;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+
+    button { font: inherit; }
+
+    .shell {
+      width: min(1180px, calc(100% - 32px));
+      margin: 32px auto 72px;
+    }
+
+    .hero,
+    .panel {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+    }
+
+    .hero { padding: 30px; }
+
+    .eyebrow {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--accent);
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+    }
+
+    .badge {
+      border: 1px solid #d8b86a;
+      border-radius: 999px;
+      background: #fff7d9;
+      color: #735714;
+      padding: 3px 9px;
+    }
+
+    h1, h2, h3 { line-height: 1.18; }
+    h1 { margin: 14px 0 12px; font-size: clamp(2rem, 4vw, 3.35rem); letter-spacing: -0.04em; }
+    h2 { margin: 0; font-size: 1.35rem; }
+    h3 { margin: 0 0 10px; font-size: 1rem; }
+    p { margin: 0; }
+
+    .question {
+      max-width: 850px;
+      color: #3f5047;
+      font-size: 1.05rem;
+    }
+
+    .note {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+
+    .panel { margin-top: 20px; padding: 24px; }
+
+    .section-heading {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .section-heading p { color: var(--muted); font-size: 0.9rem; margin-top: 5px; }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .summary-item,
+    .subpanel {
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--soft);
+    }
+
+    .summary-item { padding: 12px; }
+    .summary-item dt { color: var(--muted); font-size: 0.76rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+    .summary-item dd { margin: 5px 0 0; font-weight: 750; overflow-wrap: anywhere; }
+
+    .change {
+      margin-top: 12px;
+      border-left: 4px solid var(--accent);
+      border-radius: 10px;
+      background: var(--accent-soft);
+      padding: 12px 14px;
+    }
+
+    .change.warning { border-left-color: var(--warning); background: var(--warning-soft); }
+    .change strong { display: block; }
+    .change span { color: #48584f; }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .control-group {
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      padding: 14px;
+    }
+
+    .button-stack { display: grid; gap: 8px; }
+
+    button {
+      border: 1px solid #b8c7bf;
+      border-radius: 9px;
+      background: var(--paper);
+      color: var(--ink);
+      cursor: pointer;
+      padding: 9px 11px;
+      text-align: left;
+    }
+
+    button:hover { border-color: var(--accent); background: var(--accent-soft); }
+    button:focus-visible { outline: 3px solid rgba(23, 107, 77, 0.28); outline-offset: 2px; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.danger { color: var(--danger); border-color: #e5b6b6; }
+    button:disabled { cursor: not-allowed; opacity: 0.48; background: #f4f4f4; border-color: #ddd; }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 12px;
+    }
+
+    .tab[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+    .walkthrough-copy { margin: 18px 0; color: #44544b; max-width: 850px; }
+    .walkthrough-copy strong { color: var(--ink); }
+
+    .walkthrough-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .autoplay-status {
+      color: var(--muted);
+      font-size: 0.82rem;
+      font-weight: 700;
+    }
+
+    .walkthrough-steps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 10px;
+    }
+
+    .guide-step { min-height: 82px; }
+    .guide-step small { display: block; color: var(--muted); margin-top: 4px; }
+    .guide-step.done { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+    .two-col,
+    .three-col {
+      display: grid;
+      gap: 14px;
+    }
+
+    .two-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .three-col { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .subpanel { padding: 16px; min-width: 0; }
+    .subpanel > p { color: var(--muted); font-size: 0.9rem; }
+
+    .list {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .item {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--paper);
+      padding: 10px 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .item-meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-weight: 700;
+      margin-bottom: 5px;
+      text-transform: uppercase;
+      letter-spacing: 0.035em;
+    }
+
+    .item.tool { border-left: 4px solid #6e58a6; }
+    .item.rejected { border-left: 4px solid var(--danger); background: var(--danger-soft); }
+    .item.accepted { border-left: 4px solid var(--accent); }
+
+    .empty {
+      border: 1px dashed #b9c7bf;
+      border-radius: 10px;
+      color: var(--muted);
+      padding: 14px;
+      text-align: center;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      background: #e9eeeb;
+      color: #415047;
+      font-size: 0.74rem;
+      font-weight: 750;
+      padding: 3px 8px;
+    }
+
+    .pill.good { background: var(--accent-soft); color: var(--accent); }
+    .pill.bad { background: var(--danger-soft); color: var(--danger); }
+    .pill.warn { background: var(--warning-soft); color: var(--warning); }
+
+    .definition-list {
+      display: grid;
+      grid-template-columns: 150px 1fr;
+      gap: 8px 12px;
+      margin: 12px 0 0;
+      font-size: 0.9rem;
+    }
+
+    .definition-list dt { color: var(--muted); }
+    .definition-list dd { margin: 0; font-weight: 650; overflow-wrap: anywhere; }
+
+    .criteria { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+
+    .privacy-note {
+      color: #55427f;
+      background: #f1edfa;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 0.82rem;
+      margin-top: 10px;
+    }
+
+    .export-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+
+    .export-toolbar select {
+      min-width: 230px;
+      border: 1px solid #b8c7bf;
+      border-radius: 9px;
+      background: var(--paper);
+      color: var(--ink);
+      font: inherit;
+      padding: 9px 11px;
+    }
+
+    .checkbox-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 0.88rem;
+      font-weight: 700;
+    }
+
+    .export-preview {
+      min-height: 190px;
+      max-height: 430px;
+      margin: 12px 0 0;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #111914;
+      color: #d9e8df;
+      padding: 14px;
+      font: 0.78rem/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    @media (max-width: 900px) {
+      .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .controls, .three-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 620px) {
+      .shell { width: min(100% - 18px, 1180px); margin-top: 9px; }
+      .hero, .panel { padding: 18px; border-radius: 14px; }
+      .summary-grid, .controls, .two-col, .three-col { grid-template-columns: 1fr; }
+      .section-heading { display: block; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div class="eyebrow"><span class="badge">Throwaway prototype</span> In-memory logic demo</div>
+      <h1>Can the trace lifecycle carry the right history?</h1>
+      <p class="question">
+        This demo tests whether a run can process multiple seeds while each trace keeps only accepted conversation history across task steps, independently reviews and accepts tool calls before execution, separately reviews drafts before delivery, keeps accepted tool activity private to its caller, and verifies quality only after generation ends.
+      </p>
+      <p class="note">Nothing is saved. Double-click this file to run it; refresh or press “Reset everything” to start over.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="state-heading">
+      <div class="section-heading">
+        <div>
+          <h2 id="state-heading">Current state</h2>
+          <p>The complete lifecycle state is re-rendered after every action.</p>
+        </div>
+        <button type="button" data-action="RESET">Reset everything</button>
+      </div>
+      <dl class="summary-grid" id="summary"></dl>
+      <div class="change" id="last-change" role="status" aria-live="polite"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="free-play-heading">
+      <div class="section-heading">
+        <div>
+          <h2 id="free-play-heading">Free play</h2>
+          <p>Every action stays available. Invalid ordering is rejected and explained instead of silently changing state.</p>
+        </div>
+      </div>
+      <div class="controls">
+        <div class="control-group">
+          <h3>Run and steps</h3>
+          <div class="button-stack">
+            <button type="button" class="primary" data-action="START_NEXT_SEED">Start next seed</button>
+            <button type="button" data-action="ADVANCE_STEP">Advance task step</button>
+            <button type="button" data-action="FINISH_GENERATION">Finish generation</button>
+            <button type="button" class="danger" data-action="FAIL_TRACE">Fail current trace</button>
+          </div>
+        </div>
+        <div class="control-group">
+          <h3>Agent drafts</h3>
+          <div class="button-stack">
+            <button type="button" data-action="PROPOSE_USER">User produces draft</button>
+            <button type="button" data-action="PROPOSE_ASSISTANT_TOOL">Assistant proposes tool call</button>
+            <button type="button" data-action="PROPOSE_ASSISTANT">Assistant drafts without tool</button>
+          </div>
+        </div>
+        <div class="control-group">
+          <h3>Reviewer</h3>
+          <div class="button-stack">
+            <button type="button" data-action="REVIEW_ACCEPT">Return score above threshold</button>
+            <button type="button" data-action="REVIEW_REJECT">Return score below threshold</button>
+            <button type="button" data-action="REVISE">Revise rejected item</button>
+            <button type="button" data-action="ACCEPT_EXHAUSTED">Commit draft after revision cap</button>
+          </div>
+        </div>
+        <div class="control-group">
+          <h3>Final verifier</h3>
+          <div class="button-stack">
+            <button type="button" data-action="VERIFY_ACCEPT">Return passing criteria</button>
+            <button type="button" data-action="VERIFY_REJECT">Return failing criteria</button>
+            <button type="button" data-action="VERIFY_ERROR">Return malformed result</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="walkthrough-heading">
+      <div class="section-heading">
+        <div>
+          <h2 id="walkthrough-heading">Guided walkthroughs</h2>
+          <p>Selecting a walkthrough resets the demo to a known state. Press its highlighted steps in order.</p>
+        </div>
+        <div class="walkthrough-actions">
+          <button type="button" class="primary" id="autoplay-toggle">Auto-play walkthrough</button>
+          <span class="autoplay-status" id="autoplay-status" aria-live="polite">Stopped</span>
+        </div>
+      </div>
+      <div class="tabs" id="scenario-tabs" role="tablist" aria-label="Prototype walkthroughs"></div>
+      <div id="scenario-panel" role="tabpanel"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="plan-heading">
+      <div class="section-heading">
+        <div>
+          <h2 id="plan-heading">Task package, seed, and compiled plan</h2>
+          <p>The package is shared across the run; variables and rendered instructions are isolated per seed.</p>
+        </div>
+      </div>
+      <div class="three-col" id="plan-panels"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="turn-heading">
+      <div class="section-heading">
+        <div>
+          <h2 id="turn-heading">Acceptance boundary</h2>
+          <p>A tool call must cross its own review threshold before execution, then its call and result enter private accepted history. The resulting draft crosses a separate review boundary before delivery.</p>
+        </div>
+      </div>
+      <div class="two-col">
+        <div class="subpanel">
+          <h3>Pending interaction turn</h3>
+          <div id="pending-turn" class="list"></div>
+        </div>
+        <div class="subpanel">
+          <h3>Canonical accepted conversation</h3>
+          <div id="conversation" class="list"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="projection-heading">
+      <div class="section-heading">
+        <div>
+          <h2 id="projection-heading">What each agent sees</h2>
+          <p>Participant messages are shared. Tool calls and results appear only in the invoking agent's projection.</p>
+        </div>
+      </div>
+      <div class="two-col">
+        <div class="subpanel">
+          <h3>User observation</h3>
+          <div id="user-view" class="list"></div>
+        </div>
+        <div class="subpanel">
+          <h3>Assistant observation</h3>
+          <div id="assistant-view" class="list"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="records-heading">
+      <div class="section-heading">
+        <div>
+          <h2 id="records-heading">Events, verification, and run index</h2>
+          <p>Rejected work stays auditable without leaking into accepted model-visible history.</p>
+        </div>
+      </div>
+      <div class="three-col">
+        <div class="subpanel">
+          <h3>Execution events</h3>
+          <div id="events" class="list"></div>
+        </div>
+        <div class="subpanel">
+          <h3>Final verification</h3>
+          <div id="verification" class="list"></div>
+        </div>
+        <div class="subpanel">
+          <h3>Run trace index</h3>
+          <div id="trace-index" class="list"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="exports-heading">
+      <div class="section-heading">
+        <div>
+          <h2 id="exports-heading">Export-ready traces</h2>
+          <p>Every terminal trace is retained as a full immutable snapshot. Dataset export includes accepted traces by default.</p>
+        </div>
+      </div>
+      <div class="export-toolbar">
+        <select id="export-trace-select" aria-label="Native trace to preview" disabled>
+          <option>No completed traces</option>
+        </select>
+        <label class="checkbox-label">
+          <input type="checkbox" id="include-nonaccepted">
+          Include non-accepted traces in dataset export
+        </label>
+        <button type="button" id="download-native" disabled>Download native traces JSONL</button>
+        <button type="button" id="download-dataset" class="primary" disabled>Download dataset JSONL</button>
+      </div>
+      <div class="two-col">
+        <div class="subpanel">
+          <h3>Selected native trace</h3>
+          <p>Full seed, resolved plan, accepted conversation, events, turns, and verification.</p>
+          <pre class="export-preview" id="native-export-preview">Complete a trace to create its immutable export snapshot.</pre>
+        </div>
+        <div class="subpanel">
+          <h3>Target training dataset · OpenAI JSONL</h3>
+          <p id="dataset-export-summary">Accepted traces only · 0 records</p>
+          <pre class="export-preview" id="dataset-export-preview">No accepted traces are ready for dataset export.</pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // Portable prototype logic. This module has no DOM dependency and can be
+    // lifted out independently from the throwaway page around it.
+    const TraceStateModel = (() => {
+      const TASK_PACKAGE = Object.freeze({
+        name: "examples/support-dialogue",
+        seedSource: "seeds/*.jsonl",
+        environment: "dialogue",
+        initiator: "user",
+        target: "assistant",
+        steps: ["discovery", "resolution"],
+        reviewerThreshold: 0.8,
+        verifierThreshold: 0.8,
+        maxRevisions: 2,
+        acceptOnRevisionExhaustion: true,
+      });
+
+      const SEEDS = Object.freeze([
+        {
+          id: "case-1042",
+          origin: "seeds/batch-01.jsonl:1",
+          data: {
+            case: { id: "case-1042" },
+            scenario: {
+              goal: "request a refund for an unfamiliar charge",
+              account_tier: "premium",
+              expected_resolution: "submit a refund request and secure the account",
+            },
+          },
+        },
+        {
+          id: "case-2048",
+          origin: "seeds/batch-01.jsonl:2",
+          data: {
+            case: { id: "case-2048" },
+            scenario: {
+              goal: "regain access after forgetting a password",
+              account_tier: "standard",
+              expected_resolution: "complete the password reset flow",
+            },
+          },
+        },
+      ]);
+
+      const STEP_TEMPLATES = Object.freeze([
+        {
+          id: "discovery",
+          user: "Describe the problem and answer clarifying questions without revealing hidden seed data.",
+          assistant: "Clarify the user's goal before proposing a resolution.",
+          rubrics: ["persona_consistent", "grounded", "clear"],
+        },
+        {
+          id: "resolution",
+          user: "React naturally to the proposed resolution and ask for any missing next step.",
+          assistant: "Give the concrete next action and confirm the expected resolution.",
+          rubrics: ["persona_consistent", "grounded", "actionable", "clear"],
+        },
+      ]);
+
+      const terminalStatuses = new Set(["accepted", "rejected", "unverified", "failed", "invalid"]);
+
+      function copy(value) {
+        return JSON.parse(JSON.stringify(value));
+      }
+
+      function pad(value) {
+        return String(value).padStart(2, "0");
+      }
+
+      function variablesFor(seed) {
+        return {
+          case_id: seed.data.case.id,
+          user_goal: seed.data.scenario.goal,
+          account_tier: seed.data.scenario.account_tier,
+          expected_resolution: seed.data.scenario.expected_resolution,
+        };
+      }
+
+      function render(template, variables) {
+        return template.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (_, key) => String(variables[key]));
+      }
+
+      function compilePlan(seed) {
+        const variables = variablesFor(seed);
+        return {
+          digest: `plan:${seed.id}:demo`,
+          variables,
+          agents: {
+            user: {
+              target: false,
+              tools: [],
+              baseInstruction: render(
+                "You are a user trying to {{ user_goal }}. Stay consistent with case {{ case_id }}.",
+                variables,
+              ),
+            },
+            assistant: {
+              target: true,
+              tools: ["lookup_policy"],
+              baseInstruction: render(
+                "Help the user {{ user_goal }} and work toward: {{ expected_resolution }}.",
+                variables,
+              ),
+            },
+          },
+          steps: STEP_TEMPLATES,
+          reviewer: {
+            threshold: TASK_PACKAGE.reviewerThreshold,
+            maxRevisions: TASK_PACKAGE.maxRevisions,
+            acceptOnRevisionExhaustion: TASK_PACKAGE.acceptOnRevisionExhaustion,
+            criteria: {
+              tool_call: [
+                { id: "allowed_tool", weight: 0.4 },
+                { id: "valid_arguments", weight: 0.35 },
+                { id: "necessary", weight: 0.25 },
+              ],
+              user_message: [
+                { id: "persona_consistent", weight: 0.6 },
+                { id: "coherent", weight: 0.4 },
+              ],
+              assistant_message: [
+                { id: "grounded", weight: 0.5 },
+                { id: "actionable", weight: 0.3 },
+                { id: "clear", weight: 0.2 },
+              ],
+            },
+          },
+          verifier: {
+            threshold: TASK_PACKAGE.verifierThreshold,
+            criteria: [
+              { id: "task_success", weight: 0.5 },
+              { id: "policy_accuracy", weight: 0.3 },
+              { id: "conversation_quality", weight: 0.2 },
+            ],
+          },
+        };
+      }
+
+      function initialState() {
+        return {
+          package: copy(TASK_PACKAGE),
+          seedCatalog: copy(SEEDS),
+          run: {
+            id: "run-demo-001",
+            status: "ready",
+            seedCursor: -1,
+            traceIndex: [],
+            traces: [],
+            counts: { accepted: 0, rejected: 0, unverified: 0, failed: 0, invalid: 0 },
+          },
+          trace: null,
+          diagnostics: [],
+          lastChange: {
+            kind: "ok",
+            title: "Task package prepared",
+            detail: "Two seed records are ready. Start the next seed to compile its immutable run plan.",
+          },
+        };
+      }
+
+      function addEvent(trace, type, detail, extra = {}) {
+        const event = {
+          id: `event_${pad(trace.nextEvent)}`,
+          type,
+          stepId: trace.steps[trace.stepIndex].id,
+          detail,
+          ...extra,
+        };
+        trace.nextEvent += 1;
+        trace.events.push(event);
+        return event;
+      }
+
+      function illegal(state, detail) {
+        const next = copy(state);
+        next.diagnostics.push({ number: next.diagnostics.length + 1, detail });
+        next.lastChange = { kind: "warning", title: "Action rejected", detail };
+        return next;
+      }
+
+      function makeTrace(seed, ordinal) {
+        const plan = compilePlan(seed);
+        const trace = {
+          id: `trace-${pad(ordinal)}-${seed.id}`,
+          seed: copy(seed),
+          plan,
+          status: "generating",
+          stepIndex: 0,
+          steps: copy(STEP_TEMPLATES),
+          nextActor: TASK_PACKAGE.initiator,
+          pending: null,
+          conversation: [],
+          turns: [],
+          events: [],
+          verification: null,
+          nextEvent: 1,
+          nextTurn: 1,
+          nextMessage: 1,
+          nextDraft: 1,
+          nextToolCall: 1,
+        };
+        addEvent(trace, "seed_loaded", `Loaded ${seed.id} from ${seed.origin}.`);
+        addEvent(trace, "run_plan_compiled", "Variables validated and all base and step instructions rendered.");
+        addEvent(trace, "step_started", "Activated discovery instructions for both agents.");
+        return trace;
+      }
+
+      function currentStep(trace) {
+        return trace.steps[trace.stepIndex];
+      }
+
+      function makeReviewSubject(trace, kind, actor, content, revisionCount = 0, name = null, argumentsValue = null) {
+        const id = kind === "tool_call"
+          ? `tool_call_${pad(trace.nextToolCall)}`
+          : `draft_${pad(trace.nextDraft)}`;
+        if (kind === "tool_call") trace.nextToolCall += 1;
+        else trace.nextDraft += 1;
+        return {
+          id,
+          kind,
+          actor,
+          name,
+          arguments: argumentsValue,
+          content,
+          revisionCount,
+          reviewState: "awaiting_review",
+        };
+      }
+
+      function propose(state, actor, withTool) {
+        if (!state.trace || state.trace.status !== "generating") {
+          return illegal(state, "A generating trace must exist before an agent can propose an action.");
+        }
+        if (state.trace.pending) {
+          return illegal(state, "The current pending turn must be accepted or resolved before another action is proposed.");
+        }
+        if (state.trace.nextActor !== actor) {
+          return illegal(state, `The environment expects ${state.trace.nextActor} next; ${actor} cannot speak yet.`);
+        }
+
+        const next = copy(state);
+        const trace = next.trace;
+        const step = currentStep(trace);
+        const variables = trace.plan.variables;
+        let subject;
+        if (withTool) {
+          subject = makeReviewSubject(
+            trace,
+            "tool_call",
+            actor,
+            `lookup_policy({ account_tier: "${variables.account_tier}", include_private_notes: true })`,
+            0,
+            "lookup_policy",
+            { account_tier: variables.account_tier, include_private_notes: true },
+          );
+        } else {
+          const content = actor === "user"
+            ? step.id === "discovery"
+              ? `I need help because I want to ${variables.user_goal}.`
+              : "That makes sense. What exactly should I do next?"
+            : step.id === "discovery"
+              ? "I can help. First, can you confirm when the problem started?"
+              : `The next step is to ${variables.expected_resolution}.`;
+          subject = makeReviewSubject(trace, "draft", actor, content);
+        }
+
+        trace.pending = {
+          id: `pending_turn_${pad(trace.nextTurn)}`,
+          turnId: `turn_${pad(trace.nextTurn)}`,
+          actor,
+          subject,
+          reviewHistory: [],
+          toolBundle: [],
+          acceptedMessageIds: [],
+        };
+
+        if (withTool) {
+          addEvent(trace, "tool_call_proposed", `${actor} proposed ${subject.id}; the tool has not executed.`, {
+            actor,
+            subjectId: subject.id,
+          });
+        } else {
+          addEvent(trace, "draft_created", `${actor} produced ${subject.id}; it is not yet in accepted history.`, {
+            actor,
+            subjectId: subject.id,
+          });
+        }
+        next.lastChange = {
+          kind: "ok",
+          title: withTool ? "Tool call is awaiting review" : `${actor} draft is awaiting review`,
+          detail: withTool
+            ? "No tool execution or draft generation occurs until this call independently reaches the reviewer threshold."
+            : "The draft is reviewed independently and remains invisible to the other agent until accepted.",
+        };
+        return next;
+      }
+
+      function reviewResult(trace, pending, requestedPass) {
+        const subject = pending.subject;
+        const rubricKey = subject.kind === "tool_call"
+          ? "tool_call"
+          : subject.actor === "user" ? "user_message" : "assistant_message";
+        const rubric = trace.plan.reviewer.criteria[rubricKey];
+        const criteria = {};
+        for (const criterion of rubric) criteria[criterion.id] = requestedPass;
+        if (!requestedPass) {
+          const retainedCriterion = rubric[rubric.length - 1].id;
+          criteria[retainedCriterion] = true;
+        }
+        const weights = Object.fromEntries(rubric.map((criterion) => [criterion.id, criterion.weight]));
+        const score = Object.entries(criteria).reduce(
+          (total, [id, passed]) => total + (passed ? weights[id] : 0),
+          0,
+        );
+        return {
+          criteria,
+          weights,
+          score,
+          threshold: trace.plan.reviewer.threshold,
+          passed: score >= trace.plan.reviewer.threshold,
+        };
+      }
+
+      function executeReviewedTool(state) {
+        const trace = state.trace;
+        const pending = trace.pending;
+        const toolCall = pending.subject;
+        const variables = trace.plan.variables;
+        const toolResultContent = variables.account_tier === "premium"
+          ? "Premium accounts may submit a refund request and should secure the account."
+          : "Standard accounts may use the guided recovery flow.";
+        const toolCallMessage = {
+          id: `message_${pad(trace.nextMessage)}`,
+          toolCallId: `call_${toolCall.id}`,
+          turnId: pending.turnId,
+          stepId: currentStep(trace).id,
+          role: "assistant",
+          actor: pending.actor,
+          kind: "tool_call",
+          owner: pending.actor,
+          name: toolCall.name,
+          arguments: copy(toolCall.arguments),
+          content: toolCall.content,
+        };
+        trace.nextMessage += 1;
+        trace.conversation.push(toolCallMessage);
+        pending.acceptedMessageIds.push(toolCallMessage.id);
+        addEvent(trace, "tool_call_committed", `${toolCall.id} passed review and entered ${pending.actor}'s accepted private history.`, {
+          actor: pending.actor,
+          subjectId: toolCall.id,
+          messageId: toolCallMessage.id,
+        });
+        const toolResultMessage = {
+          id: `message_${pad(trace.nextMessage)}`,
+          toolCallId: toolCallMessage.toolCallId,
+          turnId: pending.turnId,
+          stepId: currentStep(trace).id,
+          role: "tool",
+          actor: pending.actor,
+          kind: "tool_result",
+          owner: pending.actor,
+          name: toolCall.name,
+          content: toolResultContent,
+        };
+        trace.nextMessage += 1;
+        trace.conversation.push(toolResultMessage);
+        pending.acceptedMessageIds.push(toolResultMessage.id);
+        pending.toolBundle.push(toolCallMessage, toolResultMessage);
+        addEvent(trace, "tool_executed", `lookup_policy executed; ${toolResultMessage.id} entered ${pending.actor}'s accepted private history.`, {
+          actor: pending.actor,
+          subjectId: toolCall.id,
+          messageId: toolResultMessage.id,
+        });
+        pending.subject = makeReviewSubject(
+          trace,
+          "draft",
+          pending.actor,
+          "You are not eligible, so there is nothing else to do.",
+        );
+        addEvent(trace, "draft_created", `${pending.actor} produced ${pending.subject.id} from the tool result; it needs a separate review.`, {
+          actor: pending.actor,
+          subjectId: pending.subject.id,
+        });
+        state.lastChange = {
+          kind: "ok",
+          title: "Tool call passed; draft now pending",
+          detail: "The reviewed call and result are already accepted in private history. Their resulting draft must independently reach the reviewer threshold.",
+        };
+        return state;
+      }
+
+      function reviewCurrent(state, requestedPass) {
+        if (!state.trace || !state.trace.pending) {
+          return illegal(state, "There is no pending tool call or draft for the reviewer to evaluate.");
+        }
+        if (state.trace.pending.subject.reviewState !== "awaiting_review") {
+          return illegal(state, "The rejected item must be revised before the reviewer can evaluate it again.");
+        }
+
+        const next = copy(state);
+        const trace = next.trace;
+        const pending = trace.pending;
+        const subject = pending.subject;
+        const result = reviewResult(trace, pending, requestedPass);
+        const attempt = pending.reviewHistory.length + 1;
+        const review = {
+          attempt,
+          subjectId: subject.id,
+          subjectKind: subject.kind,
+          feedback: result.passed ? "The weighted score reached the configured threshold." : "Revise this item to raise its weighted score.",
+          ...result,
+        };
+        pending.reviewHistory.push(review);
+        addEvent(trace, result.passed ? `${subject.kind}_review_passed` : `${subject.kind}_review_rejected`, `${subject.id} scored ${result.score.toFixed(2)} against reviewer threshold ${result.threshold.toFixed(2)}.`, {
+          actor: pending.actor,
+          subjectId: subject.id,
+          subjectKind: subject.kind,
+          criteria: result.criteria,
+          weights: result.weights,
+          score: result.score,
+          threshold: result.threshold,
+        });
+
+        if (result.passed && subject.kind === "tool_call") {
+          subject.reviewState = "accepted";
+          return executeReviewedTool(next);
+        }
+        if (result.passed) {
+          subject.reviewState = "accepted";
+          return commitPending(next, false);
+        }
+
+        subject.reviewState = "rejected";
+        next.lastChange = {
+          kind: "warning",
+          title: `${subject.kind === "tool_call" ? "Tool call" : "Draft"} rejected below threshold`,
+          detail: subject.kind === "tool_call"
+            ? "The tool did not execute. The rejected call is an event only and must be revised."
+            : "The draft remains outside accepted history and is invisible to the other agent.",
+        };
+        return next;
+      }
+
+      function reviseCurrent(state) {
+        if (!state.trace || !state.trace.pending || state.trace.pending.subject.reviewState !== "rejected") {
+          return illegal(state, "A reviewer-rejected tool call or draft is required before revision.");
+        }
+        if (state.trace.pending.subject.revisionCount >= state.trace.plan.reviewer.maxRevisions) {
+          return illegal(state, "The configured revision cap has been reached. Commit the marked fallback or fail the trace.");
+        }
+
+        const next = copy(state);
+        const trace = next.trace;
+        const pending = trace.pending;
+        const previous = pending.subject;
+        const revisionCount = previous.revisionCount + 1;
+        const content = previous.kind === "tool_call"
+          ? `lookup_policy({ account_tier: "${trace.plan.variables.account_tier}" })`
+          : pending.actor === "assistant"
+            ? `I checked the policy. The next step is to ${trace.plan.variables.expected_resolution}.`
+            : `I still want to ${trace.plan.variables.user_goal}, and I can clarify anything you need.`;
+        const argumentsValue = previous.kind === "tool_call"
+          ? { account_tier: trace.plan.variables.account_tier }
+          : null;
+        pending.subject = makeReviewSubject(
+          trace,
+          previous.kind,
+          pending.actor,
+          content,
+          revisionCount,
+          previous.name,
+          argumentsValue,
+        );
+        addEvent(trace, `${previous.kind}_revised`, `${pending.actor} revised ${previous.id} into ${pending.subject.id} (revision ${revisionCount}).`, {
+          actor: pending.actor,
+          previousSubjectId: previous.id,
+          subjectId: pending.subject.id,
+          subjectKind: pending.subject.kind,
+        });
+        next.lastChange = {
+          kind: "ok",
+          title: `${pending.subject.kind === "tool_call" ? "Tool call" : "Draft"} revision ${revisionCount} produced`,
+          detail: "The revised item remains pending and must be scored again against the reviewer threshold.",
+        };
+        return next;
+      }
+
+      function commitPending(state, reviewExhausted) {
+        const next = copy(state);
+        const trace = next.trace;
+        const pending = trace.pending;
+        const subject = pending.subject;
+        const step = currentStep(trace);
+        const turnId = pending.turnId;
+        trace.nextTurn += 1;
+        const acceptedMessages = [...pending.acceptedMessageIds];
+
+        const outbound = {
+          id: `message_${pad(trace.nextMessage)}`,
+          turnId,
+          stepId: step.id,
+          role: pending.actor,
+          actor: pending.actor,
+          kind: "message",
+          owner: null,
+          name: null,
+          content: subject.content,
+        };
+        trace.nextMessage += 1;
+        trace.conversation.push(outbound);
+        acceptedMessages.push(outbound.id);
+        trace.turns.push({
+          id: turnId,
+          stepId: step.id,
+          actor: pending.actor,
+          messageIds: acceptedMessages,
+          reviewExhausted,
+        });
+        addEvent(trace, "turn_closed", `${turnId} committed the accepted outbound draft and closed with ${acceptedMessages.length} message(s).`, {
+          actor: pending.actor,
+          turnId,
+          messageIds: acceptedMessages,
+          reviewExhausted,
+        });
+        trace.nextActor = pending.actor === "user" ? "assistant" : "user";
+        trace.pending = null;
+        next.lastChange = {
+          kind: reviewExhausted ? "warning" : "ok",
+          title: reviewExhausted ? "Fallback turn committed" : "Accepted turn committed",
+          detail: reviewExhausted
+            ? "The last draft entered history with review_exhausted=true. The final verifier may still reject the trace."
+            : `The accepted draft is now durable and visible to ${trace.nextActor}; separately accepted private tools remain filtered by owner.`,
+        };
+        return next;
+      }
+
+      function acceptExhausted(state) {
+        if (!state.trace || !state.trace.pending || state.trace.pending.subject.reviewState !== "rejected") {
+          return illegal(state, "A reviewer-rejected pending draft is required for the exhaustion fallback.");
+        }
+        if (state.trace.pending.subject.kind !== "draft") {
+          return illegal(state, "A rejected tool call is never executed through the revision-exhaustion fallback.");
+        }
+        if (state.trace.pending.subject.revisionCount < state.trace.plan.reviewer.maxRevisions) {
+          return illegal(state, "The revision cap has not been reached, so another revision is still required.");
+        }
+        if (!state.trace.plan.reviewer.acceptOnRevisionExhaustion) {
+          return illegal(state, "This task did not explicitly opt into accepting a draft after revision exhaustion.");
+        }
+        return commitPending(state, true);
+      }
+
+      function advanceStep(state) {
+        if (!state.trace || state.trace.status !== "generating") {
+          return illegal(state, "A generating trace is required before a task step can advance.");
+        }
+        if (state.trace.pending) {
+          return illegal(state, "A pending turn must be resolved before changing task-step instructions.");
+        }
+        if (state.trace.stepIndex >= state.trace.steps.length - 1) {
+          return illegal(state, "The trace is already using the final task step.");
+        }
+
+        const next = copy(state);
+        const trace = next.trace;
+        const previous = currentStep(trace).id;
+        addEvent(trace, "step_completed", `Completed ${previous}; accepted history remains unchanged.`);
+        trace.stepIndex += 1;
+        const active = currentStep(trace).id;
+        addEvent(trace, "step_started", `Activated ${active} instructions and appended rubrics.`);
+        next.lastChange = {
+          kind: "ok",
+          title: `${active} step activated`,
+          detail: `Only temporary instructions changed. All ${trace.conversation.length} accepted messages remain available.`,
+        };
+        return next;
+      }
+
+      function finishGeneration(state) {
+        if (!state.trace || state.trace.status !== "generating") {
+          return illegal(state, "Only a generating trace can be finished.");
+        }
+        if (state.trace.pending) {
+          return illegal(state, "The pending interaction turn must be resolved before generation can finish.");
+        }
+        const next = copy(state);
+        next.trace.status = "generated";
+        addEvent(next.trace, "generation_sealed", "The environment finished and the generation trace became immutable.");
+        next.lastChange = {
+          kind: "ok",
+          title: "Generation sealed",
+          detail: "The final verifier may now read the immutable trace. It cannot change accepted conversation history.",
+        };
+        return next;
+      }
+
+      function indexTerminalTrace(state, status) {
+        const trace = state.trace;
+        const snapshot = {
+          schemaVersion: "0.1",
+          runId: state.run.id,
+          taskName: state.package.name,
+          ...copy(trace),
+        };
+        state.run.traces.push(snapshot);
+        state.run.traceIndex.push({
+          traceId: trace.id,
+          seedId: trace.seed.id,
+          status,
+          turns: trace.turns.length,
+          messages: trace.conversation.length,
+          score: trace.verification ? trace.verification.score : null,
+          nativeRef: `traces/${trace.id}/trace.json`,
+        });
+        state.run.counts[status] += 1;
+        if (state.run.seedCursor >= state.seedCatalog.length - 1) {
+          state.run.status = "completed";
+        }
+      }
+
+      function verify(state, outcome) {
+        if (!state.trace || state.trace.status !== "generated") {
+          return illegal(state, "Final verification can run only after generation has been sealed.");
+        }
+        const next = copy(state);
+        const trace = next.trace;
+
+        if (outcome === "error") {
+          trace.verification = {
+            attemptId: "verification_01",
+            status: "error",
+            error: "VerifierError: criterion policy_accuracy was missing.",
+            criteria: null,
+            score: null,
+          };
+          trace.status = "unverified";
+          indexTerminalTrace(next, "unverified");
+          next.lastChange = {
+            kind: "warning",
+            title: "Trace is unverified",
+            detail: "A malformed verifier result is an execution error, not a false criterion. Generation remains intact for later reverification.",
+          };
+          return next;
+        }
+
+        const criteria = outcome === "accept"
+          ? { task_success: true, policy_accuracy: true, conversation_quality: true }
+          : { task_success: true, policy_accuracy: false, conversation_quality: true };
+        const weights = { task_success: 0.5, policy_accuracy: 0.3, conversation_quality: 0.2 };
+        const score = Object.entries(criteria).reduce((sum, [id, passed]) => sum + (passed ? weights[id] : 0), 0);
+        const status = score >= trace.plan.verifier.threshold ? "accepted" : "rejected";
+        trace.verification = {
+          attemptId: "verification_01",
+          status: "complete",
+          criteria,
+          weights,
+          score,
+          threshold: trace.plan.verifier.threshold,
+          accepted: status === "accepted",
+        };
+        trace.status = status;
+        indexTerminalTrace(next, status);
+        next.lastChange = {
+          kind: status === "accepted" ? "ok" : "warning",
+          title: `Trace ${status}`,
+          detail: `Boolean criteria produced a weighted score of ${score.toFixed(1)} against threshold ${trace.plan.verifier.threshold.toFixed(1)}.`,
+        };
+        return next;
+      }
+
+      function failTrace(state) {
+        if (!state.trace || terminalStatuses.has(state.trace.status)) {
+          return illegal(state, "There is no active trace to fail.");
+        }
+        const next = copy(state);
+        next.trace.status = "failed";
+        next.trace.pending = null;
+        addEvent(next.trace, "trace_failed", "A simulated environment error ended this trace; durable partial history remains available.");
+        indexTerminalTrace(next, "failed");
+        next.lastChange = {
+          kind: "warning",
+          title: "Trace failed",
+          detail: "Its accepted conversation and events remain inspectable, and the next seed may still run.",
+        };
+        return next;
+      }
+
+      function startNextSeed(state) {
+        if (state.trace && !terminalStatuses.has(state.trace.status)) {
+          return illegal(state, "Finish or fail the current trace before starting another seed.");
+        }
+        const nextIndex = state.run.seedCursor + 1;
+        if (nextIndex >= state.seedCatalog.length) {
+          return illegal(state, "The configured seed source has no remaining records.");
+        }
+        const next = copy(state);
+        next.run.seedCursor = nextIndex;
+        next.run.status = "running";
+        next.trace = makeTrace(next.seedCatalog[nextIndex], nextIndex + 1);
+        next.lastChange = {
+          kind: "ok",
+          title: `${next.trace.seed.id} compiled`,
+          detail: "A fresh trace, agent state, conversation, and immutable per-seed run plan were created.",
+        };
+        return next;
+      }
+
+      function projectConversation(trace, actor) {
+        if (!trace) return [];
+        return trace.conversation.filter((message) => {
+          if (message.kind === "message") return true;
+          return message.owner === actor;
+        });
+      }
+
+      function toOpenAIMessage(message) {
+        if (message.kind === "tool_call") {
+          return {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: message.toolCallId,
+                type: "function",
+                function: {
+                  name: message.name,
+                  arguments: JSON.stringify(message.arguments || {}),
+                },
+              },
+            ],
+          };
+        }
+        if (message.kind === "tool_result") {
+          return {
+            role: "tool",
+            tool_call_id: message.toolCallId,
+            name: message.name,
+            content: message.content,
+          };
+        }
+        return { role: message.role, content: message.content };
+      }
+
+      function nativeExports(state) {
+        return copy(state.run.traces);
+      }
+
+      function datasetExports(state, includeNonAccepted = false) {
+        return state.run.traces
+          .filter((trace) => includeNonAccepted || trace.status === "accepted")
+          .map((trace) => {
+            const targetAgent = Object.entries(trace.plan.agents).find(([, agent]) => agent.target)[0];
+            return {
+              trace_id: trace.id,
+              seed_id: trace.seed.id,
+              target_agent: targetAgent,
+              messages: projectConversation(trace, targetAgent).map(toOpenAIMessage),
+              metadata: {
+                run_id: trace.runId,
+                task: trace.taskName,
+                status: trace.status,
+                verifier_score: trace.verification ? trace.verification.score : null,
+                verifier_threshold: trace.verification ? trace.verification.threshold || null : null,
+              },
+            };
+          });
+      }
+
+      function transition(state, action) {
+        switch (action.type) {
+          case "RESET": return initialState();
+          case "START_NEXT_SEED": return startNextSeed(state);
+          case "PROPOSE_USER": return propose(state, "user", false);
+          case "PROPOSE_ASSISTANT_TOOL": return propose(state, "assistant", true);
+          case "PROPOSE_ASSISTANT": return propose(state, "assistant", false);
+          case "REVIEW_ACCEPT": return reviewCurrent(state, true);
+          case "REVIEW_REJECT": return reviewCurrent(state, false);
+          case "REVISE": return reviseCurrent(state);
+          case "ACCEPT_EXHAUSTED": return acceptExhausted(state);
+          case "ADVANCE_STEP": return advanceStep(state);
+          case "FINISH_GENERATION": return finishGeneration(state);
+          case "VERIFY_ACCEPT": return verify(state, "accept");
+          case "VERIFY_REJECT": return verify(state, "reject");
+          case "VERIFY_ERROR": return verify(state, "error");
+          case "FAIL_TRACE": return failTrace(state);
+          default: return illegal(state, `Unknown action: ${action.type}`);
+        }
+      }
+
+      return {
+        datasetExports,
+        initialState,
+        nativeExports,
+        transition,
+        projectConversation,
+      };
+    })();
+
+    // Throwaway presentation shell for driving the pure module above.
+    (() => {
+      const scenarios = [
+        {
+          id: "happy",
+          name: "Accepted trace",
+          description: "Review and revise a proposed tool call before it executes, then separately reject and revise the draft produced from its result. Change steps without losing accepted history and finally accept the trace.",
+          watch: "The reviewer produces a weighted score for each subject. Once the call reaches threshold, its call/result immediately enter the assistant's private history while the resulting draft starts a new review.",
+          steps: [
+            ["Start first seed", "START_NEXT_SEED"],
+            ["User produces opening draft", "PROPOSE_USER"],
+            ["User draft scores above threshold", "REVIEW_ACCEPT"],
+            ["Assistant proposes a tool call", "PROPOSE_ASSISTANT_TOOL"],
+            ["Tool call scores below threshold", "REVIEW_REJECT"],
+            ["Assistant revises the tool call", "REVISE"],
+            ["Tool call passes and executes", "REVIEW_ACCEPT"],
+            ["Resulting draft scores below threshold", "REVIEW_REJECT"],
+            ["Assistant revises the draft", "REVISE"],
+            ["Revised draft scores above threshold", "REVIEW_ACCEPT"],
+            ["Advance to resolution", "ADVANCE_STEP"],
+            ["User asks for next step", "PROPOSE_USER"],
+            ["User draft scores above threshold", "REVIEW_ACCEPT"],
+            ["Assistant gives final action", "PROPOSE_ASSISTANT"],
+            ["Assistant draft scores above threshold", "REVIEW_ACCEPT"],
+            ["Finish generation", "FINISH_GENERATION"],
+            ["Verifier returns passing criteria", "VERIFY_ACCEPT"],
+          ],
+        },
+        {
+          id: "exhaustion",
+          name: "Revision cap",
+          description: "Drive an assistant draft through two revisions, reject it at the configured cap, and explicitly commit the final fallback with review_exhausted=true.",
+          watch: "Exhaustion is an opted-in acceptance fallback, not a successful review. The final verifier can still reject the trace.",
+          steps: [
+            ["Start first seed", "START_NEXT_SEED"],
+            ["User produces opening draft", "PROPOSE_USER"],
+            ["User draft passes threshold", "REVIEW_ACCEPT"],
+            ["Assistant proposes a tool call", "PROPOSE_ASSISTANT_TOOL"],
+            ["Reject tool call below threshold", "REVIEW_REJECT"],
+            ["Revise tool call", "REVISE"],
+            ["Pass call and execute tool", "REVIEW_ACCEPT"],
+            ["Reject resulting draft", "REVIEW_REJECT"],
+            ["Produce draft revision one", "REVISE"],
+            ["Reject draft revision one", "REVIEW_REJECT"],
+            ["Produce draft revision two", "REVISE"],
+            ["Reject draft at the cap", "REVIEW_REJECT"],
+            ["Commit marked fallback", "ACCEPT_EXHAUSTED"],
+            ["Finish generation", "FINISH_GENERATION"],
+            ["Verifier rejects trace", "VERIFY_REJECT"],
+          ],
+        },
+        {
+          id: "guardrails",
+          name: "Illegal ordering",
+          description: "Try operations in the wrong order to see which layer protects the model: the initiator, pending-turn boundary, task-step boundary, and final-verifier boundary.",
+          watch: "Rejected actions appear in the amber state notice and diagnostics, but do not mutate the trace.",
+          steps: [
+            ["Try assistant before a trace exists", "PROPOSE_ASSISTANT"],
+            ["Start first seed", "START_NEXT_SEED"],
+            ["Try assistant before initiator", "PROPOSE_ASSISTANT"],
+            ["User produces a draft", "PROPOSE_USER"],
+            ["Try advancing with draft pending", "ADVANCE_STEP"],
+            ["Try final verifier too early", "VERIFY_ACCEPT"],
+            ["Pass pending user draft", "REVIEW_ACCEPT"],
+            ["Advance safely", "ADVANCE_STEP"],
+          ],
+        },
+        {
+          id: "isolation",
+          name: "Two seeds",
+          description: "Complete a short trace for the first seed, then start the second seed and confirm that its plan is rendered from new variables and its conversation begins empty.",
+          watch: "The run index retains trace one, but trace two receives fresh agents, events, counters, and accepted history.",
+          steps: [
+            ["Start first seed", "START_NEXT_SEED"],
+            ["User produces a draft", "PROPOSE_USER"],
+            ["Accept user draft", "REVIEW_ACCEPT"],
+            ["Finish first generation", "FINISH_GENERATION"],
+            ["Accept first trace", "VERIFY_ACCEPT"],
+            ["Start second seed", "START_NEXT_SEED"],
+            ["User produces fresh draft", "PROPOSE_USER"],
+            ["Accept fresh draft", "REVIEW_ACCEPT"],
+          ],
+        },
+      ];
+
+      let state = TraceStateModel.initialState();
+      let activeScenario = scenarios[0];
+      let scenarioProgress = 0;
+      let autoPlayTimer = null;
+      let autoPlayRunning = false;
+      let autoPlayMessage = "Stopped";
+      let selectedExportTraceId = null;
+      let includeNonAccepted = false;
+
+      const byId = (id) => document.getElementById(id);
+      const escapeHtml = (value) => String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+
+      function empty(text) {
+        return `<div class="empty">${escapeHtml(text)}</div>`;
+      }
+
+      function statusPill(status) {
+        const good = ["accepted", "complete", "generating", "generated", "running"].includes(status);
+        const bad = ["rejected", "failed", "invalid", "error"].includes(status);
+        return `<span class="pill ${good ? "good" : bad ? "bad" : "warn"}">${escapeHtml(status)}</span>`;
+      }
+
+      function renderSummary() {
+        const trace = state.trace;
+        const lastReview = trace && trace.pending && trace.pending.reviewHistory.length
+          ? trace.pending.reviewHistory[trace.pending.reviewHistory.length - 1]
+          : null;
+        const values = [
+          ["Run", state.run.id],
+          ["Run status", state.run.status],
+          ["Seed progress", `${Math.max(state.run.seedCursor + 1, 0)} / ${state.seedCatalog.length}`],
+          ["Current trace", trace ? trace.id : "none"],
+          ["Trace status", trace ? trace.status : "not started"],
+          ["Active step", trace ? trace.steps[trace.stepIndex].id : "none"],
+          ["Next actor", trace && trace.status === "generating" ? trace.nextActor : "—"],
+          ["Pending review", trace && trace.pending ? `${trace.pending.subject.kind} · ${trace.pending.subject.id}` : "none"],
+          ["Last review", lastReview ? `${lastReview.score.toFixed(2)} / ${lastReview.threshold.toFixed(2)}` : "none"],
+          ["Accepted turns", trace ? trace.turns.length : 0],
+          ["Accepted messages", trace ? trace.conversation.length : 0],
+          ["Completed traces", state.run.traceIndex.length],
+          ["Archived snapshots", state.run.traces.length],
+          ["Rejected actions", state.diagnostics.length],
+        ];
+        byId("summary").innerHTML = values.map(([label, value]) => (
+          `<div class="summary-item"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`
+        )).join("");
+
+        const change = byId("last-change");
+        change.className = `change ${state.lastChange.kind === "warning" ? "warning" : ""}`;
+        change.innerHTML = `<strong>${escapeHtml(state.lastChange.title)}</strong><span>${escapeHtml(state.lastChange.detail)}</span>`;
+      }
+
+      function renderPlan() {
+        const trace = state.trace;
+        const activeRubricKey = trace && trace.pending
+          ? trace.pending.subject.kind === "tool_call"
+            ? "tool_call"
+            : trace.pending.actor === "user" ? "user_message" : "assistant_message"
+          : null;
+        const activeReviewCriteria = activeRubricKey ? trace.plan.reviewer.criteria[activeRubricKey] : [];
+        const packageHtml = `
+          <div class="subpanel">
+            <h3>TaskPackage</h3>
+            <dl class="definition-list">
+              <dt>Task</dt><dd>${escapeHtml(state.package.name)}</dd>
+              <dt>Seed source</dt><dd>${escapeHtml(state.package.seedSource)}</dd>
+              <dt>Environment</dt><dd>${escapeHtml(state.package.environment)}</dd>
+              <dt>Initiator</dt><dd>${escapeHtml(state.package.initiator)}</dd>
+              <dt>Target</dt><dd>${escapeHtml(state.package.target)}</dd>
+              <dt>Steps</dt><dd>${state.package.steps.map(escapeHtml).join(" → ")}</dd>
+            </dl>
+          </div>`;
+
+        const seedHtml = trace ? `
+          <div class="subpanel">
+            <h3>Seed</h3>
+            <dl class="definition-list">
+              <dt>ID</dt><dd>${escapeHtml(trace.seed.id)}</dd>
+              <dt>Origin</dt><dd>${escapeHtml(trace.seed.origin)}</dd>
+              <dt>Goal</dt><dd>${escapeHtml(trace.plan.variables.user_goal)}</dd>
+              <dt>Account tier</dt><dd>${escapeHtml(trace.plan.variables.account_tier)}</dd>
+              <dt>Expected result</dt><dd>${escapeHtml(trace.plan.variables.expected_resolution)}</dd>
+            </dl>
+          </div>` : `<div class="subpanel"><h3>Seed</h3>${empty("Start a seed to load and validate one source record.")}</div>`;
+
+        const planHtml = trace ? `
+          <div class="subpanel">
+            <h3>RunPlan · ${escapeHtml(trace.steps[trace.stepIndex].id)}</h3>
+            <dl class="definition-list">
+              <dt>Digest</dt><dd>${escapeHtml(trace.plan.digest)}</dd>
+              <dt>User base</dt><dd>${escapeHtml(trace.plan.agents.user.baseInstruction)}</dd>
+              <dt>User step</dt><dd>${escapeHtml(trace.steps[trace.stepIndex].user)}</dd>
+              <dt>Assistant base</dt><dd>${escapeHtml(trace.plan.agents.assistant.baseInstruction)}</dd>
+              <dt>Assistant step</dt><dd>${escapeHtml(trace.steps[trace.stepIndex].assistant)}</dd>
+              <dt>Reviewer threshold</dt><dd>${trace.plan.reviewer.threshold.toFixed(2)}</dd>
+              <dt>Verifier threshold</dt><dd>${trace.plan.verifier.threshold.toFixed(2)}</dd>
+            </dl>
+            <div class="criteria">
+              ${activeReviewCriteria.length
+                ? activeReviewCriteria.map((criterion) => `<span class="pill">${escapeHtml(criterion.id)} · ${criterion.weight}</span>`).join("")
+                : trace.steps[trace.stepIndex].rubrics.map((criterion) => `<span class="pill">${escapeHtml(criterion)}</span>`).join("")}
+            </div>
+          </div>` : `<div class="subpanel"><h3>RunPlan</h3>${empty("The compiler creates one rendered immutable plan per seed.")}</div>`;
+
+        byId("plan-panels").innerHTML = packageHtml + seedHtml + planHtml;
+      }
+
+      function messageHtml(message) {
+        const toolClass = message.kind !== "message" ? "tool" : "accepted";
+        return `
+          <div class="item ${toolClass}">
+            <div class="item-meta">
+              <span>${escapeHtml(message.id)}</span>
+              <span>${escapeHtml(message.stepId)}</span>
+              <span>${escapeHtml(message.kind)}</span>
+              <span>${escapeHtml(message.actor)}</span>
+            </div>
+            <div>${escapeHtml(message.content)}</div>
+          </div>`;
+      }
+
+      function renderPendingAndConversation() {
+        const trace = state.trace;
+        if (!trace || !trace.pending) {
+          byId("pending-turn").innerHTML = empty("No pending turn. Tool calls and drafts appear here before acceptance.");
+        } else {
+          const pending = trace.pending;
+          const tools = pending.toolBundle.map((tool) => `
+            <div class="item tool">
+              <div class="item-meta"><span>accepted</span><span>${escapeHtml(tool.kind)}</span><span>private to ${escapeHtml(tool.owner)}</span><span>already in history</span></div>
+              <div>${escapeHtml(tool.content)}</div>
+            </div>`).join("");
+          const attempts = pending.reviewHistory.map((attempt) => `
+            <div class="item ${attempt.passed ? "accepted" : "rejected"}">
+              <div class="item-meta">
+                <span>review ${attempt.attempt}</span>
+                <span>${escapeHtml(attempt.subjectKind)}</span>
+                <span>${escapeHtml(attempt.subjectId)}</span>
+                <span>score ${attempt.score.toFixed(2)} / ${attempt.threshold.toFixed(2)}</span>
+              </div>
+              <div>${escapeHtml(attempt.feedback)}</div>
+              <div class="criteria">${Object.entries(attempt.criteria).map(([id, passed]) => `<span class="pill ${passed ? "good" : "bad"}">${escapeHtml(id)} · ${attempt.weights[id]} · ${passed}</span>`).join("")}</div>
+            </div>`).join("");
+          byId("pending-turn").innerHTML = tools + `
+            <div class="item ${pending.subject.reviewState === "rejected" ? "rejected" : ""}">
+              <div class="item-meta">
+                <span>${escapeHtml(pending.subject.id)}</span>
+                <span>${escapeHtml(pending.subject.kind)}</span>
+                <span>${escapeHtml(pending.actor)}</span>
+                <span>revision ${pending.subject.revisionCount}</span>
+                <span>${escapeHtml(pending.subject.reviewState)}</span>
+              </div>
+              <div>${escapeHtml(pending.subject.content)}</div>
+            </div>` + attempts;
+        }
+
+        byId("conversation").innerHTML = trace && trace.conversation.length
+          ? trace.conversation.map(messageHtml).join("")
+          : empty("Accepted history is empty. Rejected and pending drafts never appear here.");
+      }
+
+      function renderProjections() {
+        const trace = state.trace;
+        for (const actor of ["user", "assistant"]) {
+          const projected = TraceStateModel.projectConversation(trace, actor);
+          const toolCount = projected.filter((message) => message.kind !== "message").length;
+          byId(`${actor}-view`).innerHTML = projected.length
+            ? projected.map(messageHtml).join("") + `<div class="privacy-note">${toolCount} private tool message(s) visible to ${actor}.</div>`
+            : empty(`No accepted messages are currently visible to ${actor}.`);
+        }
+      }
+
+      function renderRecords() {
+        const trace = state.trace;
+        byId("events").innerHTML = trace && trace.events.length
+          ? trace.events.slice().reverse().map((event) => `
+              <div class="item ${event.type.endsWith("_review_rejected") ? "rejected" : event.type.endsWith("_review_passed") ? "accepted" : ""}">
+                <div class="item-meta"><span>${escapeHtml(event.id)}</span><span>${escapeHtml(event.stepId)}</span><span>${escapeHtml(event.type)}</span></div>
+                <div>${escapeHtml(event.detail)}</div>
+                ${typeof event.score === "number" ? `<div class="criteria"><span class="pill ${event.score >= event.threshold ? "good" : "bad"}">score ${event.score.toFixed(2)} / ${event.threshold.toFixed(2)}</span></div>` : ""}
+              </div>`).join("")
+          : empty("No execution events yet.");
+
+        if (!trace || !trace.verification) {
+          byId("verification").innerHTML = empty("Verification runs once the generation trace has been sealed.");
+        } else if (trace.verification.status === "error") {
+          byId("verification").innerHTML = `
+            <div class="item rejected">
+              <div class="item-meta"><span>${escapeHtml(trace.verification.attemptId)}</span><span>verifier error</span></div>
+              <div>${escapeHtml(trace.verification.error)}</div>
+            </div>`;
+        } else {
+          const rows = Object.entries(trace.verification.criteria).map(([id, passed]) => `
+            <div class="item ${passed ? "accepted" : "rejected"}">
+              <div class="item-meta"><span>${escapeHtml(id)}</span><span>weight ${trace.verification.weights[id]}</span></div>
+              <div>${passed ? "true" : "false"}</div>
+            </div>`).join("");
+          byId("verification").innerHTML = rows + `
+            <div class="item">
+              <div class="item-meta"><span>derived result</span></div>
+              <div>Score ${trace.verification.score.toFixed(1)} / threshold ${trace.verification.threshold.toFixed(1)} · ${statusPill(trace.status)}</div>
+            </div>`;
+        }
+
+        byId("trace-index").innerHTML = state.run.traceIndex.length
+          ? state.run.traceIndex.map((entry) => `
+              <div class="item">
+                <div class="item-meta"><span>${escapeHtml(entry.traceId)}</span><span>${escapeHtml(entry.seedId)}</span></div>
+                <div>${statusPill(entry.status)} · ${entry.turns} turns · ${entry.messages} messages${entry.score === null ? "" : ` · score ${entry.score.toFixed(1)}`}</div>
+                <div class="privacy-note">${escapeHtml(entry.nativeRef)}</div>
+              </div>`).join("")
+          : empty("Completed traces will be indexed here without merging their conversations.");
+      }
+
+      function renderExports() {
+        const nativeTraces = TraceStateModel.nativeExports(state);
+        const select = byId("export-trace-select");
+        const nativeButton = byId("download-native");
+        const datasetButton = byId("download-dataset");
+
+        if (!nativeTraces.length) {
+          selectedExportTraceId = null;
+          select.disabled = true;
+          select.innerHTML = "<option>No completed traces</option>";
+          byId("native-export-preview").textContent = "Complete a trace to create its immutable export snapshot.";
+          nativeButton.disabled = true;
+        } else {
+          if (!nativeTraces.some((trace) => trace.id === selectedExportTraceId)) {
+            selectedExportTraceId = nativeTraces[nativeTraces.length - 1].id;
+          }
+          select.disabled = false;
+          select.innerHTML = nativeTraces.map((trace) => (
+            `<option value="${escapeHtml(trace.id)}" ${trace.id === selectedExportTraceId ? "selected" : ""}>${escapeHtml(trace.id)} · ${escapeHtml(trace.status)}</option>`
+          )).join("");
+          select.value = selectedExportTraceId;
+          const selected = nativeTraces.find((trace) => trace.id === selectedExportTraceId);
+          byId("native-export-preview").textContent = JSON.stringify(selected, null, 2);
+          nativeButton.disabled = false;
+        }
+
+        const dataset = TraceStateModel.datasetExports(state, includeNonAccepted);
+        byId("include-nonaccepted").checked = includeNonAccepted;
+        byId("dataset-export-summary").textContent = `${includeNonAccepted ? "All terminal traces" : "Accepted traces only"} · ${dataset.length} record${dataset.length === 1 ? "" : "s"}`;
+        byId("dataset-export-preview").textContent = dataset.length
+          ? dataset.map((record) => JSON.stringify(record)).join("\n")
+          : includeNonAccepted
+            ? "No terminal traces are ready for dataset export."
+            : "No accepted traces are ready for dataset export.";
+        datasetButton.disabled = dataset.length === 0;
+      }
+
+      function renderScenarioTabs() {
+        byId("scenario-tabs").innerHTML = scenarios.map((scenario) => `
+          <button
+            type="button"
+            class="tab"
+            role="tab"
+            aria-selected="${scenario.id === activeScenario.id}"
+            data-scenario="${escapeHtml(scenario.id)}"
+          >${escapeHtml(scenario.name)}</button>`).join("");
+
+        byId("scenario-panel").innerHTML = `
+          <div class="walkthrough-copy">
+            <p>${escapeHtml(activeScenario.description)}</p>
+            <p><strong>Watch for:</strong> ${escapeHtml(activeScenario.watch)}</p>
+          </div>
+          <div class="walkthrough-steps">
+            ${activeScenario.steps.map(([label], index) => {
+              const done = index < scenarioProgress;
+              const current = index === scenarioProgress;
+              return `
+                <button
+                  type="button"
+                  class="guide-step ${done ? "done" : ""}"
+                  data-guide-step="${index}"
+                  ${current ? "" : "disabled"}
+                >
+                  ${done ? "✓" : index + 1}. ${escapeHtml(label)}
+                  <small>${done ? "Completed" : current ? "Press this next" : "Waiting"}</small>
+                </button>`;
+            }).join("")}
+          </div>`;
+      }
+
+      function renderAutoPlayControl() {
+        const button = byId("autoplay-toggle");
+        button.textContent = autoPlayRunning ? "Pause auto-play" : "Auto-play walkthrough";
+        button.setAttribute("aria-pressed", String(autoPlayRunning));
+        byId("autoplay-status").textContent = autoPlayMessage;
+      }
+
+      function renderAll() {
+        renderSummary();
+        renderPlan();
+        renderPendingAndConversation();
+        renderProjections();
+        renderRecords();
+        renderExports();
+        renderScenarioTabs();
+        renderAutoPlayControl();
+      }
+
+      function dispatch(type) {
+        state = TraceStateModel.transition(state, { type });
+        renderAll();
+      }
+
+      function downloadText(filename, text) {
+        const blob = new Blob([text], { type: "application/x-ndjson;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = filename;
+        anchor.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      }
+
+      function stopAutoPlay(message = "Paused") {
+        if (autoPlayTimer !== null) window.clearTimeout(autoPlayTimer);
+        autoPlayTimer = null;
+        autoPlayRunning = false;
+        autoPlayMessage = message;
+        renderAutoPlayControl();
+      }
+
+      function autoPlayNextStep() {
+        if (!autoPlayRunning) return;
+        if (scenarioProgress >= activeScenario.steps.length) {
+          stopAutoPlay("Walkthrough complete");
+          return;
+        }
+        const [label, action] = activeScenario.steps[scenarioProgress];
+        state = TraceStateModel.transition(state, { type: action });
+        scenarioProgress += 1;
+        autoPlayMessage = `Step ${scenarioProgress} of ${activeScenario.steps.length}: ${label}`;
+        renderAll();
+        if (scenarioProgress >= activeScenario.steps.length) {
+          stopAutoPlay("Walkthrough complete");
+          return;
+        }
+        autoPlayTimer = window.setTimeout(autoPlayNextStep, 700);
+      }
+
+      function startAutoPlay() {
+        if (scenarioProgress >= activeScenario.steps.length) {
+          scenarioProgress = 0;
+          state = TraceStateModel.initialState();
+        }
+        autoPlayRunning = true;
+        autoPlayMessage = `Running ${activeScenario.name}`;
+        renderAll();
+        autoPlayTimer = window.setTimeout(autoPlayNextStep, 350);
+      }
+
+      document.addEventListener("click", (event) => {
+        if (event.target.closest("#autoplay-toggle")) {
+          if (autoPlayRunning) stopAutoPlay("Paused by user");
+          else startAutoPlay();
+          return;
+        }
+
+        if (event.target.closest("#download-native")) {
+          const traces = TraceStateModel.nativeExports(state);
+          if (traces.length) {
+            downloadText(`${state.run.id}-native-traces.jsonl`, traces.map((trace) => JSON.stringify(trace)).join("\n"));
+          }
+          return;
+        }
+
+        if (event.target.closest("#download-dataset")) {
+          const records = TraceStateModel.datasetExports(state, includeNonAccepted);
+          if (records.length) {
+            downloadText(`${state.run.id}-dataset.jsonl`, records.map((record) => JSON.stringify(record)).join("\n"));
+          }
+          return;
+        }
+
+        const actionButton = event.target.closest("[data-action]");
+        if (actionButton) {
+          if (autoPlayRunning) stopAutoPlay("Paused by manual action");
+          if (actionButton.dataset.action === "RESET") {
+            selectedExportTraceId = null;
+            includeNonAccepted = false;
+          }
+          dispatch(actionButton.dataset.action);
+          return;
+        }
+
+        const scenarioButton = event.target.closest("[data-scenario]");
+        if (scenarioButton) {
+          if (autoPlayRunning) stopAutoPlay("Stopped after walkthrough change");
+          activeScenario = scenarios.find((scenario) => scenario.id === scenarioButton.dataset.scenario);
+          scenarioProgress = 0;
+          selectedExportTraceId = null;
+          includeNonAccepted = false;
+          autoPlayMessage = "Stopped";
+          state = TraceStateModel.initialState();
+          state.lastChange = {
+            kind: "ok",
+            title: `${activeScenario.name} walkthrough ready`,
+            detail: "The state was reset. Press the first highlighted walkthrough step.",
+          };
+          renderAll();
+          return;
+        }
+
+        const guideButton = event.target.closest("[data-guide-step]");
+        if (guideButton) {
+          if (autoPlayRunning) stopAutoPlay("Paused by manual step");
+          const index = Number(guideButton.dataset.guideStep);
+          if (index !== scenarioProgress) return;
+          dispatch(activeScenario.steps[index][1]);
+          scenarioProgress += 1;
+          renderAll();
+        }
+      });
+
+      document.addEventListener("change", (event) => {
+        if (event.target.id === "export-trace-select") {
+          selectedExportTraceId = event.target.value;
+          renderExports();
+        }
+        if (event.target.id === "include-nonaccepted") {
+          includeNonAccepted = event.target.checked;
+          renderExports();
+        }
+      });
+
+      renderAll();
+    })();
+  </script>
+</body>
+</html>
