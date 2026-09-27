@@ -17,4 +17,13 @@
   native export need no live Runner. See [generation usage](../../README.md#generate-a-trace)
   and the [scripted example](../../examples/scripted-single/task.toml).
 
-Tickets 04–19 remain unimplemented.
+- **04 — resolved:** [Generate and export a two-agent dialogue](issues/04-generate-export-two-agent-dialogue.md#answer).
+  Either generic participant may initiate or be the explicit target. Dialogue
+  relays accepted references, retains full shared history, and distinguishes
+  accepted completion from round/timeout truncation. Target-oriented OpenAI
+  JSONL export and the thin export CLI read complete persisted snapshots and
+  require explicit selection of non-accepted statuses. See
+  [dialogue generation and export](../../README.md#generate-and-export-a-dialogue)
+  and the [scripted dialogue package](../../examples/scripted-dialogue/task.toml).
+
+Tickets 05–19 remain unimplemented.

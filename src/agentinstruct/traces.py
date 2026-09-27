@@ -32,6 +32,8 @@ class Message:
     name: str | None = None
     id: str = ""
     actor_id: str | None = None
+    # A single-step completion proposal, effective only after Message acceptance.
+    control: Literal["complete"] | None = None
 
 
 @dataclass(frozen=True)

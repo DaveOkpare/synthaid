@@ -1,0 +1,41 @@
+schema_version = "1"
+
+[task]
+id = "scripted-dialogue"
+version = "1"
+
+[seed]
+path = "seed.json"
+
+[variables]
+topic = "topic"
+
+# Recorded defaults; scripted Agents do not call the Provider.
+[providers.default]
+type = "openai"
+
+[model]
+provider = "default"
+name = "unused-model"
+
+[runtime]
+type = "local"
+
+[environment]
+type = "dialogue"
+initiator = "user"
+max_rounds = 3
+timeout_seconds = 30.0
+
+[agents.user]
+target = false
+type = "scripted"
+responses = ["What is gravity?", "Thanks, that helps."]
+
+[agents.assistant]
+target = true
+type = "scripted"
+responses = [
+    "Gravity is the attraction between objects with mass.",
+    { content = "You are welcome.", control = "complete" },
+]

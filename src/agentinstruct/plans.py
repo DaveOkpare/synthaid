@@ -5,6 +5,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from types import MappingProxyType
+from typing import Literal
 
 type JsonValue = (
     bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
@@ -94,19 +95,28 @@ class ModelPlan:
 
 
 @dataclass(frozen=True)
+class ScriptedResponse:
+    content: str
+    control: Literal["complete"] | None = None
+
+
+@dataclass(frozen=True)
 class AgentPlan:
     id: str
     target: bool
     model: ModelPlan
     base_instruction: str
     type: str = "model"
-    responses: tuple[str, ...] = ()
+    responses: tuple[str | ScriptedResponse, ...] = ()
 
 
 @dataclass(frozen=True)
 class EnvironmentPlan:
     type: str
     max_turns: int
+    initiator: str = "user"
+    max_rounds: int = 10
+    timeout_seconds: float | None = None
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,8 @@ import sys
 from collections.abc import Sequence
 from importlib.metadata import version
 
+from agentinstruct.traces import STATUSES
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse command-line arguments and display package information."""
@@ -30,6 +32,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     run.add_argument("--seed", help="Override the single JSON Seed path")
     run.add_argument("--output", default="runs", help="Run output directory")
     run.add_argument("--json", action="store_true", dest="as_json")
+    export = commands.add_parser("export", help="Export persisted Traces as JSONL")
+    export.add_argument("traces", nargs="+", help="Trace directories or snapshot files")
+    export.add_argument("--format", choices=["native", "openai"], default="openai")
+    export.add_argument("--output", required=True, help="Destination JSONL file")
+    export.add_argument(
+        "--status",
+        choices=STATUSES,
+        action="append",
+        help="Include status (repeatable)",
+    )
+    export.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
     if args.command == "validate":
         from agentinstruct.task_package import TaskPackage, TaskValidationError
@@ -76,5 +89,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             counts = ", ".join(f"{key}={value}" for key, value in result.counts.items())
             print(f"Run {result.run_id}: {counts}\n{result.path}")
         return 1 if result.counts["failed"] or result.counts["invalid"] else 0
+    if args.command == "export":
+        from agentinstruct import export_native, export_openai
+
+        exporter = export_native if args.format == "native" else export_openai
+        try:
+            count = exporter(
+                args.traces, args.output, statuses=set(args.status or ["accepted"])
+            )
+        except (OSError, ValueError) as exc:
+            if args.as_json:
+                print(json.dumps({"status": "error", "error": str(exc)}))
+            else:
+                print(f"Export failed: {exc}", file=sys.stderr)
+            return 1
+        if args.as_json:
+            print(
+                json.dumps({"count": count, "format": args.format, "path": args.output})
+            )
+        else:
+            print(f"Exported {count} Traces to {args.output}")
+        return 0
     parser.print_help()
     return 0

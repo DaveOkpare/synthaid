@@ -6,7 +6,12 @@ from dataclasses import dataclass, replace
 from typing import Protocol
 from uuid import uuid4
 
-from agentinstruct.plans import AgentPlan, FrozenJsonValue, TaskIdentity
+from agentinstruct.plans import (
+    AgentPlan,
+    EnvironmentPlan,
+    FrozenJsonValue,
+    TaskIdentity,
+)
 from agentinstruct.store import TraceRecorder, timestamp
 from agentinstruct.traces import (
     Event,
@@ -37,10 +42,14 @@ class ScriptedAgent:
 
     async def generate(self, observation: Observation) -> Message:
         try:
-            content = next(self._responses)
+            response = next(self._responses)
         except StopIteration as exc:
             raise ValueError("Scripted Agent has no remaining responses") from exc
-        return Message(role="assistant", content=content)
+        if isinstance(response, str):
+            return Message(role="assistant", content=response)
+        return Message(
+            role="assistant", content=response.content, control=response.control
+        )
 
 
 def create_agent(plan: AgentPlan) -> Agent:
@@ -58,6 +67,8 @@ class TaskContext:
     seed_id: str
     variables: Mapping[str, FrozenJsonValue]
     max_turns: int
+    max_rounds: int = 10
+    timeout_seconds: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "variables", immutable_data(self.variables))
@@ -102,6 +113,10 @@ class Interaction:
                 or not isinstance(proposal.content, str)
             ):
                 raise ValueError("Agent must return conversational Messages")
+            if proposal.control not in {None, "complete"}:
+                raise ValueError("Unknown Message control proposal")
+            if proposal.control == "complete" and not self._plan.target:
+                raise ValueError("Only the Target Agent may complete the Task")
             message = replace(proposal, id=uuid4().hex, actor_id=self._plan.id)
             self._recorder.event(
                 Event(
@@ -132,6 +147,8 @@ class Interaction:
                 )
             )
             last_reply = message
+            if message.control == "complete":
+                return TurnResult(message, terminated=True)
         assert last_reply is not None
         return TurnResult(last_reply)
 
@@ -182,3 +199,38 @@ class SingleAgentEnvironment:
         async with agents[next(iter(agents))].interaction(task) as interaction:
             await interaction.turn()
         return GenerationOutcome("terminated", "completed")
+
+
+class DialogueEnvironment:
+    def __init__(self, initiator: str = "user") -> None:
+        if initiator not in {"user", "assistant"}:
+            raise ValueError("dialogue initiator must be user or assistant")
+        self._initiator = initiator
+
+    async def setup(self, agents: Agents) -> None:
+        if set(agents) != {"user", "assistant"}:
+            raise ValueError("dialogue Environment requires user and assistant Agents")
+
+    async def run(self, task: TaskContext, agents: Agents) -> GenerationOutcome:
+        async with (
+            agents["user"].interaction(task) as user,
+            agents["assistant"].interaction(task) as assistant,
+        ):
+            interactions = {"user": user, "assistant": assistant}
+            actor = self._initiator
+            incoming = None
+            for _ in range(task.max_rounds * 2):
+                result = await interactions[actor].turn(incoming)
+                if result.terminated:
+                    return GenerationOutcome("terminated", "completed")
+                incoming = result.last_reply
+                actor = "assistant" if actor == "user" else "user"
+        return GenerationOutcome("truncated", "max_rounds")
+
+
+def create_environment(plan: EnvironmentPlan) -> Environment:
+    if plan.type == "dialogue":
+        return DialogueEnvironment(plan.initiator)
+    if plan.type == "single":
+        return SingleAgentEnvironment()
+    raise ValueError(f"Unknown Environment: {plan.type}")

@@ -15,9 +15,9 @@ from agentinstruct.execution import (
     Agents,
     Environment,
     FinalizingEnvironment,
-    SingleAgentEnvironment,
     TaskContext,
     create_agent,
+    create_environment,
 )
 from agentinstruct.plans import AgentPlan, EnvironmentPlan
 from agentinstruct.store import LocalRunStore, TraceRecorder, timestamp
@@ -69,7 +69,12 @@ class Runner:
         status: TraceStatus = "unverified"
         outcome = GenerationOutcome("terminated", "completed")
         context = TaskContext(
-            plan.task, plan.seed.id, plan.variables, plan.environment.max_turns
+            plan.task,
+            plan.seed.id,
+            plan.variables,
+            plan.environment.max_turns,
+            plan.environment.max_rounds,
+            plan.environment.timeout_seconds,
         )
 
         def record(kind: str, **data: str) -> None:
@@ -95,6 +100,7 @@ class Runner:
         record("trace_started")
         environment: Environment | None = None
         stage = "component_construction"
+        deadline = asyncio.timeout(plan.environment.timeout_seconds)
         try:
             handles: dict[str, AgentHandle] = {}
             for agent_id, agent_plan in plan.agents.items():
@@ -105,31 +111,46 @@ class Runner:
             environment = (
                 self._environment_factory(plan.environment)
                 if self._environment_factory is not None
-                else SingleAgentEnvironment()
+                else create_environment(plan.environment)
             )
             components.append(component_provenance("environment", environment))
-            stage = "environment_setup"
-            record(stage)
-            await environment.setup(agents)
-            stage = "environment_run"
-            record(stage)
-            outcome = await environment.run(context, agents) or outcome
+            async with deadline:
+                stage = "environment_setup"
+                record(stage)
+                await environment.setup(agents)
+                stage = "environment_run"
+                record(stage)
+                outcome = await environment.run(context, agents) or outcome
             if outcome.state == "failed":
                 status = "failed"
         except Exception as exc:
-            status = "failed"
-            outcome = GenerationOutcome("failed", stage)
+            if isinstance(exc, TimeoutError) and deadline.expired():
+                outcome = GenerationOutcome("truncated", "timeout")
+            else:
+                status = "failed"
+                outcome = GenerationOutcome("failed", stage)
             record("error", stage=stage, exception=type(exc).__name__, message=str(exc))
         finally:
             if environment is not None and hasattr(environment, "finalize"):
+                finalization_deadline = asyncio.timeout(
+                    plan.environment.timeout_seconds
+                )
                 try:
                     record("environment_finalize")
-                    await cast(FinalizingEnvironment, environment).finalize(
-                        context, snapshot()
-                    )
+                    async with finalization_deadline:
+                        await cast(FinalizingEnvironment, environment).finalize(
+                            context, snapshot()
+                        )
                 except Exception as exc:
-                    status = "failed"
-                    outcome = GenerationOutcome("failed", "environment_finalize")
+                    if (
+                        isinstance(exc, TimeoutError)
+                        and finalization_deadline.expired()
+                    ):
+                        if outcome.state != "failed":
+                            outcome = GenerationOutcome("truncated", "timeout")
+                    else:
+                        status = "failed"
+                        outcome = GenerationOutcome("failed", "environment_finalize")
                     record(
                         "error",
                         stage="environment_finalize",

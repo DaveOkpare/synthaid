@@ -177,3 +177,37 @@ def test_run_rejects_invalid_input_before_creating_output(tmp_path: Path) -> Non
     assert result.returncode == 2
     assert json.loads(result.stdout)["status"] == "error"
     assert not (tmp_path / "runs").exists()
+
+
+@pytest.mark.parametrize("export_format", ["native", "openai"])
+def test_export_forwards_format_and_explicit_status_selection(
+    tmp_path: Path, export_format: str
+) -> None:
+    result = run_command(
+        ["run", str(EXAMPLE.parent / "scripted-single"), "--json"], tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    trace = json.loads(result.stdout)["traces"][0]["path"]
+    args = [
+        "export",
+        trace,
+        "--format",
+        export_format,
+        "--output",
+        "dataset.jsonl",
+        "--json",
+    ]
+
+    excluded = run_command(args, tmp_path)
+    assert excluded.returncode == 0, excluded.stderr
+    assert json.loads(excluded.stdout)["count"] == 0
+    assert (tmp_path / "dataset.jsonl").read_text() == ""
+
+    included = run_command([*args, "--status", "unverified"], tmp_path)
+    assert included.returncode == 0, included.stderr
+    assert json.loads(included.stdout)["count"] == 1
+    row = json.loads((tmp_path / "dataset.jsonl").read_text())
+    if export_format == "native":
+        assert row["status"] == "unverified"
+    else:
+        assert row == {"messages": [{"role": "assistant", "content": "Hello, Ada."}]}

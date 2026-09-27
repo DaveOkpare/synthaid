@@ -1,7 +1,7 @@
 """Generate verified traces from agent interactions."""
 
 from agentinstruct.execution import Agent, Agents, Environment, Observation, TaskContext
-from agentinstruct.export import export_native
+from agentinstruct.export import export_native, export_openai
 from agentinstruct.plans import RunPlan
 from agentinstruct.runner import Runner, generate, generate_sync
 from agentinstruct.store import load_trace
@@ -22,6 +22,7 @@ __all__ = [
     "TaskValidationError",
     "TraceSnapshot",
     "export_native",
+    "export_openai",
     "generate",
     "generate_sync",
     "load_trace",

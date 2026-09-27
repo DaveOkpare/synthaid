@@ -2,8 +2,9 @@
 
 A Python framework for generating verified traces from agent interactions.
 
-Task Package validation, compilation, and deterministic single-Agent generation
-are available through the typed library and CLI. Further capabilities follow the
+Task Package validation, compilation, deterministic single-Agent and dialogue
+generation, and native/OpenAI JSONL export are available through the typed library
+and CLI. Further capabilities follow the
 [V1 specification](.scratch/v1-agent-trace-generation/spec.md).
 
 ## Generate a Trace
@@ -60,11 +61,59 @@ immutable snapshot; native JSONL export reads these persisted snapshots and
 needs no live Runner or original package.
 
 Verification is not implemented yet, so successful generation is **unverified**
-with a separate `terminated` generation outcome. Native export requires explicit
-selection of `unverified` or other non-accepted statuses; its default selects
-only accepted Traces. Live model adapters, dialogue, tools, and review arrive in
-later tickets. Current generation handles one JSON-object Seed and one
-single-Agent interaction.
+with a separate `terminated` generation outcome. Export requires explicit selection
+of `unverified` or other non-accepted statuses; its default selects only accepted
+Traces. Live model adapters, tools, and review arrive in later tickets. Current
+generation handles one JSON-object Seed per Run.
+
+## Generate and export a dialogue
+
+The [scripted dialogue](examples/scripted-dialogue/task.toml) runs without network
+access or credentials:
+
+```sh
+uv run agentinstruct run examples/scripted-dialogue --output runs --json
+```
+
+Set `[environment]` to `type = "dialogue"` and declare exactly the `user` and
+`assistant` Agents, each with an explicit `target` Boolean. Exactly one must be
+the Target Agent; either participant can be the target. `initiator` selects the
+opening participant (default `user`), after which the Environment alternates
+Interactions. Both participants observe the full accepted shared Conversation
+in occurrence order. Relaying a reply references its existing Message Commit.
+
+`max_rounds` defaults to 10 and bounds pairs of participant turns: at most twice
+that many Interactions, regardless of initiator or Messages per Action. Reaching
+the cap produces `truncated/max_rounds`. An optional positive `timeout_seconds`
+bounds setup and generation together, and grants finalization its own equal
+timeout. A framework deadline produces `truncated/timeout`; accepted partial
+history stays in the Trace. Agent or Environment exceptions produce `failed`.
+
+For the current single-step dialogue, the target can return
+`Message(role="assistant", content="Done.", control="complete")`. The completion
+proposal takes effect only after that Message is accepted and persisted, producing
+`terminated/completed`, even on the last allowed turn. A scripted target may use
+`{ content = "Done.", control = "complete" }` in its `responses` array. Plain text
+and script exhaustion never signal completion; exhaustion fails the Trace. This
+interim Message control will evolve into reviewed framework control Tool calls
+with Task Steps in ticket 09. The single-Agent Environment completes after its
+one accepted Interaction.
+
+Export one or more persisted Trace directories (or `trace.json` paths) returned
+by `run`:
+
+```sh
+uv run agentinstruct export runs/<run-id>/traces/<trace-id> \
+  --format openai --status unverified --output dialogue.jsonl
+```
+
+`--format native` exports complete Trace snapshots. Both formats select only
+`accepted` by default; repeat `--status` to explicitly select other statuses.
+`--json` reports the exported count. OpenAI JSONL contains one `messages` array
+per nonempty selected Trace: Target Agent replies map to `assistant`, and shared
+replies from the other participant map to `user`. Native IDs, control metadata,
+and Events stay out of training Messages. The Python equivalent is
+`export_openai(trace_paths, "dialogue.jsonl", statuses={"unverified"})`.
 
 ## Validate a Task Package
 
@@ -95,9 +144,9 @@ print(plan.digest)
 print(plan.to_json())
 ```
 
-This initial slice supports schema version `"1"`, a single Agent with explicit
-`target = true`, a `single` Environment, the `local` Runtime, and a JSON object
-Seed. Every Agent requires `agents/<id>/instruction.md`. Unknown configuration
+The current implementation supports schema version `"1"`, a `single` or `dialogue`
+Environment, exactly one explicit Target Agent, the `local` Runtime, and a JSON
+object Seed. Every Agent requires `agents/<id>/instruction.md`. Unknown configuration
 fields and unsupported component selections fail validation. Multi-step Tasks,
 collections, tools, review, and verification arrive in later
 tickets.

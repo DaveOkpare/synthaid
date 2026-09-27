@@ -1,4 +1,4 @@
-"""Strict authoring schema for the initial single-Agent Task Package slice."""
+"""Strict authoring schema for built-in generation Task Packages."""
 
 from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
@@ -69,11 +69,16 @@ class ModelOverride(ConfigModel):
     max_tokens: Annotated[int, Field(gt=0)] | None = None
 
 
+class ScriptedResponseConfig(ConfigModel):
+    content: str
+    control: Literal["complete"] | None = None
+
+
 class AgentConfig(ConfigModel):
     target: bool
     model: ModelOverride = Field(default_factory=ModelOverride)
     type: Literal["model", "scripted"] = "model"
-    responses: list[str] = Field(default_factory=list)
+    responses: list[str | ScriptedResponseConfig] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_script(self) -> Self:
@@ -85,8 +90,17 @@ class AgentConfig(ConfigModel):
 
 
 class EnvironmentConfig(ConfigModel):
-    type: Literal["single"]
+    type: Literal["single", "dialogue"]
     max_turns: Annotated[int, Field(gt=0)] = 1
+    initiator: Literal["user", "assistant"] = "user"
+    max_rounds: Annotated[int, Field(gt=0)] = 10
+    timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] | None = None
+
+    @model_validator(mode="after")
+    def validate_limits(self) -> Self:
+        if self.type == "dialogue" and "max_turns" in self.model_fields_set:
+            raise ValueError("dialogue uses max_rounds to bound participant pairs")
+        return self
 
 
 class RuntimeConfig(ConfigModel):
@@ -108,8 +122,13 @@ class PackageConfig(ConfigModel):
     def validate_references(self) -> Self:
         if sum(agent.target for agent in self.agents.values()) != 1:
             raise ValueError("agents must contain exactly one explicit Target Agent")
-        if len(self.agents) != 1:
+        if self.environment.type == "single" and len(self.agents) != 1:
             raise ValueError("environment.single requires exactly one Agent")
+        if self.environment.type == "dialogue" and set(self.agents) != {
+            "user",
+            "assistant",
+        }:
+            raise ValueError("environment.dialogue requires user and assistant Agents")
         if (
             self.seed.id_variable is not None
             and self.seed.id_variable not in self.variables

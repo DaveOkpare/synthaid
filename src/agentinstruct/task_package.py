@@ -26,6 +26,7 @@ from agentinstruct.plans import (
     ProviderPlan,
     RunPlan,
     RuntimePlan,
+    ScriptedResponse,
     Seed,
     SeedOrigin,
     TaskIdentity,
@@ -136,7 +137,7 @@ class AgentSource:
     model: ModelPlan
     instruction: str
     type: str
-    responses: tuple[str, ...]
+    responses: tuple[str | ScriptedResponse, ...]
 
 
 @dataclass(frozen=True)
@@ -213,7 +214,12 @@ class TaskPackage:
                 model,
                 instruction,
                 agent.type,
-                tuple(agent.responses),
+                tuple(
+                    response
+                    if isinstance(response, str)
+                    else ScriptedResponse(response.content, response.control)
+                    for response in agent.responses
+                ),
             )
 
         package_digest = content_digest(
@@ -239,7 +245,11 @@ class TaskPackage:
             providers=MappingProxyType(providers),
             agents=MappingProxyType(sources),
             environment=EnvironmentPlan(
-                config.environment.type, config.environment.max_turns
+                config.environment.type,
+                config.environment.max_turns,
+                config.environment.initiator,
+                config.environment.max_rounds,
+                config.environment.timeout_seconds,
             ),
             runtime=RuntimePlan(config.runtime.type),
             source_files=MappingProxyType(source_files),
