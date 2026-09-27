@@ -2,9 +2,69 @@
 
 A Python framework for generating verified traces from agent interactions.
 
-Task Package validation and compilation are available through the typed library
-and CLI. Trace generation is planned in the
+Task Package validation, compilation, and deterministic single-Agent generation
+are available through the typed library and CLI. Further capabilities follow the
 [V1 specification](.scratch/v1-agent-trace-generation/spec.md).
+
+## Generate a Trace
+
+Run the [scripted example](examples/scripted-single/task.toml) without network
+access or model credentials:
+
+```sh
+uv run agentinstruct run examples/scripted-single --output runs --json
+```
+
+The `run` command delegates to the same library lifecycle as:
+
+```python
+import asyncio
+from agentinstruct import Runner, TaskPackage, export_native, load_trace
+
+
+async def main():
+    result = await Runner(output_dir="runs").run(
+        TaskPackage.load("examples/scripted-single")
+    )
+    trace = load_trace(result.traces[0].path)
+    print(trace.conversation[0].message.content)
+    export_native([result.traces[0].path], "native.jsonl", statuses={"unverified"})
+
+
+asyncio.run(main())
+```
+
+`generate(package, runner=...)` delegates to `Runner.run`; `generate_sync` wraps
+the same operation for synchronous scripts. Use the asynchronous API inside an
+existing event loop. Both accept a `seed_path` override, equivalent to CLI
+`--seed`. `--json` returns the Run identity, ordered Trace references, and all
+five terminal status counts. A completed unverified Run exits 0; execution
+failures exit 1 and package or Seed validation failures exit 2.
+
+Each execution creates a fresh Run, Trace, Agent, Environment, Interaction,
+recorder, and Conversation. `type = "scripted"` Agents consume literal
+`responses` strings without calling a Provider. Library callers can supply
+`Runner(agent_factory=...)` with a factory accepting an `AgentPlan`; each fresh
+Agent implements `async generate(observation)` and returns a `Message` or ordered
+list of Messages. The Observation contains the rendered instruction and accepted
+history. A custom `environment_factory` may implement asynchronous `setup` and
+`run`, with optional `finalize`; it receives an immutable `TaskContext` and Agent
+facades that open Interactions. Factories must construct new instances per call.
+
+The local Run directory contains an authoring-file snapshot, manifest, and Trace
+index. Each Trace retains its rendered Run Plan, full Seed data and origin,
+accepted Message Commits, separate execution Events, component references and
+available source digests, timing, and generation outcome. A complete `trace.json`
+is persisted before its index reference is published. `load_trace` returns an
+immutable snapshot; native JSONL export reads these persisted snapshots and
+needs no live Runner or original package.
+
+Verification is not implemented yet, so successful generation is **unverified**
+with a separate `terminated` generation outcome. Native export requires explicit
+selection of `unverified` or other non-accepted statuses; its default selects
+only accepted Traces. Live model adapters, dialogue, tools, and review arrive in
+later tickets. Current generation handles one JSON-object Seed and one
+single-Agent interaction.
 
 ## Validate a Task Package
 
@@ -39,7 +99,7 @@ This initial slice supports schema version `"1"`, a single Agent with explicit
 `target = true`, a `single` Environment, the `local` Runtime, and a JSON object
 Seed. Every Agent requires `agents/<id>/instruction.md`. Unknown configuration
 fields and unsupported component selections fail validation. Multi-step Tasks,
-collections, tools, review, verification, and runtime execution arrive in later
+collections, tools, review, and verification arrive in later
 tickets.
 
 `[variables]` maps template aliases to dot paths through nested JSON mappings.
@@ -65,7 +125,7 @@ Run Plans separate Task identity, Seed data and origin, extracted Variables,
 Provider and Agent settings, Environment, Runtime, and provenance. Their nested
 data is immutable; `to_dict()` returns an independent JSON-compatible copy.
 Digests use canonical sorted JSON and exclude generated execution identities.
-The compiler prepares inputs for one Trace attempt; the future Runner assigns
+The compiler prepares inputs for one Trace attempt; the Runner assigns
 fresh Run and Trace IDs when executing them. Keep credentials out of Seed data
 and instructions, which are intentionally retained as Task inputs.
 
@@ -111,8 +171,8 @@ distributed package.
 ## Project layout
 
 - `src/agentinstruct/`: supported library and CLI code.
-- `tests/`: public API, CLI, and import-safety checks, with pytest-asyncio available for
-  future asynchronous APIs. Tests do not call external services.
+- `tests/`: public Runner lifecycle, persisted export, CLI, and import-safety
+  checks. Tests use deterministic extensions and do not call external services.
 - `.scratch/`: the V1 specification and implementation tickets.
 - `CONTEXT.md` and `docs/adr/`: domain vocabulary and architectural decisions.
 - `research/` and `prototypes/`: design evidence, outside the runtime package.

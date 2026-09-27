@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 from importlib.metadata import version
 from pathlib import Path
@@ -120,3 +121,59 @@ def test_validate_reports_nonfinite_json_as_validation_failure(tmp_path: Path) -
     assert output["status"] == "invalid"
     assert "non-finite" in output["error"]
     assert result.stderr == ""
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_run_generates_scripted_trace_and_forwards_overrides(
+    tmp_path: Path, as_json: bool
+) -> None:
+    package = tmp_path / "task"
+    shutil.copytree(EXAMPLE, package)
+    with (package / "task.toml").open("a") as config:
+        config.write('\ntype = "scripted"\nresponses = ["Hello from the script."]\n')
+    (tmp_path / "override.json").write_text(
+        '{"case":{"id":"cli-seed"},"person":{"name":"Lin"},'
+        '"scenario":{"topic":"music"}}'
+    )
+    args = ["run", str(package), "--seed", "override.json", "--output", "results"]
+    if as_json:
+        args.append("--json")
+
+    result = run_command(args, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    if as_json:
+        report = json.loads(result.stdout)
+        assert report["counts"]["unverified"] == 1
+        trace_path = Path(report["traces"][0]["path"]) / "trace.json"
+    else:
+        assert "unverified=1" in result.stdout
+        trace_path = next((tmp_path / "results").glob("*/traces/*/trace.json"))
+    trace = json.loads(trace_path.read_text())
+    assert trace["seed_id"] == "cli-seed"
+    assert trace["conversation"][0]["message"]["content"] == "Hello from the script."
+
+
+def test_run_reports_failed_trace_for_unavailable_model_adapter(tmp_path: Path) -> None:
+    result = run_command(["run", str(EXAMPLE), "--json"], tmp_path)
+
+    assert result.returncode == 1
+    report = json.loads(result.stdout)
+    assert report["counts"]["failed"] == 1
+    trace = json.loads((Path(report["traces"][0]["path"]) / "trace.json").read_text())
+    assert trace["status"] == "failed"
+    assert trace["conversation"] == []
+    assert any(event["kind"] == "error" for event in trace["events"])
+
+
+def test_run_rejects_invalid_input_before_creating_output(tmp_path: Path) -> None:
+    (tmp_path / "bad.json").write_text("{")
+
+    result = run_command(
+        ["run", str(EXAMPLE), "--seed", "bad.json", "--json"], tmp_path
+    )
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["status"] == "error"
+    assert not (tmp_path / "runs").exists()

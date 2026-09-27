@@ -1,0 +1,30 @@
+schema_version = "1"
+
+[task]
+id = "scripted-greeting"
+version = "1"
+
+[seed]
+path = "seed.json"
+
+[variables]
+name = "name"
+
+# These model defaults remain recorded but the scripted Agent does not use them.
+[providers.default]
+type = "openai"
+
+[model]
+provider = "default"
+name = "unused-model"
+
+[runtime]
+type = "local"
+
+[environment]
+type = "single"
+
+[agents.assistant]
+target = true
+type = "scripted"
+responses = ["Hello, Ada."]

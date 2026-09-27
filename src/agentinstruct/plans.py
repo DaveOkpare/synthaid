@@ -99,6 +99,8 @@ class AgentPlan:
     target: bool
     model: ModelPlan
     base_instruction: str
+    type: str = "model"
+    responses: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

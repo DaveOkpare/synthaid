@@ -8,7 +8,13 @@
   A strict single-Agent JSON compiler and model-free `validate` command now
   produce immutable Run Plans with stable digests. See
   [validation usage](../../README.md#validate-a-task-package) and the
-  [example package](../../examples/single-agent/task.toml). Automated compiler
-  API tests await seam confirmation; the CLI and import-safety checks pass.
+  [example package](../../examples/single-agent/task.toml). Compilation and
+  rendering are now exercised through ticket 03's agreed Runner seam.
+- **03 — resolved:** [Generate one deterministic single-agent Trace](issues/03-generate-deterministic-single-agent-trace.md#answer).
+  The asynchronous Runner, synchronous wrapper, scripted `run` CLI, fresh
+  trace-bound component factories, durable Message Commits and complete native
+  snapshots are implemented. Persisted Trace inspection and status-selected
+  native export need no live Runner. See [generation usage](../../README.md#generate-a-trace)
+  and the [scripted example](../../examples/scripted-single/task.toml).
 
-Tickets 03–19 remain unimplemented.
+Tickets 04–19 remain unimplemented.

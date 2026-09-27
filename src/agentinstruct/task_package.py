@@ -135,6 +135,8 @@ class AgentSource:
     target: bool
     model: ModelPlan
     instruction: str
+    type: str
+    responses: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -154,6 +156,7 @@ class TaskPackage:
     agents: Mapping[str, AgentSource]
     environment: EnvironmentPlan
     runtime: RuntimePlan
+    source_files: Mapping[str, str]
 
     @classmethod
     def load(cls, path: str | Path) -> Self:
@@ -173,10 +176,12 @@ class TaskPackage:
             raise TaskValidationError(f"task.toml: {problems}") from exc
 
         sources: dict[str, AgentSource] = {}
+        source_files = {"task.toml": raw}
         env = _template_environment()
         for agent_id, agent in config.agents.items():
             label = f"agents/{agent_id}/instruction.md"
             instruction = _read_text(_package_path(root, label), label)
+            source_files[label] = instruction
             try:
                 unknown = meta.find_undeclared_variables(env.parse(instruction)) - set(
                     config.variables
@@ -202,7 +207,14 @@ class TaskPackage:
                     else config.model.max_tokens
                 ),
             )
-            sources[agent_id] = AgentSource(agent_id, agent.target, model, instruction)
+            sources[agent_id] = AgentSource(
+                agent_id,
+                agent.target,
+                model,
+                instruction,
+                agent.type,
+                tuple(agent.responses),
+            )
 
         package_digest = content_digest(
             {"config": config.model_dump(mode="json"), "agents": sources}
@@ -230,6 +242,7 @@ class TaskPackage:
                 config.environment.type, config.environment.max_turns
             ),
             runtime=RuntimePlan(config.runtime.type),
+            source_files=MappingProxyType(source_files),
         )
 
     def compile(self, *, seed_path: str | Path | None = None) -> RunPlan:
@@ -294,7 +307,12 @@ class TaskPackage:
                     f"({type(exc).__name__}): {exc}"
                 ) from exc
             agents[agent_id] = AgentPlan(
-                agent_id, source.target, source.model, instruction
+                agent_id,
+                source.target,
+                source.model,
+                instruction,
+                source.type,
+                source.responses,
             )
 
         frozen_data = cast(Mapping[str, FrozenJsonValue], freeze(seed_data))

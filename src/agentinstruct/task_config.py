@@ -72,6 +72,16 @@ class ModelOverride(ConfigModel):
 class AgentConfig(ConfigModel):
     target: bool
     model: ModelOverride = Field(default_factory=ModelOverride)
+    type: Literal["model", "scripted"] = "model"
+    responses: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_script(self) -> Self:
+        if self.type == "scripted" and not self.responses:
+            raise ValueError("scripted Agents require at least one response")
+        if self.type != "scripted" and self.responses:
+            raise ValueError("responses require a scripted Agent")
+        return self
 
 
 class EnvironmentConfig(ConfigModel):
