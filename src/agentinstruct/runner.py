@@ -1,8 +1,6 @@
 """Canonical asynchronous lifecycle for one seeded generation Run."""
 
 import asyncio
-import hashlib
-import inspect
 from collections.abc import Callable
 from pathlib import Path
 from time import monotonic
@@ -19,8 +17,8 @@ from agentinstruct.execution import (
     create_agent,
     create_environment,
 )
-from agentinstruct.plans import AgentPlan, EnvironmentPlan
-from agentinstruct.store import LocalRunStore, TraceRecorder, timestamp
+from agentinstruct.plans import AgentPlan, EnvironmentPlan, VerifierPlan
+from agentinstruct.store import LocalRunStore, TraceRecorder, load_trace, timestamp
 from agentinstruct.task_package import TaskPackage
 from agentinstruct.traces import (
     STATUSES,
@@ -33,16 +31,12 @@ from agentinstruct.traces import (
     TraceStatus,
     immutable_data,
 )
-
-
-def component_provenance(kind: str, component: object) -> ComponentProvenance:
-    cls = type(component)
-    try:
-        source = inspect.getsource(cls).encode("utf-8")
-        digest = hashlib.sha256(source).hexdigest()
-    except (OSError, TypeError):
-        digest = None
-    return ComponentProvenance(kind, f"{cls.__module__}:{cls.__qualname__}", digest)
+from agentinstruct.verification import (
+    Verifier,
+    component_provenance,
+    create_verifier,
+    reverify,
+)
 
 
 class Runner:
@@ -52,10 +46,12 @@ class Runner:
         output_dir: str | Path = "runs",
         agent_factory: Callable[[AgentPlan], Agent] = create_agent,
         environment_factory: Callable[[EnvironmentPlan], Environment] | None = None,
+        verifier_factory: Callable[[VerifierPlan], Verifier] = create_verifier,
     ) -> None:
         self._store = LocalRunStore(output_dir)
         self._agent_factory = agent_factory
         self._environment_factory = environment_factory
+        self._verifier_factory = verifier_factory
 
     async def run(
         self, package: TaskPackage, *, seed_path: str | Path | None = None
@@ -160,6 +156,9 @@ class Runner:
         record("generation_finished", state=outcome.state, reason=outcome.reason)
         record("trace_finished", status=status)
         recorder.seal(snapshot())
+        if plan.verifier is not None:
+            await reverify(recorder.path, verifier_factory=self._verifier_factory)
+            status = load_trace(recorder.path).status
         counts: dict[TraceStatus, int] = {key: 0 for key in STATUSES}
         counts[status] = 1
         result = RunResult(

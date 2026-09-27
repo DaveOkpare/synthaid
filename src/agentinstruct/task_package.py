@@ -30,10 +30,11 @@ from agentinstruct.plans import (
     Seed,
     SeedOrigin,
     TaskIdentity,
+    VerifierPlan,
     content_digest,
     freeze,
 )
-from agentinstruct.task_config import PackageConfig
+from agentinstruct.task_config import PackageConfig, RubricConfig
 
 
 class TaskValidationError(ValueError):
@@ -158,6 +159,7 @@ class TaskPackage:
     environment: EnvironmentPlan
     runtime: RuntimePlan
     source_files: Mapping[str, str]
+    verifier: VerifierPlan | None = None
 
     @classmethod
     def load(cls, path: str | Path) -> Self:
@@ -222,8 +224,38 @@ class TaskPackage:
                 ),
             )
 
+        verifier = None
+        if config.verifier is not None:
+            label = "verifier/rubric.toml"
+            rubric_text = _read_text(_package_path(root, label), label)
+            source_files[label] = rubric_text
+            try:
+                rubric = RubricConfig.model_validate(tomllib.loads(rubric_text))
+            except tomllib.TOMLDecodeError as exc:
+                raise TaskValidationError(f"{label}: malformed TOML: {exc}") from exc
+            except ValidationError as exc:
+                problems = "; ".join(
+                    f"{'.'.join(str(part) for part in error['loc']) or 'rubric'}: "
+                    f"{error['msg']}"
+                    for error in exc.errors(include_input=False, include_url=False)
+                )
+                raise TaskValidationError(f"{label}: {problems}") from exc
+            try:
+                verifier = VerifierPlan(
+                    config.verifier.type,
+                    rubric.to_rubric(),
+                    config.verifier.timeout_seconds,
+                    config.verifier.checks,
+                )
+            except ValueError as exc:
+                raise TaskValidationError(f"verifier: {exc}") from exc
+
         package_digest = content_digest(
-            {"config": config.model_dump(mode="json"), "agents": sources}
+            {
+                "config": config.model_dump(mode="json"),
+                "agents": sources,
+                "verifier": verifier,
+            }
         )
         providers = {
             provider_id: ProviderPlan(
@@ -253,6 +285,7 @@ class TaskPackage:
             ),
             runtime=RuntimePlan(config.runtime.type),
             source_files=MappingProxyType(source_files),
+            verifier=verifier,
         )
 
     def compile(self, *, seed_path: str | Path | None = None) -> RunPlan:
@@ -339,4 +372,5 @@ class TaskPackage:
             provenance=PlanProvenance(
                 version("agentinstruct"), platform.python_version()
             ),
+            verifier=self.verifier,
         )

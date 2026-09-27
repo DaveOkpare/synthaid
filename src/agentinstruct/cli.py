@@ -1,6 +1,7 @@
 """Command-line entry point for agentinstruct."""
 
 import argparse
+import asyncio
 import json
 import sys
 from collections.abc import Sequence
@@ -43,6 +44,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Include status (repeatable)",
     )
     export.add_argument("--json", action="store_true", dest="as_json")
+    export.add_argument("--verification", help="Select a valid Verification attempt ID")
+    reverification = commands.add_parser(
+        "reverify", help="Append Verification attempts to sealed Traces"
+    )
+    reverification.add_argument(
+        "traces", nargs="+", help="Trace directories or snapshots"
+    )
+    reverification.add_argument(
+        "--package", help="Override with this Task Package's Verifier policy"
+    )
+    reverification.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
     if args.command == "validate":
         from agentinstruct.task_package import TaskPackage, TaskValidationError
@@ -95,7 +107,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         exporter = export_native if args.format == "native" else export_openai
         try:
             count = exporter(
-                args.traces, args.output, statuses=set(args.status or ["accepted"])
+                args.traces,
+                args.output,
+                statuses=set(args.status or ["accepted"]),
+                verification_id=args.verification,
             )
         except (OSError, ValueError) as exc:
             if args.as_json:
@@ -110,5 +125,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print(f"Exported {count} Traces to {args.output}")
         return 0
+    if args.command == "reverify":
+        from agentinstruct import TaskPackage, TaskValidationError, reverify
+        from agentinstruct.plans import json_value
+        from agentinstruct.traces import VerificationAttempt
+
+        async def append_attempts() -> list[VerificationAttempt]:
+            policy = None
+            if args.package is not None:
+                policy = TaskPackage.load(args.package).verifier
+                if policy is None:
+                    raise ValueError("Selected Task Package has no Verifier policy")
+            return [await reverify(path, plan=policy) for path in args.traces]
+
+        try:
+            attempts = asyncio.run(append_attempts())
+        except (OSError, ValueError) as exc:
+            if args.as_json:
+                print(json.dumps({"status": "error", "error": str(exc)}))
+            else:
+                print(f"Reverification failed: {exc}", file=sys.stderr)
+            return 2 if isinstance(exc, TaskValidationError) else 1
+        if args.as_json:
+            print(json.dumps({"attempts": [json_value(item) for item in attempts]}))
+        else:
+            for attempt in attempts:
+                print(
+                    f"Verification {attempt.id}: {attempt.status} "
+                    f"(score={attempt.score})"
+                )
+        return 1 if any(item.status == "unverified" for item in attempts) else 0
     parser.print_help()
     return 0

@@ -2,10 +2,13 @@
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from types import MappingProxyType
 from typing import Literal
+
+from agentinstruct.quality import Rubric
 
 type JsonValue = (
     bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
@@ -131,6 +134,37 @@ class PlanProvenance:
 
 
 @dataclass(frozen=True)
+class VerifierPlan:
+    type: Literal["custom", "deterministic"]
+    rubric: Rubric
+    timeout_seconds: float = 60.0
+    checks: Mapping[str, Literal["nonempty_conversation", "generation_terminated"]] = (
+        field(default_factory=dict)
+    )
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.timeout_seconds, bool)
+            or not math.isfinite(self.timeout_seconds)
+            or self.timeout_seconds <= 0
+        ):
+            raise ValueError("Verifier timeout must be finite and positive")
+        object.__setattr__(self, "checks", MappingProxyType(dict(self.checks)))
+        if self.type == "deterministic":
+            if set(self.checks) != {criterion.id for criterion in self.rubric.criteria}:
+                raise ValueError("Deterministic checks must match every Criterion ID")
+            if set(self.checks.values()) - {
+                "nonempty_conversation",
+                "generation_terminated",
+            }:
+                raise ValueError("Unknown deterministic Verifier check")
+        elif self.type != "custom" or self.checks:
+            raise ValueError(
+                "Custom Verifiers require a factory and no built-in checks"
+            )
+
+
+@dataclass(frozen=True)
 class RunPlan:
     """Inputs for one Trace attempt; execution assigns Run and Trace identities."""
 
@@ -143,6 +177,7 @@ class RunPlan:
     environment: EnvironmentPlan
     runtime: RuntimePlan
     provenance: PlanProvenance
+    verifier: VerifierPlan | None = None
 
     @property
     def digest(self) -> str:

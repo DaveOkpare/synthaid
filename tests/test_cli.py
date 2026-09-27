@@ -211,3 +211,64 @@ def test_export_forwards_format_and_explicit_status_selection(
         assert row["status"] == "unverified"
     else:
         assert row == {"messages": [{"role": "assistant", "content": "Hello, Ada."}]}
+
+
+def test_reverify_forwards_package_override_and_export_attempt_selection(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "task"
+    shutil.copytree(EXAMPLE.parent / "scripted-single", package)
+    with (package / "task.toml").open("a") as config:
+        config.write(
+            '\n[verifier]\ntype = "deterministic"\n'
+            '[verifier.checks]\nreply = "nonempty_conversation"\n'
+        )
+    (package / "verifier").mkdir()
+    rubric = package / "verifier" / "rubric.toml"
+    rubric.write_text('threshold = 1.0\n[[criteria]]\nid = "reply"\nweight = 1.0\n')
+    generated = run_command(["run", str(package), "--json"], tmp_path)
+    assert generated.returncode == 0, generated.stderr
+    trace = Path(json.loads(generated.stdout)["traces"][0]["path"])
+    conversation = (trace / "conversation.jsonl").read_bytes()
+    rubric.write_text(rubric.read_text().replace("1.0", "0.5", 1))
+
+    result = run_command(
+        ["reverify", str(trace), "--package", str(package), "--json"], tmp_path
+    )
+
+    assert result.returncode == 0, result.stderr
+    attempt = json.loads(result.stdout)["attempts"][0]
+    assert attempt["sequence"] == 2
+    assert attempt["status"] == "accepted"
+    assert attempt["plan"]["rubric"]["threshold"] == 0.5
+    assert (trace / "conversation.jsonl").read_bytes() == conversation
+    exported = run_command(
+        [
+            "export",
+            str(trace),
+            "--verification",
+            attempt["id"],
+            "--output",
+            "dataset.jsonl",
+            "--json",
+        ],
+        tmp_path,
+    )
+    assert exported.returncode == 0, exported.stderr
+    assert json.loads(exported.stdout)["count"] == 1
+    default_policy = run_command(["reverify", str(trace)], tmp_path)
+    assert default_policy.returncode == 0, default_policy.stderr
+    assert "accepted (score=1.0)" in default_policy.stdout
+
+
+def test_reverify_reports_missing_verifier_policy(tmp_path: Path) -> None:
+    generated = run_command(
+        ["run", str(EXAMPLE.parent / "scripted-single"), "--json"], tmp_path
+    )
+    trace = json.loads(generated.stdout)["traces"][0]["path"]
+
+    result = run_command(["reverify", trace, "--json"], tmp_path)
+
+    assert result.returncode == 1
+    assert json.loads(result.stdout)["status"] == "error"
+    assert "no Verifier Plan" in json.loads(result.stdout)["error"]

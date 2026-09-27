@@ -87,6 +87,7 @@ class Interaction:
         self._recorder = recorder
 
     async def turn(self, incoming: Message | None = None) -> TurnResult:
+        self._recorder.require_open()
         if incoming is not None and not any(
             item.message == incoming for item in self._recorder.conversation
         ):

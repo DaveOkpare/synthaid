@@ -1,0 +1,11 @@
+threshold = 1.0
+
+[[criteria]]
+id = "has_reply"
+description = "The Conversation contains an accepted reply."
+weight = 3.0
+
+[[criteria]]
+id = "completed"
+description = "Generation terminated normally."
+weight = 1.0

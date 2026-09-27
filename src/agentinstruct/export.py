@@ -13,12 +13,13 @@ def export_native(
     destination: str | Path,
     *,
     statuses: Set[TraceStatus] = frozenset({"accepted"}),
+    verification_id: str | None = None,
 ) -> int:
     """Write full native Trace snapshots as JSONL, selecting statuses explicitly."""
     count = 0
     with Path(destination).open("w", encoding="utf-8") as stream:
         for path in traces:
-            trace = load_trace(path)
+            trace = load_trace(path, verification_id=verification_id)
             if trace.status in statuses:
                 stream.write(canonical_json(trace) + "\n")
                 count += 1
@@ -30,12 +31,13 @@ def export_openai(
     destination: str | Path,
     *,
     statuses: Set[TraceStatus] = frozenset({"accepted"}),
+    verification_id: str | None = None,
 ) -> int:
     """Write target-oriented training Messages from selected persisted Traces."""
     count = 0
     with Path(destination).open("w", encoding="utf-8") as stream:
         for path in traces:
-            trace = load_trace(path)
+            trace = load_trace(path, verification_id=verification_id)
             if trace.status not in statuses or not trace.conversation:
                 continue
             agents = trace.run_plan.get("agents")

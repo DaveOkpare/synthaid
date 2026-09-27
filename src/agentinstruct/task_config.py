@@ -5,6 +5,8 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from agentinstruct.quality import Criterion, Rubric
+
 Identifier = Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]*$")]
 VariableName = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
 Selector = Annotated[str, Field(pattern=r"^[^.\[\]\s]+(?:\.[^.\[\]\s]+)*$")]
@@ -107,6 +109,36 @@ class RuntimeConfig(ConfigModel):
     type: Literal["local"]
 
 
+class CriterionConfig(ConfigModel):
+    id: Identifier
+    weight: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 1.0
+    description: str = ""
+
+
+class RubricConfig(ConfigModel):
+    criteria: list[CriterionConfig]
+    threshold: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)] = 1.0
+
+    def to_rubric(self) -> Rubric:
+        return Rubric(
+            tuple(Criterion(c.id, c.weight, c.description) for c in self.criteria),
+            self.threshold,
+        )
+
+    @model_validator(mode="after")
+    def validate_criteria(self) -> Self:
+        self.to_rubric()
+        return self
+
+
+class VerifierConfig(ConfigModel):
+    type: Literal["custom", "deterministic"]
+    timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 60.0
+    checks: dict[
+        Identifier, Literal["nonempty_conversation", "generation_terminated"]
+    ] = Field(default_factory=dict)
+
+
 class PackageConfig(ConfigModel):
     schema_version: Literal["1"]
     task: TaskConfig
@@ -117,6 +149,7 @@ class PackageConfig(ConfigModel):
     agents: dict[Identifier, AgentConfig]
     environment: EnvironmentConfig
     runtime: RuntimeConfig
+    verifier: VerifierConfig | None = None
 
     @model_validator(mode="after")
     def validate_references(self) -> Self:

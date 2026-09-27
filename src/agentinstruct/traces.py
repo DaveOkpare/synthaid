@@ -6,7 +6,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, cast
 
-from agentinstruct.plans import FrozenJsonValue, freeze, json_value
+from agentinstruct.plans import FrozenJsonValue, VerifierPlan, freeze, json_value
 
 type TraceStatus = Literal["invalid", "failed", "unverified", "rejected", "accepted"]
 STATUSES: tuple[TraceStatus, ...] = (
@@ -74,6 +74,34 @@ class ComponentProvenance:
 
 
 @dataclass(frozen=True)
+class VerificationError:
+    kind: Literal["execution", "malformed", "timeout"]
+    exception: str
+    message: str
+
+
+@dataclass(frozen=True)
+class VerificationAttempt:
+    schema_version: str
+    id: str
+    trace_id: str
+    sequence: int
+    plan: VerifierPlan
+    verifier: ComponentProvenance
+    status: Literal["accepted", "rejected", "unverified"]
+    score: float | None
+    criteria: Mapping[str, bool]
+    feedback: str
+    started_at: str
+    ended_at: str
+    duration_seconds: float
+    error: VerificationError | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "criteria", MappingProxyType(dict(self.criteria)))
+
+
+@dataclass(frozen=True)
 class TraceSnapshot:
     schema_version: str
     run_id: str
@@ -88,6 +116,8 @@ class TraceSnapshot:
     started_at: str
     ended_at: str
     duration_seconds: float
+    verification: tuple[VerificationAttempt, ...] = ()
+    selected_verification_id: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "run_plan", immutable_data(self.run_plan))

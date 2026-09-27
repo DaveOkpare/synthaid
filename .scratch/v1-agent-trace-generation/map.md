@@ -26,4 +26,13 @@
   [dialogue generation and export](../../README.md#generate-and-export-a-dialogue)
   and the [scripted dialogue package](../../examples/scripted-dialogue/task.toml).
 
-Tickets 05–19 remain unimplemented.
+- **05 — resolved:** [Verify and reverify sealed Traces](issues/05-verify-reverify-sealed-traces.md#answer).
+  Weighted Boolean Verification now runs after durable generation sealing, records
+  immutable versioned attempts, and preserves all generation bytes on reverification.
+  Snapshot inspection and exports select the latest or an explicit valid decision,
+  retain earlier valid eligibility after judge errors, and preserve generation
+  failures. Shared scoring is ready for ticket 06. See
+  [verification usage](../../README.md#verify-and-reverify-traces) and the
+  [offline verified example](../../examples/verified-single/task.toml).
+
+Tickets 06–19 remain unimplemented.

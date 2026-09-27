@@ -3,7 +3,8 @@
 A Python framework for generating verified traces from agent interactions.
 
 Task Package validation, compilation, deterministic single-Agent and dialogue
-generation, and native/OpenAI JSONL export are available through the typed library
+generation, final Verification, reverification, and native/OpenAI JSONL export
+are available through the typed library
 and CLI. Further capabilities follow the
 [V1 specification](.scratch/v1-agent-trace-generation/spec.md).
 
@@ -60,8 +61,8 @@ is persisted before its index reference is published. `load_trace` returns an
 immutable snapshot; native JSONL export reads these persisted snapshots and
 needs no live Runner or original package.
 
-Verification is not implemented yet, so successful generation is **unverified**
-with a separate `terminated` generation outcome. Export requires explicit selection
+Generation without a configured Verifier is **unverified**, with a separate
+`terminated` or `truncated` generation outcome. Export requires explicit selection
 of `unverified` or other non-accepted statuses; its default selects only accepted
 Traces. Live model adapters, tools, and review arrive in later tickets. Current
 generation handles one JSON-object Seed per Run.
@@ -115,6 +116,90 @@ replies from the other participant map to `user`. Native IDs, control metadata,
 and Events stay out of training Messages. The Python equivalent is
 `export_openai(trace_paths, "dialogue.jsonl", statuses={"unverified"})`.
 
+## Verify and reverify Traces
+
+The [verified example](examples/verified-single/task.toml) generates and verifies
+a Trace without network access or credentials:
+
+```sh
+uv run agentinstruct run examples/verified-single --output runs --json
+uv run agentinstruct export runs/<run-id>/traces/<trace-id> --output accepted.jsonl
+uv run agentinstruct reverify runs/<run-id>/traces/<trace-id> --json
+```
+
+Enable Verification in `task.toml` and declare its weighted Criteria in
+`verifier/rubric.toml`. The example uses the built-in deterministic checks:
+
+```toml
+[verifier]
+type = "deterministic"
+timeout_seconds = 10.0
+
+[verifier.checks]
+has_reply = "nonempty_conversation"
+completed = "generation_terminated"
+```
+
+Its separate Rubric file contains:
+
+```toml
+threshold = 1.0
+
+[[criteria]]
+id = "has_reply"
+description = "The Conversation contains an accepted reply."
+weight = 3.0
+
+[[criteria]]
+id = "completed"
+description = "Generation terminated normally."
+weight = 1.0
+```
+
+Criteria must have unique portable IDs and finite positive weights with a finite
+total. Thresholds range from zero to one inclusive. The framework computes the
+passing weight divided by total weight: passing only `has_reply` scores `0.75`.
+A score at or above the threshold is accepted; a lower valid score is rejected.
+The two built-in checks evaluate structural completion, not content quality.
+Each configured deterministic check must correspond to exactly one Criterion.
+
+For domain-specific code or a judge-shaped extension, use `type = "custom"`
+without `[verifier.checks]` and provide `Runner(verifier_factory=...)`. Each
+factory receives the immutable `VerifierPlan` and constructs a fresh `Verifier`
+implementing `async verify(trace: TraceSnapshot) -> VerificationResult`. Return
+`VerificationResult(criteria={"has_reply": True, "completed": False}, feedback="...")`.
+The result may also contain a sequence of `(criterion_id, bool)` pairs. Missing,
+duplicate, unknown, and non-Boolean verdicts are errors. Factory exceptions,
+verification exceptions, timeout, and malformed results record an **unverified**
+attempt with error details and no invented false verdicts. Provider-backed judges
+arrive in a later ticket.
+
+Verification starts after Environment finalization and durable generation sealing.
+Each attempt records a schema version, sequence, unique ID, Verifier identity and
+available source digest, full policy, verdicts, score or error, feedback, and timing
+in `verification/<attempt-id>.json`. Generation files (`trace.json`, Run Plan,
+Conversation, and Events) are never rewritten by reverification. A failed or
+invalid generation remains failed or invalid even if its Verifier returns a
+passing score.
+
+The async library operation is `await reverify(trace_path)`. Supply
+`plan=new_verifier_plan` and `verifier_factory=...` to apply a new custom policy;
+otherwise the original persisted Verifier Plan is used. The CLI accepts multiple
+Trace paths and `--package <task-package>` to use that package's Verifier policy.
+It exits 1 for an unverified attempt or an operation error, 2 for an invalid
+override package, and 0 for valid accepted or rejected decisions.
+
+`load_trace` assembles a complete immutable snapshot with every attempt. It
+derives status from the latest valid attempt; a later error stays visible in
+`trace.verification` without replacing a previous valid decision. Both exporters
+use that status by default. Select an older valid attempt with
+`verification_id=attempt.id` in `load_trace`, `export_native`, or `export_openai`,
+or `--verification <attempt-id>` in the export CLI. Unknown or unverified attempt
+IDs are rejected. Native export embeds all attempts so its snapshots can be read
+independently of the original Run directory. Run Results, manifests, and the Run
+index retain the original invocation's counts; inspect the Trace for current
+verification status.
+
 ## Validate a Task Package
 
 The [single-agent example](examples/single-agent/task.toml) contains `task.toml`,
@@ -148,8 +233,7 @@ The current implementation supports schema version `"1"`, a `single` or `dialogu
 Environment, exactly one explicit Target Agent, the `local` Runtime, and a JSON
 object Seed. Every Agent requires `agents/<id>/instruction.md`. Unknown configuration
 fields and unsupported component selections fail validation. Multi-step Tasks,
-collections, tools, review, and verification arrive in later
-tickets.
+collections, tools, and review arrive in later tickets.
 
 `[variables]` maps template aliases to dot paths through nested JSON mappings.
 Array indexing and empty path segments are unsupported. Every selector must
