@@ -108,4 +108,11 @@
   generation files. See [structured quality usage](../../README.md#use-structured-quality-gates)
   and the [offline example](../../examples/structured-quality/run.py).
 
-Tickets 14–19 remain unimplemented.
+- **14 — resolved:** [Responses parity and private reasoning](issues/14-responses-parity-private-reasoning.md#answer).
+  OpenAI now defaults to stateless Responses with complete accepted history,
+  shared structured validation and normalized function-call/refusal/usage behavior.
+  Typed reasoning controls and retention policy preserve private native evidence;
+  accepted Tool continuation never replays rejected drafts or another actor's
+  reasoning. See [Responses usage](../../README.md#generate-through-responses-and-retain-private-reasoning).
+
+Tickets 15–19 remain unimplemented.

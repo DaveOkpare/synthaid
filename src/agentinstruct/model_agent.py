@@ -12,6 +12,9 @@ from agentinstruct.providers import (
     Provider,
     ProviderError,
     ProviderRequest,
+    ReasoningContinuation,
+    ReasoningItem,
+    response_evidence,
 )
 from agentinstruct.store import timestamp
 from agentinstruct.traces import Event, Message, immutable_data
@@ -34,6 +37,10 @@ class ModelAgent:
         self._record = record_event
         self._run_id = run_id
         self._trace_id = trace_id
+        self._pending_reasoning: (
+            tuple[Message, tuple[ReasoningItem, ...], frozenset[str]] | None
+        ) = None
+        self._accepted_reasoning: dict[str, tuple[ReasoningItem, ...]] = {}
 
     async def generate(self, observation: Observation) -> Message:
         history = [Message("system", observation.instruction)]
@@ -46,6 +53,29 @@ class ModelAgent:
                 else "user"
             )
             history.append(replace(message, role=role))
+        # A returned proposal is not accepted until it appears in this actor's
+        # authoritative Observation. Message IDs are assigned by Interaction.
+        if self._pending_reasoning is not None:
+            proposal, items, prior_message_ids = self._pending_reasoning
+            for message in history:
+                if (
+                    message.role == "assistant"
+                    and message.id not in prior_message_ids
+                    and message.tool_calls
+                    and message.tool_calls == proposal.tool_calls
+                    and message.content == proposal.content
+                ):
+                    self._accepted_reasoning[message.tool_calls[0].id] = items
+            self._pending_reasoning = None
+        continuations = tuple(
+            ReasoningContinuation(
+                message, self._accepted_reasoning[message.tool_calls[0].id]
+            )
+            for message in history
+            if message.role == "assistant"
+            and message.tool_calls
+            and message.tool_calls[0].id in self._accepted_reasoning
+        )
         if observation.review_feedback is not None:
             history.append(
                 Message(
@@ -62,6 +92,8 @@ class ModelAgent:
             inference=InferenceControls(
                 self._plan.model.temperature, self._plan.model.max_tokens
             ),
+            reasoning=self._plan.model.reasoning,
+            continuations=continuations,
             metadata={
                 "run_id": self._run_id,
                 "trace_id": self._trace_id,
@@ -98,13 +130,11 @@ class ModelAgent:
                 immutable_data(
                     {
                         **identity,
-                        "model": response.model,
-                        "finish_state": response.finish_state,
-                        "usage": response.usage,
-                        "request_id": response.request_id,
-                        "latency_seconds": response.latency_seconds,
-                        "refused": response.refused,
-                        "metadata": response.metadata,
+                        **response_evidence(
+                            response,
+                            request,
+                            retain=self._provider_plan.retain_reasoning,
+                        ),
                     }
                 ),
                 observation.actor_id,
@@ -116,4 +146,10 @@ class ModelAgent:
             raise ProviderError("refusal", request_id=response.request_id)
         if response.finish_state in {"length", "content_filter"}:
             raise ProviderError("incomplete", request_id=response.request_id)
+        if response.message.tool_calls and response.reasoning:
+            self._pending_reasoning = (
+                response.message,
+                response.reasoning,
+                frozenset(message.id for message in observation.messages),
+            )
         return response.message

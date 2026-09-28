@@ -155,8 +155,20 @@ def test_run_generates_scripted_trace_and_forwards_overrides(
     assert trace["conversation"][0]["message"]["content"] == "Hello from the script."
 
 
-def test_run_reports_failed_trace_for_unavailable_model_adapter(tmp_path: Path) -> None:
-    result = run_command(["run", str(EXAMPLE), "--json"], tmp_path)
+def test_run_reports_failed_trace_for_missing_model_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "missing-credentials"
+    shutil.copytree(EXAMPLE, package)
+    config = package / "task.toml"
+    config.write_text(
+        config.read_text().replace(
+            'api_key_env = "OPENAI_API_KEY"',
+            'api_key_env = "AGENTINSTRUCT_MISSING_TEST_KEY"',
+        )
+    )
+    monkeypatch.delenv("AGENTINSTRUCT_MISSING_TEST_KEY", raising=False)
+    result = run_command(["run", str(package), "--json"], tmp_path)
 
     assert result.returncode == 1
     report = json.loads(result.stdout)

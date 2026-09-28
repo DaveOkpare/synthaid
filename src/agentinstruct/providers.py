@@ -21,6 +21,7 @@ from agentinstruct.plans import (
     JsonSchema,
     JsonValue,
     ProviderPlan,
+    ReasoningControls,
     StructuredOutputPlan,
     ToolPlan,
     canonical_json,
@@ -29,8 +30,8 @@ from agentinstruct.plans import (
 )
 from agentinstruct.provider_errors import ProviderError as ProviderError
 from agentinstruct.provider_errors import (
-    ProviderErrorKind,
     StructuredOutputValidationError,
+    classify_provider_error,
 )
 from agentinstruct.seeds import parse_json
 from agentinstruct.structured import (
@@ -101,6 +102,20 @@ class ProviderCapabilities:
             or (request.parallel_tool_calls is True and not profile.parallel_tool_calls)
             or request.response_format.type not in profile.response_formats
             or (
+                request.reasoning is not None
+                and (
+                    (
+                        request.reasoning.effort is not None
+                        and "effort" not in profile.reasoning_controls
+                    )
+                    or (
+                        request.reasoning.summary is not None
+                        and "summary" not in profile.reasoning_controls
+                    )
+                )
+            )
+            or (request.continuations and not profile.reasoning)
+            or (
                 isinstance(request.structured_output, type)
                 and not profile.pydantic_round_trip
             )
@@ -165,6 +180,40 @@ class InferenceControls:
 
 
 @dataclass(frozen=True)
+class ReasoningItem:
+    """Returned private text/summary and optional opaque stateless continuation."""
+
+    id: str | None = None
+    summary: tuple[str, ...] = ()
+    text: tuple[str, ...] = ()
+    encrypted_content: str | None = None
+    tool_call_index: int = 0
+
+    def __post_init__(self) -> None:
+        if type(self.tool_call_index) is not int or self.tool_call_index < 0:
+            raise ValueError("Reasoning position must be a nonnegative Tool-call index")
+        object.__setattr__(self, "summary", tuple(self.summary))
+        object.__setattr__(self, "text", tuple(self.text))
+
+
+@dataclass(frozen=True)
+class ReasoningContinuation:
+    """Private Provider data paired with its exact accepted Message."""
+
+    message: Message
+    items: tuple[ReasoningItem, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "items", tuple(self.items))
+        if any(
+            item.tool_call_index > len(self.message.tool_calls) for item in self.items
+        ):
+            raise ValueError(
+                "Reasoning position is outside the accepted Tool-call Message"
+            )
+
+
+@dataclass(frozen=True)
 class ProviderRequest:
     model: str
     messages: tuple[Message, ...]
@@ -176,8 +225,18 @@ class ProviderRequest:
     metadata: Mapping[str, FrozenJsonValue] = field(default_factory=dict)
     structured_output: StructuredOutput | None = None
     structured_plan: StructuredOutputPlan | None = field(default=None, init=False)
+    reasoning: ReasoningControls | None = None
+    continuations: tuple[ReasoningContinuation, ...] = ()
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "continuations", tuple(self.continuations))
+        if any(
+            item.message not in self.messages or not item.message.tool_calls
+            for item in self.continuations
+        ):
+            raise ValueError(
+                "Reasoning continuation requires its accepted Tool-call Message"
+            )
         output = self.structured_output
         if output is not None:
             if self.response_format.type != "text":
@@ -215,6 +274,8 @@ class ProviderRequest:
             )
         object.__setattr__(self, "messages", tuple(self.messages))
         object.__setattr__(self, "tools", tuple(self.tools))
+        if any(not isinstance(tool, ToolPlan) for tool in self.tools):
+            raise ProviderError("unsupported_feature")
         object.__setattr__(self, "metadata", immutable_data(self.metadata))
         if not self.model.strip() or not self.messages:
             raise ValueError("Provider requests require a model and ordered Messages")
@@ -270,9 +331,11 @@ class ProviderResponse:
     refused: bool = False
     metadata: Mapping[str, FrozenJsonValue] = field(default_factory=dict)
     parsed: BaseModel | FrozenJsonValue = None
+    reasoning: tuple[ReasoningItem, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "metadata", immutable_data(self.metadata))
+        object.__setattr__(self, "reasoning", tuple(self.reasoning))
         if self.message.role != "assistant":
             raise ValueError("Provider responses require one assistant proposal")
         if not math.isfinite(self.latency_seconds) or self.latency_seconds < 0:
@@ -338,7 +401,7 @@ class _Completion(_WireModel):
     service_tier: str | None = None
 
 
-class ChatCompletionsProvider:
+class _HTTPProvider:
     """One request, no retries, no remote conversation state or API fallback.
 
     The optional HTTPX transport transfers ownership to this Provider. Credentials
@@ -359,11 +422,33 @@ class ChatCompletionsProvider:
         self._secret: str | None = None
         self._closed = False
 
+    api: str
+    endpoint: str
+
     @property
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
-            {"chat_completions": SurfaceCapabilities(pydantic_round_trip=True)}
+            {
+                self.api: SurfaceCapabilities(
+                    pydantic_round_trip=True,
+                    reasoning=self.api == "responses",
+                    reasoning_controls=frozenset(
+                        {"effort", "summary"} if self.api == "responses" else {"effort"}
+                    ),
+                )
+            }
         )
+
+    def _body(self, request: ProviderRequest) -> dict[str, JsonValue]:
+        raise NotImplementedError
+
+    def _normalize(
+        self,
+        raw: JsonValue,
+        request_id: str | None,
+        latency: float,
+    ) -> ProviderResponse:
+        raise NotImplementedError
 
     async def generate(self, request: ProviderRequest) -> ProviderResponse:
         import httpx
@@ -373,7 +458,7 @@ class ChatCompletionsProvider:
             raise ProviderError("invalid_request")
         started = monotonic()
         try:
-            body = _request_body(request)
+            body = self._body(request)
             if self._client is None:
                 key_env = self._plan.api_key_env or (
                     "OPENAI_API_KEY" if self._plan.type == "openai" else None
@@ -397,27 +482,19 @@ class ChatCompletionsProvider:
                     timeout=self._timeout,
                     follow_redirects=False,
                 )
-            response = await self._client.post("chat/completions", json=body)
+            response = await self._client.post(self.endpoint, json=body)
             request_id = self._scrub(response.headers.get("x-request-id"))
             if not response.is_success:
                 raise _http_error(response, request_id)
+            result: ProviderResponse | None = None
             try:
                 raw = self._scrub_data(parse_json(response.text, "provider response"))
-                parsed = _Completion.model_validate(raw)
+                result = self._normalize(raw, request_id, monotonic() - started)
                 if request.structured_plan is not None:
-                    choice = parsed.choices[0]
-                    if choice.message.refusal is not None:
+                    if result.refused:
                         raise ProviderError("refusal", request_id=request_id)
-                    if choice.finish_reason in {"length", "content_filter"}:
+                    if result.finish_state in {"length", "content_filter"}:
                         raise ProviderError("incomplete", request_id=request_id)
-                result = _response(
-                    parsed,
-                    self._plan.id,
-                    request_id,
-                    monotonic() - started,
-                    self._scrub_data,
-                )
-                if request.structured_plan is not None:
                     if result.message.tool_calls:
                         raise StructuredOutputValidationError(
                             "schema_mismatch", request_id=request_id
@@ -447,6 +524,19 @@ class ChatCompletionsProvider:
                     )
                     result = replace(result, parsed=value)
                 return result
+            except ProviderError as exc:
+                if result is not None:
+                    # Even invalid structured content has a completed model-call
+                    # identity, usage and private reasoning. Never store its draft.
+                    exc.metadata = immutable_data(
+                        {
+                            **exc.metadata,
+                            "response": response_evidence(
+                                result, request, retain=self._plan.retain_reasoning
+                            ),
+                        }
+                    )
+                raise
             except (ValidationError, ValueError, TypeError, KeyError):
                 raise ProviderError(
                     "malformed_response", request_id=request_id
@@ -495,13 +585,60 @@ class ChatCompletionsProvider:
             self._secret = None
 
 
+class ChatCompletionsProvider(_HTTPProvider):
+    """Stateless Chat Completions adapter with local structured validation."""
+
+    api = "chat_completions"
+    endpoint = "chat/completions"
+
+    def _body(self, request: ProviderRequest) -> dict[str, JsonValue]:
+        return _request_body(request)
+
+    def _normalize(
+        self,
+        raw: JsonValue,
+        request_id: str | None,
+        latency: float,
+    ) -> ProviderResponse:
+        return _response(
+            _Completion.model_validate(raw),
+            self._plan.id,
+            request_id,
+            latency,
+            self._scrub_data,
+        )
+
+
+class ResponsesProvider(_HTTPProvider):
+    """Stateless Responses adapter; only framework-reviewed function Tools."""
+
+    api = "responses"
+    endpoint = "responses"
+
+    def _body(self, request: ProviderRequest) -> dict[str, JsonValue]:
+        from agentinstruct.responses import request_body
+
+        return request_body(request)
+
+    def _normalize(
+        self,
+        raw: JsonValue,
+        request_id: str | None,
+        latency: float,
+    ) -> ProviderResponse:
+        from agentinstruct.responses import normalize_response
+
+        return normalize_response(
+            raw, self._plan.id, request_id, latency, self._scrub_data
+        )
+
+
 def create_provider(plan: ProviderPlan) -> Provider:
-    if (
-        plan.type not in {"openai", "openai-compatible"}
-        or plan.api != "chat_completions"
-    ):
-        raise ProviderError("unsupported_feature")
-    return ChatCompletionsProvider(plan)
+    if plan.type == "openai" and plan.api == "responses":
+        return ResponsesProvider(plan)
+    if plan.type in {"openai", "openai-compatible"} and plan.api == "chat_completions":
+        return ChatCompletionsProvider(plan)
+    raise ProviderError("unsupported_feature")
 
 
 def _request_body(request: ProviderRequest) -> dict[str, JsonValue]:
@@ -574,6 +711,8 @@ def _request_body(request: ProviderRequest) -> dict[str, JsonValue]:
         value = getattr(request.inference, name)
         if value is not None:
             body[wire_name] = value
+    if request.reasoning is not None and request.reasoning.effort is not None:
+        body["reasoning_effort"] = request.reasoning.effort
     return body
 
 
@@ -586,7 +725,11 @@ def _response(
 ) -> ProviderResponse:
     choice = raw.choices[0]
     calls: list[ToolCall] = []
-    for call in choice.message.tool_calls or ():
+    complete = choice.message.refusal is None and choice.finish_reason not in {
+        "length",
+        "content_filter",
+    }
+    for call in (choice.message.tool_calls or ()) if complete else ():
         arguments = redact(parse_json(call.function.arguments, "Tool arguments"))
         if (
             not isinstance(arguments, dict)
@@ -602,7 +745,7 @@ def _response(
         )
     if len({call.id for call in calls}) != len(calls):
         raise ValueError("Duplicate Tool call identifier")
-    if (choice.finish_reason == "tool_calls") != bool(calls):
+    if complete and (choice.finish_reason == "tool_calls") != bool(calls):
         raise ValueError("Tool calls require an unambiguous complete function proposal")
     if (
         choice.message.content is None
@@ -614,7 +757,7 @@ def _response(
     usage = raw.usage
     return ProviderResponse(
         Message("assistant", choice.message.content or "", tool_calls=tuple(calls)),
-        choice.finish_reason,
+        "stop" if choice.message.refusal is not None else choice.finish_reason,
         provider,
         raw.model,
         Usage(
@@ -642,34 +785,41 @@ def _http_error(response: httpx.Response, request_id: str | None) -> ProviderErr
     code = None
     try:
         raw = response.json()
-        candidate = raw.get("error", {}).get("code")
-        if candidate in {
-            "model_not_found",
-            "unsupported_parameter",
-            "unsupported_value",
-            "unsupported_feature",
-        }:
-            code = candidate
+        code = raw.get("error", {}).get("code")
     except (ValueError, AttributeError, TypeError):
         pass
-    status = response.status_code
-    kind: ProviderErrorKind
-    if status == 401:
-        kind = "authentication"
-    elif status == 403:
-        kind = "authorization"
-    elif status == 429:
-        kind = "rate_limit"
-    elif status in {408, 504}:
-        kind = "timeout"
-    elif code == "model_not_found":
-        kind = "model_unavailable"
-    elif code in {"unsupported_parameter", "unsupported_value", "unsupported_feature"}:
-        kind = "unsupported_feature"
-    elif 400 <= status < 500:
-        kind = "invalid_request"
-    elif status >= 500:
-        kind = "server"
-    else:
-        kind = "unknown"
-    return ProviderError(kind, status_code=status, request_id=request_id, code=code)
+    return classify_provider_error(
+        code, status_code=response.status_code, request_id=request_id
+    )
+
+
+def reasoning_evidence(
+    response: ProviderResponse, request: ProviderRequest, *, retain: bool
+) -> Mapping[str, FrozenJsonValue]:
+    """One retention rule shared by Agent, Reviewer and Verifier model-call Events."""
+    return immutable_data(
+        {
+            "requested": request.reasoning,
+            "returned": bool(response.reasoning),
+            "retained": bool(response.reasoning) and retain,
+            "items": response.reasoning if retain else (),
+        }
+    )
+
+
+def response_evidence(
+    response: ProviderResponse, request: ProviderRequest, *, retain: bool
+) -> Mapping[str, FrozenJsonValue]:
+    """Safe call evidence shared by success and locally rejected structured results."""
+    return immutable_data(
+        {
+            "model": response.model,
+            "finish_state": response.finish_state,
+            "usage": response.usage,
+            "request_id": response.request_id,
+            "latency_seconds": response.latency_seconds,
+            "refused": response.refused,
+            "metadata": response.metadata,
+            "reasoning": reasoning_evidence(response, request, retain=retain),
+        }
+    )

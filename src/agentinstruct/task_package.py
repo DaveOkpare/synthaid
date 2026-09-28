@@ -29,6 +29,7 @@ from agentinstruct.plans import (
     ModelPlan,
     PlanProvenance,
     ProviderPlan,
+    ReasoningControls,
     ReviewerPlan,
     RunPlan,
     RuntimePlan,
@@ -66,11 +67,15 @@ from agentinstruct.tools import schema_validator
 
 
 def _model_plan(base: ModelPlan | ModelConfig, override: ModelOverride) -> ModelPlan:
+    reasoning = override.reasoning if override.reasoning is not None else base.reasoning
     return ModelPlan(
         override.provider or base.provider,
         override.name or base.name,
         override.temperature if override.temperature is not None else base.temperature,
         override.max_tokens if override.max_tokens is not None else base.max_tokens,
+        ReasoningControls(reasoning.effort, reasoning.summary)
+        if reasoning is not None
+        else None,
     )
 
 
@@ -549,6 +554,7 @@ class TaskPackage:
                 or ("responses" if provider.type == "openai" else "chat_completions"),
                 base_url=provider.base_url,
                 api_key_env=provider.api_key_env,
+                retain_reasoning=provider.retain_reasoning,
             )
             for provider_id, provider in config.providers.items()
         }

@@ -13,7 +13,12 @@ from agentinstruct.plans import (
     canonical_json,
 )
 from agentinstruct.provider_errors import ProviderError, StructuredOutputValidationError
-from agentinstruct.providers import InferenceControls, Provider, ProviderRequest
+from agentinstruct.providers import (
+    InferenceControls,
+    Provider,
+    ProviderRequest,
+    response_evidence,
+)
 from agentinstruct.quality import Rubric, score_verdicts
 from agentinstruct.store import timestamp
 from agentinstruct.structured import compile_structured_output
@@ -42,6 +47,7 @@ def quality_request(model: ModelPlan, schema: StructuredOutputPlan) -> ProviderR
         model.name,
         (Message("system", "Evaluate quality."),),
         structured_output=QualityDecision,
+        reasoning=model.reasoning,
     )
 
 
@@ -90,8 +96,10 @@ class QualityCall:
             ),
             inference=InferenceControls(self.model.temperature, self.model.max_tokens),
             structured_output=QualityDecision,
+            reasoning=self.model.reasoning,
             metadata={"actor_id": actor_id, "turn_id": turn_id, "step_id": step_id},
         )
+        response = None
         try:
             response = await self.provider.generate(request)
             if response.refused:
@@ -118,6 +126,15 @@ class QualityCall:
                     immutable_data(
                         {
                             **identity,
+                            **(
+                                response_evidence(
+                                    response,
+                                    request,
+                                    retain=self.provider_plan.retain_reasoning,
+                                )
+                                if response is not None
+                                else {}
+                            ),
                             "error": {"kind": exc.kind, **exc.metadata}
                             if isinstance(exc, ProviderError)
                             else {"kind": "timeout"},
@@ -137,12 +154,11 @@ class QualityCall:
                 immutable_data(
                     {
                         **identity,
-                        "model": response.model,
-                        "finish_state": response.finish_state,
-                        "usage": response.usage,
-                        "request_id": response.request_id,
-                        "latency_seconds": response.latency_seconds,
-                        "metadata": response.metadata,
+                        **response_evidence(
+                            response,
+                            request,
+                            retain=self.provider_plan.retain_reasoning,
+                        ),
                         "result": decision.model_dump(mode="json", by_alias=True),
                     }
                 ),

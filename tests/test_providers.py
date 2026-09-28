@@ -378,6 +378,7 @@ async def test_malformed_refused_or_incomplete_output_never_causes_effects(
             )
         elif problem == "length_tools":
             wire["choices"][0]["finish_reason"] = "length"
+            kind = "incomplete"
         else:
             wire["choices"][0]["message"]["refusal"] = "declined"
             kind = "refusal"
@@ -457,15 +458,22 @@ type = "object"
 
 
 @pytest.mark.asyncio
-async def test_openai_default_responses_is_rejected_without_silent_fallback(
-    tmp_path: Path,
+async def test_default_openai_missing_credentials_fails_without_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    result = await Runner(output_dir=tmp_path / "runs").run(
-        make_package(tmp_path / "task")
+    root = tmp_path / "task"
+    make_package(root)
+    config = root / "task.toml"
+    config.write_text(
+        config.read_text().replace(
+            'type = "openai"',
+            'type = "openai"\napi_key_env = "AGENTINSTRUCT_MISSING_TEST_KEY"',
+        )
     )
+    monkeypatch.delenv("AGENTINSTRUCT_MISSING_TEST_KEY", raising=False)
+    result = await Runner(output_dir=tmp_path / "runs").run(TaskPackage.load(root))
     assert (
-        load_trace(result.traces[0].path).generation.reason
-        == "provider_unsupported_feature"
+        load_trace(result.traces[0].path).generation.reason == "provider_authentication"
     )
 
 

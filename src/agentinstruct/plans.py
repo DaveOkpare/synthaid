@@ -85,12 +85,35 @@ class Seed:
 
 
 @dataclass(frozen=True)
+class ReasoningControls:
+    """Portable requested reasoning behavior; model support is endpoint-specific."""
+
+    effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"] | None = None
+    summary: Literal["auto", "concise", "detailed"] | None = None
+
+    def __post_init__(self) -> None:
+        if self.effort not in {
+            None,
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+        }:
+            raise ValueError("Unknown reasoning effort")
+        if self.summary not in {None, "auto", "concise", "detailed"}:
+            raise ValueError("Unknown reasoning summary mode")
+
+
+@dataclass(frozen=True)
 class ProviderPlan:
     id: str
     type: str
     api: str
     base_url: str | None
     api_key_env: str | None
+    retain_reasoning: bool = True
 
 
 @dataclass(frozen=True)
@@ -99,6 +122,7 @@ class ModelPlan:
     name: str
     temperature: float | None = None
     max_tokens: int | None = None
+    reasoning: ReasoningControls | None = None
 
 
 @dataclass(frozen=True)

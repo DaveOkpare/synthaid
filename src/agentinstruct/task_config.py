@@ -52,6 +52,7 @@ class ProviderConfig(ConfigModel):
     api: Literal["responses", "chat_completions"] | None = None
     base_url: str | None = None
     api_key_env: VariableName | None = None
+    retain_reasoning: bool = True
 
     @field_validator("base_url")
     @classmethod
@@ -77,11 +78,17 @@ class ProviderConfig(ConfigModel):
         return value
 
 
+class ReasoningConfig(ConfigModel):
+    effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"] | None = None
+    summary: Literal["auto", "concise", "detailed"] | None = None
+
+
 class ModelConfig(ConfigModel):
     provider: Identifier
     name: NonemptyString
     temperature: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
     max_tokens: Annotated[int, Field(gt=0)] | None = None
+    reasoning: ReasoningConfig | None = None
 
 
 class ModelOverride(ConfigModel):
@@ -89,6 +96,7 @@ class ModelOverride(ConfigModel):
     name: NonemptyString | None = None
     temperature: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
     max_tokens: Annotated[int, Field(gt=0)] | None = None
+    reasoning: ReasoningConfig | None = None
 
 
 class ScriptedResponseConfig(ConfigModel):

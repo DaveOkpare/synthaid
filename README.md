@@ -67,7 +67,7 @@ needs no live Runner or original package.
 Generation without a configured Verifier is **unverified**, with a separate
 `terminated` or `truncated` generation outcome. Export requires explicit selection
 of `unverified` or other non-accepted statuses; its default selects only accepted
-Traces. Model Agents can generate through the Chat Completions Provider below.
+Traces. Model Agents can generate through Responses or Chat Completions.
 
 ## Generate through a Chat Completions Provider
 
@@ -85,8 +85,8 @@ For a compatible service, set `type = "openai-compatible"` and its `base_url`
 (for example, `http://127.0.0.1:8000/v1`). Its default surface is Chat Completions.
 Set `api_key_env` if the endpoint requires a credential; omit it for an endpoint
 that requires no authentication. OpenAI defaults to `OPENAI_API_KEY` when the
-reference is omitted. Its default `responses` surface is compiled but currently
-rejected before inference; the framework never silently switches APIs. The example
+reference is omitted. OpenAI uses the `responses` surface by default and supports
+explicit Chat Completions; the framework never silently switches APIs. The example
 is configuration guidance and has not been exercised against a live service.
 
 `Provider` exposes `capabilities`, `async generate(ProviderRequest)`, and
@@ -114,10 +114,63 @@ metadata; resolved credentials and raw transport exception text are excluded.
 Library callers may inject `Runner(provider_factory=...)`; a
 `ChatCompletionsProvider(plan, transport=...)` accepts a public HTTPX asynchronous
 transport and owns its cleanup. The deterministic tests use this boundary without
-network calls. JSON object and JSON Schema format requirements currently map to
-the wire contract; local structured-result validation and Provider-backed quality
-gates arrive in ticket 13. Responses/private reasoning and tested vLLM profiles
-arrive in tickets 14 and 15, respectively.
+network calls. Both surfaces share mandatory local structured-result validation
+and Provider-backed quality gates. Tested vLLM profiles arrive in ticket 15.
+
+## Generate through Responses and retain private reasoning
+
+An `openai` Provider defaults to `api = "responses"`. `ResponsesProvider` also
+accepts the public HTTPX transport injection used by `ChatCompletionsProvider`.
+The default factory supports Responses for OpenAI; generic compatible endpoints
+and vLLM require a declared conformant profile before the factory enables that
+surface. No live endpoint compatibility claim is made by the deterministic tests.
+
+```toml
+[providers.default]
+type = "openai"
+retain_reasoning = true # default; false suppresses persisted reasoning payloads
+
+[model]
+provider = "default"
+name = "your-reasoning-model"
+reasoning = { effort = "low", summary = "auto" }
+```
+
+`ReasoningControls(effort=..., summary=...)` is the equivalent typed Python value
+on `ModelPlan` and `ProviderRequest`. Agent, Reviewer and Verifier model overrides
+inherit these settings. Responses accepts both controls; Chat Completions accepts
+`effort` and rejects summary requests before inference. Actual effort support
+remains model-specific, so endpoint rejection produces an explicit typed error.
+Reasoning settings and the Provider's retention policy are immutable Plan data.
+
+Responses sends the complete accepted history as self-contained `input`, uses
+`store = false`, and never sends `previous_response_id`. It maps token limits to
+`max_output_tokens`, function calls/results to paired `call_id` items, and schemas
+to `text.format`. Ordered text and function calls normalize to the same framework
+Message and locally validated typed values as Chat Completions. Unsupported seed
+sampling and provider-hosted Tools fail explicitly; hosted Tools cannot bypass the
+framework's review-before-effect boundary.
+
+`ProviderResponse.reasoning` contains framework-owned `ReasoningItem` values,
+separate from its Message. Native model-call Events retain returned summaries,
+exposed reasoning text and opaque encrypted continuity data by default, together
+with presence, usage and native output item identifiers. The framework never
+reconstructs hidden reasoning. Reasoning is excluded from Conversation, peer
+Observations and OpenAI training exports. Reviewer calls use the same policy;
+Verifier reasoning belongs to append-only Verification attempt Events.
+
+Stateless reasoning models may require returned private items alongside accepted
+Tool calls and results. Model Agents replay this data only for the same actor's
+newly accepted exact Tool proposal, preserving its order among function calls.
+Rejected proposal reasoning is never continued. `retain_reasoning = false` omits
+all full reasoning and encrypted payloads from persisted Events; presence and
+usage remain, while the accepted continuation exists only in memory during the
+Trace. Direct Provider callers can supply an explicit `ReasoningContinuation`
+paired with its accepted Message.
+
+These semantics follow the official [Responses reference](https://developers.openai.com/api/reference/resources/responses/methods/create),
+[function-calling guide](https://developers.openai.com/api/docs/guides/function-calling)
+and [reasoning guide](https://developers.openai.com/api/docs/guides/reasoning).
 
 ## Run a Seed collection
 
@@ -649,10 +702,11 @@ and the nondeterministic `random` filter is unavailable. A `[seed]`
 otherwise the Seed ID is its canonical content hash.
 
 `[model]` supplies the provider identifier, model name, and optional `temperature`
-and `max_tokens`; an Agent's `[agents.<id>.model]` may override those fields.
+and `max_tokens`, plus typed `reasoning` settings; an Agent's
+`[agents.<id>.model]` may override those fields.
 Provider declarations support `openai`, `openai-compatible`, and `vllm` identities.
-The current runtime implements explicit Chat Completions for `openai` and
-`openai-compatible`; Responses and vLLM runtime profiles remain pending.
+The runtime implements Responses and Chat Completions for `openai` and Chat
+Completions for `openai-compatible`; vLLM runtime profiles remain pending.
 OpenAI defaults to the `responses` API surface; the other types default to
 `chat_completions`. An explicit `api` selects either surface. Credentials use
 `api_key_env` references, never inline values. Validation neither reads those
@@ -775,7 +829,7 @@ fields (nullable values remain allowed) and forbids undeclared properties.
 Explicit JSON Schema contracts are preserved: incompatible strict schemas fail
 preflight instead of having their constraints removed.
 
-Chat Completions preflight checks its documented strict schema subset, including
+Both OpenAI surfaces preflight their documented strict schema subset, including
 local recursive references. Remote schema references are unsupported and never
 fetched. Local JSON, schema, format, and strict Pydantic validation remain mandatory
 regardless of server constrained decoding. Duplicate object keys and nonfinite

@@ -254,6 +254,7 @@ class Runner:
                             (Message("system", agent_plan.base_instruction),),
                             required_tools,
                             tool_choice="auto" if required_tools else None,
+                            reasoning=agent_plan.model.reasoning,
                         ),
                     )
             quality_plans: list[ReviewerPlan | VerifierPlan] = [
