@@ -15,6 +15,7 @@ from pydantic import (
     model_validator,
 )
 
+from agentinstruct.components import component_selector
 from agentinstruct.paths import portable_name, seed_glob, unique_names
 from agentinstruct.plans import (
     CompatibleEndpointProfile,
@@ -181,7 +182,9 @@ class ScriptedResponseConfig(ConfigModel):
 
 
 class ReviewerConfig(ConfigModel):
-    type: Literal["custom", "deterministic", "model"]
+    type: Annotated[
+        str, AfterValidator(lambda value: component_selector("reviewer", value))
+    ]
     model: ModelOverride = Field(default_factory=ModelOverride)
     max_revisions: Annotated[int, Field(ge=0)] = 1
     accept_on_revision_exhaustion: bool = False
@@ -197,7 +200,9 @@ class ReviewerConfig(ConfigModel):
 class AgentConfig(ConfigModel):
     target: bool
     model: ModelOverride = Field(default_factory=ModelOverride)
-    type: Literal["model", "scripted"] = "model"
+    type: Annotated[
+        str, AfterValidator(lambda value: component_selector("agent", value))
+    ] = "model"
     responses: list[str | ScriptedResponseConfig] = Field(default_factory=list)
     reviewer: ReviewerConfig | None = None
     tools: list[Identifier] = Field(default_factory=list)
@@ -212,7 +217,9 @@ class AgentConfig(ConfigModel):
 
 
 class EnvironmentConfig(ConfigModel):
-    type: Literal["single", "dialogue"]
+    type: Annotated[
+        str, AfterValidator(lambda value: component_selector("environment", value))
+    ]
     max_turns: Annotated[int, Field(gt=0)] = 1
     initiator: Literal["user", "assistant"] = "user"
     max_rounds: Annotated[int, Field(gt=0)] = 10
@@ -268,7 +275,9 @@ class StepRubricConfig(ConfigModel):
 
 
 class VerifierConfig(ConfigModel):
-    type: Literal["custom", "deterministic", "model"]
+    type: Annotated[
+        str, AfterValidator(lambda value: component_selector("verifier", value))
+    ]
     model: ModelOverride = Field(default_factory=ModelOverride)
     timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 60.0
     checks: dict[
@@ -283,10 +292,18 @@ class VerifierConfig(ConfigModel):
 
 
 class ToolConfig(ConfigModel):
+    type: Annotated[
+        str, AfterValidator(lambda value: component_selector("tool", value))
+    ] = "custom"
     description: NonemptyString
     input_schema: dict[str, JsonValue] | bool
     output_schema: dict[str, JsonValue] | bool | None = None
     execution_errors: Literal["fail", "result"] = "fail"
+
+    function: str | None = None
+    agent_factory: str | None = None
+    instruction: str | None = None
+    agent_config: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class PackageConfig(ConfigModel):

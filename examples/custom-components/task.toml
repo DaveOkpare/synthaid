@@ -1,0 +1,37 @@
+schema_version = "1"
+[task]
+id = "custom-round-table"
+version = "1"
+[seed]
+path = "seed.json"
+[providers.default]
+type = "openai"
+[model]
+provider = "default"
+name = "unused"
+[runtime]
+type = "local"
+[environment]
+type = "round_table_components:RoundTable"
+[agents.first]
+type = "round_table_components:Participant"
+target = false
+[agents.second]
+type = "round_table_components:Participant"
+target = false
+[agents.target]
+type = "round_table_components:Participant"
+target = true
+tools = ["lookup"]
+[agents.target.reviewer]
+type = "round_table_components:Reviewer"
+[tools.lookup]
+type = "round_table_components:Lookup"
+description = "Return a safe label"
+[tools.lookup.input_schema]
+type = "object"
+properties = {label = {type = "string"}}
+required = ["label"]
+additionalProperties = false
+[verifier]
+type = "round_table_components:Verifier"

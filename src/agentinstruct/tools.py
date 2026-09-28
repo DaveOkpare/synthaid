@@ -2,7 +2,8 @@
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from functools import partial
+from typing import Literal, Protocol, cast
 
 from jsonschema.protocols import Validator
 from jsonschema.validators import validator_for
@@ -81,7 +82,28 @@ class FunctionTool:
 
 
 def create_tool(plan: ToolPlan) -> Tool:
-    raise ValueError(f"Tool {plan.id!r} requires a tool_factory")
+    from agentinstruct.components import construct_component, resolve_callable
+
+    if plan.type == "function":
+        assert plan.function is not None
+        function = resolve_callable(
+            "Tool function", plan.function, 2, asynchronous=True
+        )
+        return FunctionTool(plan, cast(ToolFunction, function))
+    if plan.type == "agent":
+        from agentinstruct.agent_tool import AgentTool
+        from agentinstruct.execution import Agent
+
+        assert plan.agent_factory is not None and plan.instruction is not None
+        factory = resolve_callable(
+            "AgentTool factory", plan.agent_factory, 1, asynchronous=False
+        )
+        return AgentTool(
+            plan,
+            cast(Callable[[], Agent], partial(factory, plan.agent_config)),
+            instruction=plan.instruction,
+        )
+    return cast(Tool, construct_component("tool", plan.type, plan))
 
 
 class ToolError(RuntimeError):

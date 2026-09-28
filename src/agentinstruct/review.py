@@ -1,7 +1,7 @@
 """Per-Message Review contracts, independent of post-generation Verification."""
 
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 from agentinstruct.plans import ReviewerPlan
 from agentinstruct.quality import Rubric, Verdicts
@@ -81,6 +81,6 @@ class DeterministicReviewer:
 
 
 def create_reviewer(plan: ReviewerPlan) -> Reviewer:
-    if plan.type == "deterministic":
-        return DeterministicReviewer(plan)
-    raise ValueError("custom Reviewer requires a reviewer_factory")
+    from agentinstruct.components import construct_component
+
+    return cast(Reviewer, construct_component("reviewer", plan.type, plan))

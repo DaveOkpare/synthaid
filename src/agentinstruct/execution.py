@@ -4,7 +4,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Iterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 from uuid import uuid4
 
 from agentinstruct.plans import (
@@ -79,12 +79,9 @@ class ScriptedAgent:
 
 
 def create_agent(plan: AgentPlan) -> Agent:
-    if plan.type == "scripted":
-        return ScriptedAgent(plan)
-    raise ValueError(
-        "Model Agents require a Runner-managed Provider; use Runner or supply "
-        "an agent_factory to Runner"
-    )
+    from agentinstruct.components import construct_component
+
+    return cast(Agent, construct_component("agent", plan.type, plan))
 
 
 @dataclass(frozen=True)
@@ -616,8 +613,6 @@ class DialogueEnvironment:
 
 
 def create_environment(plan: EnvironmentPlan) -> Environment:
-    if plan.type == "dialogue":
-        return DialogueEnvironment(plan.initiator)
-    if plan.type == "single":
-        return SingleAgentEnvironment()
-    raise ValueError(f"Unknown Environment: {plan.type}")
+    from agentinstruct.components import construct_component
+
+    return cast(Environment, construct_component("environment", plan.type, plan))

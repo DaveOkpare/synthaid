@@ -1,6 +1,7 @@
 """Generate verified traces from agent interactions."""
 
 from agentinstruct.agent_tool import AgentTool
+from agentinstruct.components import BUILTIN_COMPONENTS, ComponentError
 from agentinstruct.execution import Agent, Agents, Environment, Observation, TaskContext
 from agentinstruct.export import export_native, export_openai
 from agentinstruct.plans import (
@@ -70,12 +71,14 @@ from agentinstruct.verification import (
 from agentinstruct.vllm import VllmProvider
 
 __all__ = [
+    "BUILTIN_COMPONENTS",
     "Agent",
     "AgentTool",
     "Agents",
     "ChatCompletionsProvider",
     "CompatibleEndpointProfile",
     "CompatibleSurface",
+    "ComponentError",
     "Criterion",
     "DeterministicReviewer",
     "DeterministicVerifier",

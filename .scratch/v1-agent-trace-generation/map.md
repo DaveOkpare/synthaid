@@ -125,4 +125,13 @@
   [Provider usage](../../README.md#use-explicit-vllm-and-compatible-endpoint-profiles)
   and [conformance instructions](../../conformance/vllm/README.md).
 
-Tickets 16–19 remain unimplemented.
+- **16 — resolved:** [Load custom components through explicit references](issues/16-load-custom-components.md#answer).
+  A small built-in registry and explicit Python class references now validate
+  lazily without instance/client construction, then create fresh protocol-checked
+  runtime components. Custom multi-party Environments use narrow Context/facades;
+  function and Agent Tool adapters retain reviewed effects and actual factory
+  identity/configuration. Source digests and package-local implementation snapshots
+  preserve provenance. See [component authoring](../../README.md#load-custom-components)
+  and the [offline fixture](../../examples/custom-components/task.toml).
+
+Tickets 17–19 remain unimplemented.

@@ -102,6 +102,10 @@ class ComponentProvenance:
     kind: str
     reference: str
     digest: str | None
+    configuration: Mapping[str, FrozenJsonValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "configuration", immutable_data(self.configuration))
 
 
 @dataclass(frozen=True)

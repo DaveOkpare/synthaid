@@ -8,6 +8,7 @@ from typing import Literal, cast
 from uuid import uuid4
 
 from agentinstruct.agent_tool import AgentTool
+from agentinstruct.components import validate_component
 from agentinstruct.execution import (
     Agent,
     AgentHandle,
@@ -291,6 +292,7 @@ class Runner:
             tools: dict[str, Tool] = {}
             for tool_id, tool_plan in plan.tools.items():
                 tool = self._tool_factory(tool_plan)
+                validate_component("tool", tool, tool_plan.type)
                 if (
                     ToolPlan(
                         tool.id,
@@ -298,6 +300,11 @@ class Runner:
                         tool.input_schema,
                         tool.output_schema,
                         tool.execution_errors,
+                        tool_plan.type,
+                        tool_plan.function,
+                        tool_plan.agent_factory,
+                        tool_plan.instruction,
+                        tool_plan.agent_config,
                     )
                     != tool_plan
                 ):
@@ -313,6 +320,12 @@ class Runner:
                         else tool.agent_factory
                         if isinstance(tool, AgentTool)
                         else tool,
+                        configuration={
+                            "instruction": tool.instruction,
+                            "agent_config": tool_plan.agent_config,
+                        }
+                        if isinstance(tool, AgentTool)
+                        else {},
                     )
                 )
             handles: dict[str, AgentHandle] = {}
@@ -331,6 +344,7 @@ class Runner:
                     )
                 else:
                     agent = create_agent(agent_plan)
+                validate_component("agent", agent, agent_plan.type)
                 components.append(component_provenance(f"agent:{agent_id}", agent))
                 reviewer: Reviewer | None = None
                 if agent_plan.reviewer is not None:
@@ -355,6 +369,7 @@ class Runner:
                         )
                     else:
                         reviewer = self._reviewer_factory(review_plan)
+                    validate_component("reviewer", reviewer, review_plan.type)
                     components.append(
                         component_provenance(f"reviewer:{agent_id}", reviewer)
                     )
@@ -381,6 +396,7 @@ class Runner:
                 if self._environment_factory is not None
                 else create_environment(plan.environment)
             )
+            validate_component("environment", environment, plan.environment.type)
             components.append(component_provenance("environment", environment))
             async with deadline:
                 progress.start()

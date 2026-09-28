@@ -1,5 +1,6 @@
 """Load Task Packages and compile Seed records without constructing components."""
 
+import inspect
 import json
 import platform
 import re
@@ -19,6 +20,12 @@ from pydantic import ValidationError
 from referencing import Resource
 from referencing.jsonschema import DRAFT202012
 
+from agentinstruct.components import (
+    ComponentError,
+    ComponentKind,
+    resolve_callable,
+    resolve_component,
+)
 from agentinstruct.paths import package_path, relative_path
 from agentinstruct.plans import (
     AgentPlan,
@@ -64,6 +71,7 @@ from agentinstruct.task_config import (
     StepRubricConfig,
 )
 from agentinstruct.tools import schema_validator
+from agentinstruct.verification import component_provenance
 
 
 def _model_plan(base: ModelPlan | ModelConfig, override: ModelOverride) -> ModelPlan:
@@ -329,6 +337,12 @@ class TaskPackage:
     verifier: VerifierPlan | None = None
     tools: Mapping[str, ToolPlan] = field(default_factory=dict)
     steps: tuple[StepSource, ...] = ()
+    component_digests: Mapping[str, str | None] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "component_digests", MappingProxyType(dict(self.component_digests))
+        )
 
     @classmethod
     def load(cls, path: str | Path) -> Self:
@@ -518,16 +532,24 @@ class TaskPackage:
                 "verifier: directory requires a declared Verifier"
             )
 
-        tools = {
-            tool_id: ToolPlan(
-                tool_id,
-                tool.description,
-                cast(JsonSchema, freeze(tool.input_schema)),
-                cast(JsonSchema | None, freeze(tool.output_schema)),
-                tool.execution_errors,
-            )
-            for tool_id, tool in config.tools.items()
-        }
+        try:
+            tools = {
+                tool_id: ToolPlan(
+                    tool_id,
+                    tool.description,
+                    cast(JsonSchema, freeze(tool.input_schema)),
+                    cast(JsonSchema | None, freeze(tool.output_schema)),
+                    tool.execution_errors,
+                    tool.type,
+                    tool.function,
+                    tool.agent_factory,
+                    tool.instruction,
+                    cast(Mapping[str, FrozenJsonValue], freeze(tool.agent_config)),
+                )
+                for tool_id, tool in config.tools.items()
+            }
+        except ValueError as exc:
+            raise TaskValidationError(f"tools: {exc}") from exc
         for tool_id, tool in tools.items():
             try:
                 schema_validator(tool.input_schema)
@@ -537,6 +559,59 @@ class TaskPackage:
                 raise TaskValidationError(
                     f"tools/{tool_id}: invalid JSON Schema"
                 ) from exc
+        component_references = [("agent", source.type) for source in sources.values()]
+        component_references += [
+            ("reviewer", source.reviewer.type)
+            for source in sources.values()
+            if source.reviewer is not None
+        ]
+        component_references += [("tool", tool.type) for tool in tools.values()]
+        component_references.append(("environment", config.environment.type))
+        if verifier is not None:
+            component_references.append(("verifier", verifier.type))
+        component_digests: dict[str, str | None] = {}
+
+        def retain_component(kind: str, reference: str, component: object) -> None:
+            if component is None:
+                return
+            component_digests[f"{kind}:{reference}"] = component_provenance(
+                kind, component
+            ).digest
+            # Explicit package-local implementation files join the source snapshot;
+            # installed external modules retain their reference and source digest.
+            try:
+                filename = (
+                    inspect.getsourcefile(component)
+                    if inspect.isclass(component)
+                    or inspect.isfunction(component)
+                    or inspect.ismethod(component)
+                    else None
+                )
+            except TypeError:
+                filename = None
+            if filename is not None and Path(filename).absolute().is_relative_to(root):
+                label = Path(filename).absolute().relative_to(root).as_posix()
+                source_files[label] = _read_text(_package_path(root, label), label)
+
+        try:
+            for kind, selector in component_references:
+                component = resolve_component(cast(ComponentKind, kind), selector)
+                retain_component(kind, selector, component)
+            for tool in tools.values():
+                if tool.type == "function":
+                    assert tool.function is not None
+                    function = resolve_callable(
+                        "Tool function", tool.function, 2, asynchronous=True
+                    )
+                    retain_component("Tool function", tool.function, function)
+                elif tool.type == "agent":
+                    assert tool.agent_factory is not None
+                    factory = resolve_callable(
+                        "AgentTool factory", tool.agent_factory, 1, asynchronous=False
+                    )
+                    retain_component("AgentTool factory", tool.agent_factory, factory)
+        except ComponentError as exc:
+            raise TaskValidationError(str(exc)) from exc
         package_digest = content_digest(
             {
                 "config": config.model_dump(mode="json"),
@@ -544,6 +619,7 @@ class TaskPackage:
                 "steps": steps,
                 "verifier": verifier,
                 "seed_schema": seed_schema,
+                "component_digests": component_digests,
             }
         )
         providers = {
@@ -583,6 +659,7 @@ class TaskPackage:
             verifier=verifier,
             tools=MappingProxyType(tools),
             steps=tuple(steps),
+            component_digests=MappingProxyType(component_digests),
         )
 
     def seed_records(
@@ -799,7 +876,9 @@ class TaskPackage:
             environment=self.environment,
             runtime=self.runtime,
             provenance=PlanProvenance(
-                version("agentinstruct"), platform.python_version()
+                version("agentinstruct"),
+                platform.python_version(),
+                self.component_digests,
             ),
             verifier=verifier,
             tools=self.tools,

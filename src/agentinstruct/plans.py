@@ -481,7 +481,7 @@ class ScriptedResponse:
 
 @dataclass(frozen=True)
 class ReviewerPlan:
-    type: Literal["custom", "deterministic", "model"]
+    type: str
     instruction: str
     max_revisions: int = 1
     accept_on_revision_exhaustion: bool = False
@@ -506,7 +506,7 @@ class ReviewerPlan:
         if self.type == "deterministic":
             if set(self.checks.values()) - {"nonempty_content"}:
                 raise ValueError("Unknown deterministic Reviewer check")
-        elif self.type not in {"custom", "model"} or self.checks:
+        elif self.checks:
             raise ValueError(
                 "Custom Reviewers require a factory and no built-in checks"
             )
@@ -522,8 +522,40 @@ class ToolPlan:
     input_schema: JsonSchema
     output_schema: JsonSchema | None = None
     execution_errors: Literal["fail", "result"] = "fail"
+    type: str = "custom"
+    function: str | None = None
+    agent_factory: str | None = None
+    instruction: str | None = None
+    agent_config: Mapping[str, FrozenJsonValue] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "agent_config", freeze(json_value(self.agent_config)))
+        if self.type == "function":
+            if (
+                self.function is None
+                or self.agent_factory is not None
+                or self.instruction is not None
+                or self.agent_config
+            ):
+                raise ValueError(
+                    "Function Tool requires only an explicit function reference"
+                )
+        elif self.type == "agent":
+            if (
+                self.agent_factory is None
+                or self.instruction is None
+                or self.function is not None
+            ):
+                raise ValueError(
+                    "Agent Tool requires an explicit factory and instruction"
+                )
+        elif (
+            self.function is not None
+            or self.agent_factory is not None
+            or self.instruction is not None
+            or self.agent_config
+        ):
+            raise ValueError("Tool adapter settings require function or agent type")
         if self.execution_errors not in {"fail", "result"}:
             raise ValueError("Tool execution_errors must be fail or result")
         for name in ("input_schema", "output_schema"):
@@ -583,11 +615,17 @@ class RuntimePlan:
 class PlanProvenance:
     package_version: str
     python_version: str
+    component_digests: Mapping[str, str | None] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "component_digests", MappingProxyType(dict(self.component_digests))
+        )
 
 
 @dataclass(frozen=True)
 class VerifierPlan:
-    type: Literal["custom", "deterministic", "model"]
+    type: str
     rubric: Rubric
     timeout_seconds: float = 60.0
     checks: Mapping[str, Literal["nonempty_conversation", "generation_terminated"]] = (
@@ -621,7 +659,7 @@ class VerifierPlan:
                 "generation_terminated",
             }:
                 raise ValueError("Unknown deterministic Verifier check")
-        elif self.type not in {"custom", "model"} or self.checks:
+        elif self.checks:
             raise ValueError(
                 "Custom Verifiers require a factory and no built-in checks"
             )

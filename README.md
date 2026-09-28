@@ -69,6 +69,99 @@ Generation without a configured Verifier is **unverified**, with a separate
 of `unverified` or other non-accepted statuses; its default selects only accepted
 Traces. Model Agents can generate through Responses or Chat Completions.
 
+## Load custom components
+
+Built-in identifiers use the small `BUILTIN_COMPONENTS` registry. Explicit Python
+references use `module:Class`, including nested class attributes; a failed explicit
+lookup reports that exact reference and never falls back to a built-in. Modules
+must already be importable. There is no discovery or automatic installation.
+
+| Component | Built-in identifiers | Custom class constructor | Required async methods |
+| --- | --- | --- | --- |
+| Agent | `model`, `scripted` | `Class(agent_plan)` | `generate(observation)` |
+| Environment | `single`, `dialogue` | `Class()` | `setup(agents)`, `run(task, agents)` |
+| Tool | `function`, `agent`, `custom` | `Class(tool_plan)` | `call(arguments, context)` |
+| Reviewer | `model`, `deterministic`, `custom` | `Class(reviewer_plan)` | `review(request)` |
+| Verifier | `model`, `deterministic`, `custom` | `Class(verifier_plan)` | `verify(trace)` |
+
+Set the component's `type` to its explicit reference, for example:
+
+```toml
+[environment]
+type = "my_extension:RoundTable"
+
+[agents.target]
+type = "my_extension:Participant"
+target = true
+
+[agents.target.reviewer]
+type = "my_extension:Reviewer"
+
+[verifier]
+type = "my_extension:Verifier"
+```
+
+`TaskPackage.load` imports only the requested definitions, checks constructor and
+async method signatures, and snapshots their source digests. It does not construct
+instances or model clients. Extension modules must keep imports free of runtime
+work. The Runner creates fresh instances for each Trace and validates instance
+protocols before use; Tool declaration properties are checked after construction.
+The existing injected factories continue to work, including `type = "custom"`
+Reviewer/Verifier declarations and Tool declarations without a type. Model
+components retain their Runner-managed Provider construction.
+
+A custom Environment has a no-argument constructor and receives `TaskContext`
+and run-bound `Agents` through its hooks. The immutable context contains Task and
+Seed identity, Variables, limits and Step controls. Ordinary async Python can open
+any participant's `interaction(task)` and relay the accepted `last_reply` returned
+by `turn()`. There is no public recorder, raw Run Plan or Provider client on these
+facades. An optional `async finalize(task, trace)` hook receives the existing
+immutable finalization snapshot. Custom scheduling retains the same review,
+private Tool history, durable Message Commits and framework scoring boundaries.
+
+The [offline custom-component Task](examples/custom-components/task.toml) uses
+all five reference kinds with three participants, two Seeds, a rejected Tool
+proposal followed by revision, and a final Verifier. Its Python module is explicit
+and local; add that directory to the import path for these commands:
+
+```sh
+PYTHONPATH=examples/custom-components uv run agentinstruct validate examples/custom-components --json
+PYTHONPATH=examples/custom-components uv run agentinstruct run examples/custom-components --output runs --json
+```
+
+Keep the module importable when running `reverify` on its saved Trace. Inspection
+and export need only the saved artifacts. Explicit implementation files inside a
+Task Package join its source snapshot; installed external components retain their
+reference and source digest. Compiled Plans also retain `component_digests` in
+provenance. Missing source text is represented by a null digest.
+
+Function and subordinate-Agent Tool adapters also have explicit declarations:
+
+```toml
+[tools.lookup]
+type = "function"
+function = "my_extension:lookup"
+description = "Look up a label."
+input_schema = { type = "object" }
+
+[tools.delegate]
+type = "agent"
+agent_factory = "my_extension:Subordinate"
+agent_config = { label = "safe" }
+instruction = "Return the configured label as JSON."
+description = "Produce an isolated structured reply."
+input_schema = { type = "object" }
+```
+
+A function reference must be an `async def(arguments, context)`. An Agent Tool
+factory is synchronous, accepts one immutable configuration mapping, and returns a
+fresh Agent for each call; a class with that constructor is also supported. Its
+instruction is a literal string. The subordinate retains the existing isolated
+Observation and no nested-effect contract. Native provenance records the actual
+function/factory identity and source digest; Agent Tools also retain the instruction
+and declared configuration. Configuration is JSON authoring data, so credentials
+belong in runtime secret sources rather than these retained declarations.
+
 ## Generate through a Chat Completions Provider
 
 The [model example](examples/chat-completions/task.toml) selects
@@ -414,7 +507,8 @@ max_revisions = 1
 accept_on_revision_exhaustion = false
 ```
 
-For custom Review, pass `Runner(reviewer_factory=...)`. The factory receives a
+For custom Review, select an [explicit class reference](#load-custom-components)
+or pass `Runner(reviewer_factory=...)`. The factory receives a
 `ReviewerPlan` and constructs a fresh instance per Agent per Trace implementing
 `async review(request: ReviewRequest) -> ReviewResult`. The request contains the
 stable Reviewer `instruction`, active `rubric`, exact proposed `message`, accepted
@@ -607,7 +701,8 @@ A score at or above the threshold is accepted; a lower valid score is rejected.
 The two built-in checks evaluate structural completion, not content quality.
 Each configured deterministic check must correspond to exactly one Criterion.
 
-For domain-specific code or a judge-shaped extension, use `type = "custom"`
+For domain-specific code or a judge-shaped extension, select an
+[explicit class reference](#load-custom-components), or use `type = "custom"`
 without `[verifier.checks]` and provide `Runner(verifier_factory=...)`. Each
 factory receives the immutable `VerifierPlan` and constructs a fresh `Verifier`
 implementing `async verify(trace: TraceSnapshot) -> VerificationResult`. Return

@@ -38,6 +38,7 @@ class AgentTool:
         self.execution_errors = plan.execution_errors
         self.agent_factory = agent_factory
         self.instruction = instruction
+        self._agent_reference = plan.agent_factory or plan.id
 
     async def call(
         self, args: Mapping[str, FrozenJsonValue], context: ToolContext
@@ -46,7 +47,18 @@ class AgentTool:
             validate_tool_data(args, self.input_schema)
         except Exception as exc:
             raise ToolError("arguments") from exc
-        action = await self.agent_factory().generate(
+        from agentinstruct.components import ComponentError, validate_component
+
+        try:
+            agent = self.agent_factory()
+        except Exception as exc:
+            raise ComponentError(
+                "AgentTool factory",
+                self._agent_reference,
+                f"construction failed ({type(exc).__name__})",
+            ) from None
+        validate_component("agent", agent, self._agent_reference)
+        action = await agent.generate(
             Observation(
                 self.id,
                 self.instruction,

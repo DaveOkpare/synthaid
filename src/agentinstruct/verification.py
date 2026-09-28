@@ -5,14 +5,22 @@ import hashlib
 import inspect
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from time import monotonic
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 from uuid import uuid4
 
 from pydantic import TypeAdapter
 
-from agentinstruct.plans import ProviderPlan, Seed, VerifierPlan, canonical_json
+from agentinstruct.components import validate_component
+from agentinstruct.plans import (
+    FrozenJsonValue,
+    ProviderPlan,
+    Seed,
+    VerifierPlan,
+    canonical_json,
+)
 from agentinstruct.providers import Provider, ProviderError, create_provider
 from agentinstruct.quality import Verdicts, score_verdicts
 from agentinstruct.quality_provider import QualityCall, quality_request
@@ -34,7 +42,14 @@ if TYPE_CHECKING:
     from agentinstruct.task_package import TaskPackage
 
 
-def component_provenance(kind: str, component: object) -> ComponentProvenance:
+def component_provenance(
+    kind: str,
+    component: object,
+    *,
+    configuration: Mapping[str, FrozenJsonValue] | None = None,
+) -> ComponentProvenance:
+    while isinstance(component, partial):
+        component = component.func
     cls = (
         component
         if inspect.isfunction(component)
@@ -48,7 +63,9 @@ def component_provenance(kind: str, component: object) -> ComponentProvenance:
         digest = hashlib.sha256(source).hexdigest()
     except (OSError, TypeError):
         digest = None
-    return ComponentProvenance(kind, f"{cls.__module__}:{cls.__qualname__}", digest)
+    return ComponentProvenance(
+        kind, f"{cls.__module__}:{cls.__qualname__}", digest, configuration or {}
+    )
 
 
 @dataclass(frozen=True)
@@ -102,9 +119,9 @@ class DeterministicVerifier:
 
 
 def create_verifier(plan: VerifierPlan) -> Verifier:
-    if plan.type == "deterministic":
-        return DeterministicVerifier(plan)
-    raise ValueError("custom Verifier requires a verifier_factory")
+    from agentinstruct.components import construct_component
+
+    return cast(Verifier, construct_component("verifier", plan.type, plan))
 
 
 async def reverify(
@@ -181,6 +198,7 @@ async def reverify(
                 )
             else:
                 verifier = verifier_factory(plan)
+            validate_component("verifier", verifier, plan.type)
             provenance = component_provenance("verifier", verifier)
             result = await verifier.verify(trace)
         stage = "malformed"
