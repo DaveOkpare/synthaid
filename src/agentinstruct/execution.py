@@ -53,6 +53,7 @@ class Observation:
     review_feedback: str | None = None
     tools: tuple[ToolPlan, ...] = ()
     step_id: str | None = None
+    turn_id: str | None = None
 
 
 class Agent(Protocol):
@@ -81,8 +82,8 @@ def create_agent(plan: AgentPlan) -> Agent:
     if plan.type == "scripted":
         return ScriptedAgent(plan)
     raise ValueError(
-        "Model Agent adapters are not implemented yet; configure a scripted Agent "
-        "or supply an agent_factory to Runner"
+        "Model Agents require a Runner-managed Provider; use Runner or supply "
+        "an agent_factory to Runner"
     )
 
 
@@ -153,7 +154,9 @@ class Interaction:
             "\n\n" + active.agents[self._plan.id].instruction if active else ""
         )
 
-    def _observation(self, feedback: str | None = None) -> Observation:
+    def _observation(
+        self, feedback: str | None = None, *, turn_id: str | None = None
+    ) -> Observation:
         return Observation(
             self._plan.id,
             self._instruction,
@@ -170,6 +173,7 @@ class Interaction:
                 + (self._progress.available_controls if self._plan.target else ())
             ),
             self._progress.step_id,
+            turn_id,
         )
 
     def _event(
@@ -336,7 +340,7 @@ class Interaction:
             raise ValueError("Incoming reply must reference an accepted Message")
         turn_id = uuid4().hex
         if action is None:
-            action = await self._agent.generate(self._observation())
+            action = await self._agent.generate(self._observation(turn_id=turn_id))
         proposals = deque(action if isinstance(action, list) else [action])
         if not proposals:
             raise ValueError("Agent returned no Messages")
@@ -373,7 +377,9 @@ class Interaction:
                     if review_exhausted:
                         break
                     raise ReviewExhausted("Reviewer revisions exhausted")
-                revision = await self._agent.generate(self._observation(feedback))
+                revision = await self._agent.generate(
+                    self._observation(feedback, turn_id=turn_id)
+                )
                 revised = revision if isinstance(revision, list) else [revision]
                 if not revised:
                     raise ValueError("Agent returned no Messages")
@@ -409,7 +415,9 @@ class Interaction:
             if message.tool_calls:
                 for call in message.tool_calls:
                     await self._execute_tool(call, message, turn_id)
-                continuation = await self._agent.generate(self._observation())
+                continuation = await self._agent.generate(
+                    self._observation(turn_id=turn_id)
+                )
                 proposals.extend(
                     continuation if isinstance(continuation, list) else [continuation]
                 )

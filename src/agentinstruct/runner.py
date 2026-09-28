@@ -18,18 +18,26 @@ from agentinstruct.execution import (
     create_agent,
     create_environment,
 )
+from agentinstruct.model_agent import ModelAgent
 from agentinstruct.plans import (
     AgentPlan,
     EnvironmentPlan,
+    ProviderPlan,
     ReviewerPlan,
     RunPlan,
     TaskIdentity,
     ToolPlan,
     VerifierPlan,
 )
+from agentinstruct.providers import (
+    Provider,
+    ProviderError,
+    ProviderRequest,
+    create_provider,
+)
 from agentinstruct.review import Reviewer, ReviewError, ReviewExhausted, create_reviewer
 from agentinstruct.seeds import SeedInput, SeedRecord, SeedSourceError
-from agentinstruct.steps import StepProgress
+from agentinstruct.steps import CONTROL_TOOLS, StepProgress
 from agentinstruct.store import LocalRunStore, TraceRecorder, load_trace, timestamp
 from agentinstruct.task_package import TaskPackage, TaskValidationError
 from agentinstruct.tools import FunctionTool, Tool, ToolContext, ToolError, create_tool
@@ -38,6 +46,7 @@ from agentinstruct.traces import (
     ComponentProvenance,
     Event,
     GenerationOutcome,
+    Message,
     RunResult,
     TraceReference,
     TraceSnapshot,
@@ -57,7 +66,8 @@ class Runner:
         self,
         *,
         output_dir: str | Path = "runs",
-        agent_factory: Callable[[AgentPlan], Agent] = create_agent,
+        agent_factory: Callable[[AgentPlan], Agent] | None = None,
+        provider_factory: Callable[[ProviderPlan], Provider] = create_provider,
         environment_factory: Callable[[EnvironmentPlan], Environment] | None = None,
         verifier_factory: Callable[[VerifierPlan], Verifier] = create_verifier,
         reviewer_factory: Callable[[ReviewerPlan], Reviewer] = create_reviewer,
@@ -65,6 +75,7 @@ class Runner:
     ) -> None:
         self._store = LocalRunStore(output_dir)
         self._agent_factory = agent_factory
+        self._provider_factory = provider_factory
         self._environment_factory = environment_factory
         self._verifier_factory = verifier_factory
         self._reviewer_factory = reviewer_factory
@@ -207,9 +218,37 @@ class Runner:
 
         record("trace_started")
         environment: Environment | None = None
+        providers: dict[str, Provider] = {}
         stage = "component_construction"
         deadline = asyncio.timeout(plan.environment.timeout_seconds)
         try:
+            # Build and preflight every used surface before any participant can infer.
+            # Custom Agent factories and scripted Tasks require no Provider clients.
+            if self._agent_factory is None:
+                for agent_plan in plan.agents.values():
+                    if agent_plan.type != "model":
+                        continue
+                    provider_id = agent_plan.model.provider
+                    provider_plan = plan.providers[provider_id]
+                    if provider_id not in providers:
+                        providers[provider_id] = self._provider_factory(provider_plan)
+                        components.append(
+                            component_provenance(
+                                f"provider:{provider_id}", providers[provider_id]
+                            )
+                        )
+                    required_tools = tuple(plan.tools[key] for key in agent_plan.tools)
+                    if agent_plan.target and plan.steps:
+                        required_tools += tuple(CONTROL_TOOLS.values())
+                    providers[provider_id].capabilities.require(
+                        provider_plan.api,
+                        ProviderRequest(
+                            agent_plan.model.name,
+                            (Message("system", agent_plan.base_instruction),),
+                            required_tools,
+                            tool_choice="auto" if required_tools else None,
+                        ),
+                    )
             tools: dict[str, Tool] = {}
             for tool_id, tool_plan in plan.tools.items():
                 tool = self._tool_factory(tool_plan)
@@ -239,7 +278,20 @@ class Runner:
                 )
             handles: dict[str, AgentHandle] = {}
             for agent_id, agent_plan in plan.agents.items():
-                agent = self._agent_factory(agent_plan)
+                agent: Agent
+                if self._agent_factory is not None:
+                    agent = self._agent_factory(agent_plan)
+                elif agent_plan.type == "model":
+                    agent = ModelAgent(
+                        agent_plan,
+                        plan.providers[agent_plan.model.provider],
+                        providers[agent_plan.model.provider],
+                        record_event=recorder.event,
+                        run_id=run_id,
+                        trace_id=trace_id,
+                    )
+                else:
+                    agent = create_agent(agent_plan)
                 components.append(component_provenance(f"agent:{agent_id}", agent))
                 reviewer = None
                 if agent_plan.reviewer is not None:
@@ -287,6 +339,15 @@ class Runner:
                     outcome = GenerationOutcome("truncated", "incomplete_steps")
             if outcome.state == "failed":
                 status = "failed"
+        except ProviderError as exc:
+            status = "failed"
+            outcome = GenerationOutcome("failed", f"provider_{exc.kind}")
+            record(
+                "error",
+                stage="provider",
+                exception=type(exc).__name__,
+                message=str(exc),
+            )
         except ToolError as exc:
             status = "failed"
             outcome = GenerationOutcome("failed", f"tool_{exc.kind}")
@@ -328,6 +389,17 @@ class Runner:
                         stage="environment_finalize",
                         exception=type(exc).__name__,
                         message=str(exc),
+                    )
+            for provider in providers.values():
+                try:
+                    await provider.aclose()
+                except Exception:
+                    status = "failed"
+                    outcome = GenerationOutcome("failed", "provider_cleanup")
+                    record(
+                        "error",
+                        stage="provider_cleanup",
+                        message="Provider cleanup failed",
                     )
         record("generation_finished", state=outcome.state, reason=outcome.reason)
         record("trace_finished", status=status)

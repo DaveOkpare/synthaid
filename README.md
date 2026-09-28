@@ -67,7 +67,57 @@ needs no live Runner or original package.
 Generation without a configured Verifier is **unverified**, with a separate
 `terminated` or `truncated` generation outcome. Export requires explicit selection
 of `unverified` or other non-accepted statuses; its default selects only accepted
-Traces. Live model adapters arrive in later tickets.
+Traces. Model Agents can generate through the Chat Completions Provider below.
+
+## Generate through a Chat Completions Provider
+
+The [model example](examples/chat-completions/task.toml) selects
+`api = "chat_completions"` explicitly. Replace its placeholder model name with a
+model available to your account and set `OPENAI_API_KEY` in your runtime environment.
+Credentials are read only when inference starts. Validation remains offline:
+
+```sh
+uv run agentinstruct validate examples/chat-completions --json
+uv run agentinstruct run examples/chat-completions --output runs --json
+```
+
+For a compatible service, set `type = "openai-compatible"` and its `base_url`
+(for example, `http://127.0.0.1:8000/v1`). Its default surface is Chat Completions.
+Set `api_key_env` if the endpoint requires a credential; omit it for an endpoint
+that requires no authentication. OpenAI defaults to `OPENAI_API_KEY` when the
+reference is omitted. Its default `responses` surface is compiled but currently
+rejected before inference; the framework never silently switches APIs. The example
+is configuration guidance and has not been exercised against a live service.
+
+`Provider` exposes `capabilities`, `async generate(ProviderRequest)`, and
+`async aclose()`. Framework-owned requests contain ordered Messages, function
+Tool definitions and choice, response-format requirements, inference controls,
+and identity metadata. Responses contain one assistant proposal, finish state,
+usage, request ID, latency, and allowlisted metadata. The adapter maps `max_tokens`
+to the current Chat Completions `max_completion_tokens` field. It sends complete
+accepted history with `store = false`, `stream = false`, and one requested choice.
+Model Agents project their own accepted Messages as assistant Messages and other
+participants as user Messages. Only the acting participant's private Tool history
+and current review feedback enter its request. A generated Tool call still needs
+review, durable commit, assignment checking, and schema validation before execution.
+
+The Runner preflights every used surface before the first inference and closes its
+Providers after each Trace, including failures and timeouts. Scripted Agents and
+custom Agent factories do not construct unused Providers. Failures retain distinct
+`ProviderError.kind` categories for authentication, authorization, rate limits,
+timeouts, network, invalid requests, unsupported features, unavailable models,
+server errors, malformed responses, and unknown errors. There are no automatic
+retries or redirect/API fallbacks. Refused or incomplete proposals cannot authorize
+Tool effects. Trace Events retain model-call identity, usage, latency and safe
+metadata; resolved credentials and raw transport exception text are excluded.
+
+Library callers may inject `Runner(provider_factory=...)`; a
+`ChatCompletionsProvider(plan, transport=...)` accepts a public HTTPX asynchronous
+transport and owns its cleanup. The deterministic tests use this boundary without
+network calls. JSON object and JSON Schema format requirements currently map to
+the wire contract; local structured-result validation and Provider-backed quality
+gates arrive in ticket 13. Responses/private reasoning and tested vLLM profiles
+arrive in tickets 14 and 15, respectively.
 
 ## Run a Seed collection
 
@@ -600,8 +650,9 @@ otherwise the Seed ID is its canonical content hash.
 
 `[model]` supplies the provider identifier, model name, and optional `temperature`
 and `max_tokens`; an Agent's `[agents.<id>.model]` may override those fields.
-Provider declarations support `openai`, `openai-compatible`, and `vllm` identities
-for compilation only. They are not a claim of implemented runtime adapters.
+Provider declarations support `openai`, `openai-compatible`, and `vllm` identities.
+The current runtime implements explicit Chat Completions for `openai` and
+`openai-compatible`; Responses and vLLM runtime profiles remain pending.
 OpenAI defaults to the `responses` API surface; the other types default to
 `chat_completions`. An explicit `api` selects either surface. Credentials use
 `api_key_env` references, never inline values. Validation neither reads those

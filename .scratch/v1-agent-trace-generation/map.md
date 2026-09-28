@@ -90,4 +90,13 @@
   [mixed-source package](../../examples/seed-sources/task.toml), and the
   [iterable example](../../examples/seed-sources/run.py).
 
-Tickets 12–19 remain unimplemented.
+- **12 — resolved:** [Generate through a Chat Completions Provider](issues/12-generate-through-chat-completions-provider.md#answer).
+  Immutable semantic Provider models, per-surface capabilities, lazy stateless
+  Chat Completions inference, strict response normalization and classified safe
+  failures now drive model Agents through the existing reviewed acceptance boundary.
+  Runner preflight and cleanup, private actor-relative history and model-call
+  evidence are exercised using deterministic HTTP transports. See
+  [Provider usage](../../README.md#generate-through-a-chat-completions-provider)
+  and the [model example](../../examples/chat-completions/task.toml).
+
+Tickets 13–19 remain unimplemented.
