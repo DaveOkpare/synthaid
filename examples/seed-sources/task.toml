@@ -1,0 +1,39 @@
+schema_version = "1"
+
+[task]
+id = "seed-sources"
+version = "1"
+
+[seed]
+path = "seeds"
+glob = "*"
+schema = "seed.schema.json"
+id_variable = "case_id"
+
+[variables]
+case_id = "id"
+name = "name"
+
+[providers.default]
+type = "openai"
+
+[model]
+provider = "default"
+name = "unused-model"
+
+[runtime]
+type = "local"
+
+[environment]
+type = "single"
+
+[agents.assistant]
+target = true
+type = "scripted"
+responses = ["Seed received."]
+
+[verifier]
+type = "deterministic"
+
+[verifier.checks]
+reply = "nonempty_conversation"

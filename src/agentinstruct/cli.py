@@ -26,11 +26,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         "validate", help="Compile a Task Package without model calls"
     )
     validate.add_argument("package", help="Task Package directory")
-    validate.add_argument("--seed", help="Override the JSON or JSONL Seed source")
+    validate.add_argument(
+        "--seed", help="Override the JSON, JSONL, CSV, or directory Seed source"
+    )
     validate.add_argument("--json", action="store_true", dest="as_json")
     run = commands.add_parser("run", help="Generate durable Traces from a Seed source")
     run.add_argument("package", help="Task Package directory")
-    run.add_argument("--seed", help="Override the JSON or JSONL Seed source")
+    run.add_argument(
+        "--seed", help="Override the JSON, JSONL, CSV, or directory Seed source"
+    )
     run.add_argument("--output", default="runs", help="Run output directory")
     run.add_argument("--json", action="store_true", dest="as_json")
     run.add_argument(

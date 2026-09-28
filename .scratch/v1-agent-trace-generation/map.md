@@ -81,4 +81,13 @@
   See [collection usage](../../README.md#run-a-seed-collection) and the
   [offline example](../../examples/seed-collection/task.toml).
 
-Tickets 11–19 remain unimplemented.
+- **11 — resolved:** [Complete Seed sources and package safety](issues/11-complete-seed-sources-package-safety.md#answer).
+  CSV exact-header bindings, deterministic directory preflight, Python iterable
+  Seeds, and offline Seed schemas share compilation and durable failure scoping.
+  Portable names, confined references, precise layouts, and safe export/output
+  destinations protect authoring and immutable evidence. See
+  [source usage](../../README.md#run-a-seed-collection), the
+  [mixed-source package](../../examples/seed-sources/task.toml), and the
+  [iterable example](../../examples/seed-sources/run.py).
+
+Tickets 12–19 remain unimplemented.

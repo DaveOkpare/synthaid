@@ -4,7 +4,7 @@ A Python framework for generating verified traces from agent interactions.
 
 Task Package validation, compilation, deterministic single-Agent and dialogue
 generation, reviewed private function Tools, per-Agent Review and revision,
-final Verification, reverification, sequential JSON/JSONL Seed collections,
+final Verification, reverification, sequential file and iterable Seed collections,
 and native/OpenAI JSONL export
 are available through the typed library
 and CLI. Further capabilities follow the
@@ -133,8 +133,55 @@ the storage remains writable.
 counts for a collection. A source error also appears as `source_error`; already
 compiled records remain in the report. A single valid record additionally retains
 the existing `plan` field. `TaskPackage.compile()` remains the one-record API and
-rejects sources with zero or multiple records. CSV, directory sources, Python
-iterables, and Seed JSON Schema validation arrive in ticket 11.
+rejects sources with zero or multiple records.
+
+The [Seed sources example](examples/seed-sources/task.toml) combines CSV and JSON
+files in a directory and validates each record against an offline JSON Schema:
+
+```sh
+uv run agentinstruct validate examples/seed-sources --json
+uv run agentinstruct run examples/seed-sources --output runs --json
+uv run python examples/seed-sources/run.py
+```
+
+Directory sources require `[seed] glob = "*.jsonl"` (recursive patterns such as
+`**/*.jsonl` work too). Matching files are preflighted together, sorted by
+Unicode-normalized path, and consumed in record order. `--seed` can override a
+file or directory outside the package; directory overrides reuse the declared
+glob. A file override works even when the package declares a directory.
+
+CSV values remain strings in a flat mapping. Variable selectors address exact
+headers, so `name = "full name"` and `case_id = "case.id"` are valid CSV bindings.
+JSON and Python mapping inputs instead use validated dot paths through nested
+mappings. Origins retain the input format and 1-based record position; CSV uses
+the physical start line, including its header line. Wrong-width rows produce
+invalid Traces; duplicate headers or unrecoverable CSV quoting fail the source.
+
+Add `[seed] schema = "seed.schema.json"` for optional JSON Schema validation before
+ID extraction, Variables, and rendering. The schema is preserved in the source
+Task snapshot and Task digest. Schema references must stay within that document;
+the validator uses an offline registry. Schema violations remain per-record
+invalid Traces.
+
+The `seeds=` argument accepts an iterable of JSON-compatible mappings or explicit
+`Seed` objects on `Runner.run`, `generate`, `generate_sync`, `validate`, and
+`compile`. It is mutually exclusive with `seed_path`. Mappings get a
+`python:seeds` origin and a 1-based position, and follow the configured ID Variable
+or content-hash rule. Explicit Seeds retain their logical ID and origin; their
+digest is recomputed from their frozen data. Every declared Variable must still
+resolve. Invalid yielded data is indexed without calling arbitrary object
+representations; exceptions while acquiring or advancing the iterator fail the
+Run and preserve earlier attempts.
+
+Package references use exact path spelling, confined relative paths, portable
+names, and no symbolic links. Agent and step directories must match their declared
+participants and instruction/review files. Directory sources reject symbolic-link
+directories and unsafe matched files before processing any record. Exports
+preflight every selected source and reject destinations within its Run, Trace,
+or Verification evidence, as well as symbolic/hard-link output aliases. Run output
+directories also reject symbolic links. The standard macOS `/tmp`, `/var`, and
+`/etc` aliases are accepted when they resolve to their corresponding `/private`
+locations; links below them remain forbidden.
 
 ## Generate and export a dialogue
 

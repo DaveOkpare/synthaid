@@ -3,15 +3,24 @@
 from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
+from agentinstruct.paths import portable_name, seed_glob, unique_names
 from agentinstruct.plans import JsonValue
 from agentinstruct.quality import Criterion, Rubric
 from agentinstruct.steps import CONTROL_TOOLS
 
-Identifier = Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]*$")]
+Identifier = Annotated[
+    str, Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]*$"), AfterValidator(portable_name)
+]
 VariableName = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
-Selector = Annotated[str, Field(pattern=r"^[^.\[\]\s]+(?:\.[^.\[\]\s]+)*$")]
 NonemptyString = Annotated[str, Field(min_length=1)]
 
 
@@ -27,22 +36,15 @@ class TaskConfig(ConfigModel):
     @field_validator("steps")
     @classmethod
     def validate_steps(cls, steps: list[str]) -> list[str]:
-        names = {step.casefold() for step in steps}
-        if len(names) != len(steps):
-            raise ValueError(
-                "Task Step identifiers must be unique after case normalization"
-            )
-        reserved = {"con", "prn", "aux", "nul"} | {
-            f"{prefix}{number}" for prefix in ("com", "lpt") for number in range(1, 10)
-        }
-        if names.intersection(reserved) or any(len(step) > 255 for step in steps):
-            raise ValueError("Task Step identifiers must be portable directory names")
+        unique_names(steps, "Task Step identifiers")
         return steps
 
 
 class SeedSourceConfig(ConfigModel):
     path: NonemptyString
     id_variable: VariableName | None = None
+    schema_path: NonemptyString | None = Field(default=None, alias="schema")
+    glob: Annotated[str, AfterValidator(seed_glob)] | None = None
 
 
 class ProviderConfig(ConfigModel):
@@ -193,7 +195,7 @@ class PackageConfig(ConfigModel):
     schema_version: Literal["1"]
     task: TaskConfig
     seed: SeedSourceConfig
-    variables: dict[VariableName, Selector] = Field(default_factory=dict)
+    variables: dict[VariableName, NonemptyString] = Field(default_factory=dict)
     providers: dict[Identifier, ProviderConfig]
     model: ModelConfig
     agents: dict[Identifier, AgentConfig]
@@ -223,13 +225,16 @@ class PackageConfig(ConfigModel):
             ("providers", self.providers),
             ("tools", self.tools),
         ):
-            if len({name.casefold() for name in names}) != len(names):
-                raise ValueError(f"{kind} identifiers collide after case normalization")
-        for agent in self.agents.values():
+            unique_names(list(names), f"{kind} identifiers")
+        for agent_id, agent in self.agents.items():
             if len(set(agent.tools)) != len(agent.tools):
-                raise ValueError("Agent Tool assignments must be unique")
-            if set(agent.tools) - self.tools.keys():
-                raise ValueError("Agent tools reference an undeclared Tool")
+                raise ValueError(f"agents.{agent_id}.tools assignments must be unique")
+            undeclared = set(agent.tools) - self.tools.keys()
+            if undeclared:
+                raise ValueError(
+                    f"agents.{agent_id}.tools reference an undeclared Tool: "
+                    + ", ".join(sorted(undeclared))
+                )
         if {name.casefold() for name in self.tools}.intersection(CONTROL_TOOLS):
             raise ValueError(
                 "Tool identifiers collide with reserved Task Step controls"

@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from pydantic import TypeAdapter
 
+from agentinstruct.paths import output_path
 from agentinstruct.plans import RunPlan, canonical_json
 from agentinstruct.traces import (
     Event,
@@ -100,7 +101,7 @@ class LocalRunStore:
         self.root = Path(root)
 
     def open_run(self, run_id: str, source_files: Mapping[str, str]) -> Path:
-        path = self.root.resolve() / run_id
+        path = output_path(self.root) / run_id
         path.mkdir(parents=True)
         source_root = path / "source-task"
         source_root.mkdir()

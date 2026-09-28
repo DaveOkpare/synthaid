@@ -70,6 +70,7 @@ class TaskIdentity:
 class SeedOrigin:
     path: str
     record: int = 1
+    format: Literal["json", "csv", "python"] = "json"
 
 
 @dataclass(frozen=True)

@@ -90,7 +90,7 @@ async def test_single_seed_produces_a_complete_durable_trace(tmp_path: Path) -> 
     assert trace.run_plan["seed"] == {
         "id": "case-1",
         "data": {"id": "case-1", "name": "Ada"},
-        "origin": {"path": "seed.json", "record": 1},
+        "origin": {"path": "seed.json", "record": 1, "format": "json"},
         "digest": package.compile().seed.digest,
     }
     assert len(trace.conversation) == 1

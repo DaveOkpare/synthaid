@@ -2,8 +2,9 @@
 
 import json
 import platform
+import re
 import tomllib
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from functools import wraps
 from importlib.metadata import version
@@ -13,8 +14,12 @@ from typing import Self, cast
 
 from jinja2 import StrictUndefined, TemplateError, Undefined, meta
 from jinja2.sandbox import ImmutableSandboxedEnvironment
+from jsonschema.exceptions import ValidationError as SchemaValidationError
 from pydantic import ValidationError
+from referencing import Resource
+from referencing.jsonschema import DRAFT202012
 
+from agentinstruct.paths import package_path, relative_path
 from agentinstruct.plans import (
     AgentPlan,
     EnvironmentPlan,
@@ -39,7 +44,15 @@ from agentinstruct.plans import (
     json_value,
 )
 from agentinstruct.quality import Criterion, Rubric
-from agentinstruct.seeds import SeedRecord, SeedSourceError, read_seed_records
+from agentinstruct.seeds import (
+    SeedInput,
+    SeedRecord,
+    SeedSourceError,
+    parse_json,
+    read_python_records,
+    read_seed_records,
+    seed_files,
+)
 from agentinstruct.task_config import PackageConfig, RubricConfig, StepRubricConfig
 from agentinstruct.tools import schema_validator
 
@@ -56,18 +69,12 @@ def _read_text(path: Path, label: str) -> str:
 
 
 def _package_path(root: Path, relative: str) -> Path:
-    path = Path(relative)
-    if path.is_absolute() or ".." in path.parts:
-        raise TaskValidationError(f"{relative}: expected a package-relative path")
     try:
-        resolved = (root / path).resolve(strict=True)
+        return package_path(root, relative)
     except (OSError, RuntimeError, ValueError) as exc:
         raise TaskValidationError(
-            f"{relative}: missing or unsafe package file"
+            f"{relative}: missing or unsafe package file: {exc}"
         ) from exc
-    if not resolved.is_relative_to(root):
-        raise TaskValidationError(f"{relative}: path escapes the Task Package")
-    return resolved
 
 
 def _load_rubric(root: Path, label: str, *, step: bool = False) -> tuple[Rubric, str]:
@@ -99,15 +106,34 @@ def _external_path(path: str | Path) -> Path:
         raise TaskValidationError(f"{path}: cannot resolve input path") from exc
 
 
-def _directory_members(root: Path, label: str, expected: set[str]) -> None:
+def _directory_members(
+    root: Path,
+    label: str,
+    expected: set[str],
+    *,
+    optional: frozenset[str] = frozenset(),
+) -> None:
     path = _package_path(root, label)
     try:
         actual = {child.name for child in path.iterdir()}
     except OSError as exc:
         raise TaskValidationError(f"{label}: expected a readable directory") from exc
-    if actual != expected:
+    missing = expected - actual
+    undeclared = actual - expected - optional
+    if missing or undeclared:
+        details = []
+        if missing:
+            details.append(
+                "missing " + ", ".join(f"{label}/{name}" for name in sorted(missing))
+            )
+        if undeclared:
+            details.append(
+                "undeclared "
+                + ", ".join(f"{label}/{name}" for name in sorted(undeclared))
+            )
         raise TaskValidationError(
-            f"{label}: directories must match declared participation"
+            f"{label}: directories must match declared participation: "
+            + "; ".join(details)
         )
 
 
@@ -207,6 +233,8 @@ class AgentSource:
 class SeedSource:
     path: str
     id_variable: str | None
+    schema: JsonSchema | None = None
+    glob: str | None = None
 
 
 @dataclass(frozen=True)
@@ -296,11 +324,37 @@ class TaskPackage:
                 for error in exc.errors(include_input=False, include_url=False)
             )
             raise TaskValidationError(f"task.toml: {problems}") from exc
+        try:
+            seed_path = relative_path(config.seed.path).as_posix()
+        except ValueError as exc:
+            raise TaskValidationError(f"seed.path: {exc}") from exc
 
         sources: dict[str, AgentSource] = {}
         source_files = {"task.toml": raw}
+        seed_schema = None
+        if config.seed.schema_path is not None:
+            label = config.seed.schema_path
+            text = _read_text(_package_path(root, label), label)
+            try:
+                data = parse_json(text, label)
+                if not isinstance(data, (dict, bool)):
+                    raise ValueError("expected a JSON Schema object or Boolean")
+                seed_schema = cast(JsonSchema, freeze(data))
+                schema_validator(seed_schema)
+                _require_local_schema_references(data)
+            except Exception as exc:
+                raise TaskValidationError(
+                    f"{label}: invalid Seed schema; requires a valid JSON Schema "
+                    "with local references only"
+                ) from exc
+            source_files[label] = text
         env = _template_environment()
+        _directory_members(root, "agents", set(config.agents))
         for agent_id, agent in config.agents.items():
+            required = {"instruction.md"}
+            if agent.reviewer is not None:
+                required.update({"reviewer.md", "rubric.toml"})
+            _directory_members(root, f"agents/{agent_id}", required)
             label = f"agents/{agent_id}/instruction.md"
             instruction = _load_template(root, label, env, config.variables)
             source_files[label] = instruction
@@ -369,6 +423,12 @@ class TaskPackage:
             _directory_members(root, f"steps/{step_id}/agents", set(sources))
             additions: dict[str, StepAgentPlan] = {}
             for agent_id in sources:
+                _directory_members(
+                    root,
+                    f"steps/{step_id}/agents/{agent_id}",
+                    {"instruction.md"},
+                    optional=frozenset({"rubric.toml"}),
+                )
                 label = f"steps/{step_id}/agents/{agent_id}/instruction.md"
                 instruction = _load_template(root, label, env, config.variables)
                 source_files[label] = instruction
@@ -408,6 +468,7 @@ class TaskPackage:
 
         verifier = None
         if config.verifier is not None:
+            _directory_members(root, "verifier", {"rubric.toml"})
             label = "verifier/rubric.toml"
             verifier_rubric, rubric_text = _load_rubric(root, label)
             source_files[label] = rubric_text
@@ -420,6 +481,10 @@ class TaskPackage:
                 )
             except ValueError as exc:
                 raise TaskValidationError(f"verifier: {exc}") from exc
+        elif (root / "verifier").exists() or (root / "verifier").is_symlink():
+            raise TaskValidationError(
+                "verifier: directory requires a declared Verifier"
+            )
 
         tools = {
             tool_id: ToolPlan(
@@ -446,6 +511,7 @@ class TaskPackage:
                 "agents": sources,
                 "steps": steps,
                 "verifier": verifier,
+                "seed_schema": seed_schema,
             }
         )
         providers = {
@@ -463,7 +529,9 @@ class TaskPackage:
             root=root,
             schema_version=config.schema_version,
             task=TaskIdentity(config.task.id, config.task.version, package_digest),
-            seed_source=SeedSource(config.seed.path, config.seed.id_variable),
+            seed_source=SeedSource(
+                seed_path, config.seed.id_variable, seed_schema, config.seed.glob
+            ),
             variables=MappingProxyType(dict(config.variables)),
             providers=MappingProxyType(providers),
             agents=MappingProxyType(sources),
@@ -482,9 +550,17 @@ class TaskPackage:
         )
 
     def seed_records(
-        self, *, seed_path: str | Path | None = None
+        self,
+        *,
+        seed_path: str | Path | None = None,
+        seeds: Iterable[SeedInput] | None = None,
     ) -> Iterator[SeedRecord]:
         """Enumerate source records without constructing runtime components."""
+        if seeds is not None:
+            if seed_path is not None:
+                raise SeedSourceError("seeds and seed_path are mutually exclusive")
+            yield from read_python_records(seeds)
+            return
         try:
             if seed_path is None:
                 path = _package_path(self.root, self.seed_source.path)
@@ -494,12 +570,18 @@ class TaskPackage:
                 origin = str(path)
         except TaskValidationError as exc:
             raise SeedSourceError(str(exc)) from exc
-        yield from read_seed_records(path, origin)
+        for source, label in seed_files(path, origin, self.seed_source.glob):
+            yield from read_seed_records(source, label)
 
-    def compile(self, *, seed_path: str | Path | None = None) -> RunPlan:
+    def compile(
+        self,
+        *,
+        seed_path: str | Path | None = None,
+        seeds: Iterable[SeedInput] | None = None,
+    ) -> RunPlan:
         """Compile exactly one record; use Runner or validate for collections."""
         try:
-            records = self.seed_records(seed_path=seed_path)
+            records = self.seed_records(seed_path=seed_path, seeds=seeds)
             record = next(records, None)
             if record is None or next(records, None) is not None:
                 raise TaskValidationError("compile requires exactly one Seed record")
@@ -508,12 +590,15 @@ class TaskPackage:
             raise TaskValidationError(str(exc)) from exc
 
     def compile_records(
-        self, *, seed_path: str | Path | None = None
+        self,
+        *,
+        seed_path: str | Path | None = None,
+        seeds: Iterable[SeedInput] | None = None,
     ) -> Iterator[SeedCompilation]:
         """Compile independently and enforce Run-wide identity without live state."""
         seen: set[str] = set()
-        for record in self.seed_records(seed_path=seed_path):
-            seed_id = record.digest
+        for record in self.seed_records(seed_path=seed_path, seeds=seeds):
+            seed_id = record.seed_id or record.digest
             try:
                 seed = self.bind_seed(record)
                 seed_id = seed.id
@@ -529,22 +614,32 @@ class TaskPackage:
             else:
                 yield SeedCompilation(record, seed_id, plan)
 
-    def validate(self, *, seed_path: str | Path | None = None) -> ValidationResult:
+    def validate(
+        self,
+        *,
+        seed_path: str | Path | None = None,
+        seeds: Iterable[SeedInput] | None = None,
+    ) -> ValidationResult:
         """Validate every selected record without creating Run storage or components."""
         records: list[SeedCompilation] = []
         source_error = None
         try:
-            records.extend(self.compile_records(seed_path=seed_path))
+            records.extend(self.compile_records(seed_path=seed_path, seeds=seeds))
         except SeedSourceError as exc:
             source_error = str(exc)
         return ValidationResult(tuple(records), source_error)
 
     def _variable(
-        self, alias: str, data: Mapping[str, FrozenJsonValue]
+        self, alias: str, data: Mapping[str, FrozenJsonValue], *, flat: bool = False
     ) -> FrozenJsonValue:
         selector = self.variables[alias]
+        if not flat and not re.fullmatch(r"[^.\[\]\s]+(?:\.[^.\[\]\s]+)*", selector):
+            raise TaskValidationError(
+                f"Variable {alias!r} selector {selector!r} "
+                "must be a valid JSON dot path"
+            )
         value: FrozenJsonValue = data
-        for segment in selector.split("."):
+        for segment in [selector] if flat else selector.split("."):
             if not isinstance(value, Mapping) or segment not in value:
                 raise TaskValidationError(
                     f"Variable {alias!r} selector {selector!r} does not resolve"
@@ -559,10 +654,15 @@ class TaskPackage:
             raise TaskValidationError(record.error)
         if not isinstance(record.data, Mapping):
             raise TaskValidationError(f"{label}: expected a JSON object Seed")
-        seed_id = record.digest
-        if self.seed_source.id_variable is not None:
+        self._validate_seed_schema(record.data, label)
+        seed_id = record.seed_id or record.digest
+        if record.seed_id is None and self.seed_source.id_variable is not None:
             try:
-                value = self._variable(self.seed_source.id_variable, record.data)
+                value = self._variable(
+                    self.seed_source.id_variable,
+                    record.data,
+                    flat=record.origin.format == "csv",
+                )
             except TaskValidationError as exc:
                 raise TaskValidationError(f"{label}: {exc}") from exc
             if (
@@ -579,10 +679,21 @@ class TaskPackage:
 
     def compile_seed(self, seed: Seed) -> RunPlan:
         """Compile one bound Seed into an independent immutable execution input."""
+        record = next(read_python_records([seed]))
+        if record.error is not None:
+            raise TaskValidationError(record.error)
+        if not isinstance(record.data, Mapping):
+            raise TaskValidationError("compile_seed requires a JSON object Seed")
+        seed = replace(seed, data=record.data, digest=record.digest)
+        self._validate_seed_schema(
+            seed.data, f"{seed.origin.path}: record {seed.origin.record}"
+        )
         extracted: dict[str, JsonValue] = {}
         for alias in self.variables:
             try:
-                extracted[alias] = json_value(self._variable(alias, seed.data))
+                extracted[alias] = json_value(
+                    self._variable(alias, seed.data, flat=seed.origin.format == "csv")
+                )
             except TaskValidationError as exc:
                 raise TaskValidationError(
                     f"{seed.origin.path}: record {seed.origin.record}: {exc}"
@@ -647,3 +758,36 @@ class TaskPackage:
             tools=self.tools,
             steps=tuple(steps),
         )
+
+    def _validate_seed_schema(
+        self, data: Mapping[str, FrozenJsonValue], label: str
+    ) -> None:
+        if self.seed_source.schema is None:
+            return
+        try:
+            schema_validator(self.seed_source.schema).validate(json_value(data))
+        except SchemaValidationError as exc:
+            path = "/" + "/".join(str(part) for part in exc.absolute_path)
+            raise TaskValidationError(
+                f"{label}: Seed schema violation at {path} ({exc.validator})"
+            ) from exc
+        except Exception as exc:
+            raise TaskValidationError(
+                f"{label}: Seed schema validation failed ({type(exc).__name__})"
+            ) from exc
+
+
+def _require_local_schema_references(value: JsonValue) -> None:
+    resource = Resource.from_contents(value, default_specification=DRAFT202012)
+    pending = [resource]
+    while pending:
+        current = pending.pop()
+        if isinstance(current.contents, dict):
+            for key in ("$ref", "$dynamicRef", "$recursiveRef"):
+                if key in current.contents:
+                    item = current.contents[key]
+                    if not isinstance(item, str) or not item.startswith("#"):
+                        raise ValueError(
+                            "only document-local schema references are allowed"
+                        )
+        pending.extend(current.subresources())

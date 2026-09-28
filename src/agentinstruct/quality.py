@@ -5,6 +5,8 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from agentinstruct.paths import portable_name
+
 
 @dataclass(frozen=True)
 class Criterion:
@@ -15,6 +17,7 @@ class Criterion:
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", self.id):
             raise ValueError("Criterion requires a portable identifier")
+        portable_name(self.id)
         if (
             isinstance(self.weight, bool)
             or not math.isfinite(self.weight)

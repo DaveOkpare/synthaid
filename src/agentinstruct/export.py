@@ -3,9 +3,51 @@
 from collections.abc import Iterable, Mapping, Set
 from pathlib import Path
 
+from agentinstruct.paths import normalized_name, output_path
 from agentinstruct.plans import JsonValue, canonical_json, json_value
-from agentinstruct.store import load_trace
+from agentinstruct.store import load_trace, verification_directory
 from agentinstruct.traces import TraceStatus
+
+
+def _export_paths(
+    traces: Iterable[str | Path], destination: str | Path
+) -> tuple[tuple[Path, ...], Path]:
+    sources = tuple(Path(source) for source in traces)
+    output = output_path(destination)
+    protected: list[Path] = []
+    for source in sources:
+        resolved = source.resolve(strict=True)
+        if resolved.is_dir():
+            protected.append(resolved)
+            resolved = resolved / "trace.json"
+        elif not resolved.is_file():
+            raise ValueError(
+                f"Export source must be a Trace file or directory: {source}"
+            )
+        protected.extend([resolved, verification_directory(source).resolve()])
+        if (
+            resolved.name == "trace.json"
+            and (resolved.parent / "conversation.jsonl").is_file()
+        ):
+            protected.append(resolved.parent)
+        # A standalone snapshot protects itself and its sidecars. A Trace inside
+        # a Run also protects the Run index, source snapshot, and sibling Traces.
+        for parent in resolved.parents:
+            if (parent / "manifest.json").is_file() and (
+                parent / "traces.jsonl"
+            ).is_file():
+                protected.append(parent)
+                break
+    normalized_output = Path(normalized_name(str(output)).casefold())
+    if any(
+        normalized_output.is_relative_to(Path(normalized_name(str(path)).casefold()))
+        for path in protected
+    ):
+        raise ValueError(
+            "Export destination cannot overwrite source Run, Trace, "
+            "or Verification evidence"
+        )
+    return sources, output
 
 
 def export_native(
@@ -16,9 +58,10 @@ def export_native(
     verification_id: str | None = None,
 ) -> int:
     """Write full native Trace snapshots as JSONL, selecting statuses explicitly."""
+    sources, output = _export_paths(traces, destination)
     count = 0
-    with Path(destination).open("w", encoding="utf-8") as stream:
-        for path in traces:
+    with output.open("w", encoding="utf-8") as stream:
+        for path in sources:
             trace = load_trace(path, verification_id=verification_id)
             if trace.status in statuses:
                 stream.write(canonical_json(trace) + "\n")
@@ -34,9 +77,10 @@ def export_openai(
     verification_id: str | None = None,
 ) -> int:
     """Write target-oriented training Messages from selected persisted Traces."""
+    sources, output = _export_paths(traces, destination)
     count = 0
-    with Path(destination).open("w", encoding="utf-8") as stream:
-        for path in traces:
+    with output.open("w", encoding="utf-8") as stream:
+        for path in sources:
             trace = load_trace(path, verification_id=verification_id)
             if trace.status not in statuses or not trace.conversation:
                 continue

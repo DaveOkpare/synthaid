@@ -250,6 +250,26 @@ def test_validate_compiles_an_entire_valid_collection(tmp_path: Path) -> None:
     assert not (tmp_path / "runs").exists()
 
 
+def test_csv_override_and_directory_source_share_cli_compilation(
+    tmp_path: Path,
+) -> None:
+    example = EXAMPLE.parent / "seed-sources"
+    report = run_command(["validate", str(example), "--json"], tmp_path)
+    assert report.returncode == 0, report.stderr
+    assert [item["seed_id"] for item in json.loads(report.stdout)["records"]] == [
+        "csv-a",
+        "csv-b",
+        "json-c",
+    ]
+    source = tmp_path / "override.csv"
+    source.write_text("id,name\noverride,Ada\n")
+    result = run_command(
+        ["run", str(example), "--seed", str(source), "--json"], tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["traces"][0]["seed_id"] == "override"
+
+
 @pytest.mark.parametrize("export_format", ["native", "openai"])
 def test_export_forwards_format_and_explicit_status_selection(
     tmp_path: Path, export_format: str

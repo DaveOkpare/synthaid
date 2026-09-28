@@ -6,6 +6,8 @@ from agentinstruct.export import export_native, export_openai
 from agentinstruct.plans import (
     ReviewerPlan,
     RunPlan,
+    Seed,
+    SeedOrigin,
     StepAgentPlan,
     StepPlan,
     ToolPlan,
@@ -57,6 +59,8 @@ __all__ = [
     "RunPlan",
     "RunResult",
     "Runner",
+    "Seed",
+    "SeedOrigin",
     "StepAgentPlan",
     "StepPlan",
     "TaskContext",

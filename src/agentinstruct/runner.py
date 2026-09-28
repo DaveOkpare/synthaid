@@ -1,7 +1,7 @@
 """Canonical asynchronous lifecycle for one seeded generation Run."""
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from time import monotonic
 from typing import Literal, cast
@@ -28,7 +28,7 @@ from agentinstruct.plans import (
     VerifierPlan,
 )
 from agentinstruct.review import Reviewer, ReviewError, ReviewExhausted, create_reviewer
-from agentinstruct.seeds import SeedRecord, SeedSourceError
+from agentinstruct.seeds import SeedInput, SeedRecord, SeedSourceError
 from agentinstruct.steps import StepProgress
 from agentinstruct.store import LocalRunStore, TraceRecorder, load_trace, timestamp
 from agentinstruct.task_package import TaskPackage, TaskValidationError
@@ -75,6 +75,7 @@ class Runner:
         package: TaskPackage,
         *,
         seed_path: str | Path | None = None,
+        seeds: Iterable[SeedInput] | None = None,
         fail_fast: bool = False,
     ) -> RunResult:
         run_id = uuid4().hex
@@ -84,7 +85,7 @@ class Runner:
         status: Literal["finished", "stopped", "failed"] = "finished"
         error = None
         try:
-            for compiled in package.compile_records(seed_path=seed_path):
+            for compiled in package.compile_records(seed_path=seed_path, seeds=seeds):
                 if compiled.plan is None:
                     assert compiled.error is not None
                     reference = self._invalid_trace(
@@ -342,11 +343,12 @@ async def generate(
     *,
     runner: Runner | None = None,
     seed_path: str | Path | None = None,
+    seeds: Iterable[SeedInput] | None = None,
     fail_fast: bool = False,
 ) -> RunResult:
     """Convenience entry point with exactly the Runner lifecycle."""
     return await (runner or Runner()).run(
-        package, seed_path=seed_path, fail_fast=fail_fast
+        package, seed_path=seed_path, seeds=seeds, fail_fast=fail_fast
     )
 
 
@@ -355,6 +357,7 @@ def generate_sync(
     *,
     runner: Runner | None = None,
     seed_path: str | Path | None = None,
+    seeds: Iterable[SeedInput] | None = None,
     fail_fast: bool = False,
 ) -> RunResult:
     """Run from synchronous code; asynchronous callers should await generate."""
@@ -362,6 +365,12 @@ def generate_sync(
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(
-            generate(package, runner=runner, seed_path=seed_path, fail_fast=fail_fast)
+            generate(
+                package,
+                runner=runner,
+                seed_path=seed_path,
+                seeds=seeds,
+                fail_fast=fail_fast,
+            )
         )
     raise RuntimeError("generate_sync cannot run inside an event loop; await generate")
