@@ -72,4 +72,13 @@
   [Task Step usage](../../README.md#retain-history-across-task-steps) and the
   [offline stepped dialogue](../../examples/stepped-dialogue/run.py).
 
-Tickets 10–19 remain unimplemented.
+- **10 — resolved:** [Run deterministic JSON and JSONL Seed collections](issues/10-run-json-jsonl-seed-collections.md#answer).
+  One Run now processes ordered records with independent immutable Plans, stable
+  Seed IDs, unique Trace attempts, all five status counts, per-Trace durable index
+  publication, and fresh runtime state. Invalid records retain standalone input
+  evidence; source failures preserve available attempts. Fail-fast stops only
+  invalid/failed attempts, and model-free collection validation shares the compiler.
+  See [collection usage](../../README.md#run-a-seed-collection) and the
+  [offline example](../../examples/seed-collection/task.toml).
+
+Tickets 11–19 remain unimplemented.

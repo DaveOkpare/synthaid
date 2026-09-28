@@ -1,0 +1,40 @@
+schema_version = "1"
+
+[task]
+id = "seed-collection"
+version = "1"
+
+[seed]
+path = "seeds.jsonl"
+id_variable = "case_id"
+
+[variables]
+case_id = "id"
+name = "name"
+
+# The scripted Agent and deterministic Verifier do not call this Provider.
+[providers.default]
+type = "openai"
+
+[model]
+provider = "default"
+name = "unused-model"
+
+[runtime]
+type = "local"
+
+[environment]
+type = "single"
+
+[agents.assistant]
+target = true
+type = "scripted"
+responses = ["Hello from this independent Trace."]
+
+[verifier]
+type = "deterministic"
+timeout_seconds = 10.0
+
+[verifier.checks]
+has_reply = "nonempty_conversation"
+completed = "generation_terminated"

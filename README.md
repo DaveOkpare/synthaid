@@ -4,7 +4,7 @@ A Python framework for generating verified traces from agent interactions.
 
 Task Package validation, compilation, deterministic single-Agent and dialogue
 generation, reviewed private function Tools, per-Agent Review and revision,
-final Verification, reverification,
+final Verification, reverification, sequential JSON/JSONL Seed collections,
 and native/OpenAI JSONL export
 are available through the typed library
 and CLI. Further capabilities follow the
@@ -42,8 +42,9 @@ asyncio.run(main())
 the same operation for synchronous scripts. Use the asynchronous API inside an
 existing event loop. Both accept a `seed_path` override, equivalent to CLI
 `--seed`. `--json` returns the Run identity, ordered Trace references, and all
-five terminal status counts. A completed unverified Run exits 0; execution
-failures exit 1 and package or Seed validation failures exit 2.
+five terminal status counts. A finished Run containing only accepted, rejected,
+or unverified Traces exits 0. Invalid or failed attempts and source failures exit
+1; Task Package validation failures before Run creation exit 2.
 
 Each execution creates a fresh Run, Trace, Agent, Reviewer, Environment, Interaction,
 recorder, and Conversation. `type = "scripted"` Agents consume literal
@@ -66,8 +67,74 @@ needs no live Runner or original package.
 Generation without a configured Verifier is **unverified**, with a separate
 `terminated` or `truncated` generation outcome. Export requires explicit selection
 of `unverified` or other non-accepted statuses; its default selects only accepted
-Traces. Live model adapters arrive in later tickets. Current
-generation handles one JSON-object Seed per Run.
+Traces. Live model adapters arrive in later tickets.
+
+## Run a Seed collection
+
+The [offline collection example](examples/seed-collection/task.toml) processes two
+JSONL records using fresh scripted Agents and deterministic Verification:
+
+```sh
+uv run agentinstruct validate examples/seed-collection --json
+uv run agentinstruct run examples/seed-collection --output runs --json
+uv run agentinstruct run examples/seed-collection \
+  --seed examples/seed-collection/seeds.json --fail-fast --output runs --json
+```
+
+A JSON object supplies one Seed; a JSON array supplies one Seed per element.
+JSONL supplies one Seed per nonempty line. Processing follows source order.
+Origins retain the source path and a one-based record position: an array element
+position or physical JSONL line number, including intervening blank lines.
+The configured `[seed] id_variable` names a declared Variable containing a
+nonempty string or integer. Otherwise the Seed ID is a canonical content hash,
+independent of object-key ordering. Reusing an ID within one Run produces an
+invalid attempt. Every attempt receives a fresh Trace ID, including duplicates
+and reruns of the same Seed.
+
+```python
+from agentinstruct import Runner, TaskPackage, generate_sync, export_openai
+
+package = TaskPackage.load("examples/seed-collection")
+report = package.validate()  # Compiles all records without runtime components.
+print(report.to_dict())
+result = generate_sync(package, runner=Runner(output_dir="runs"), fail_fast=False)
+print(result.status, dict(result.counts))
+export_openai([trace.path for trace in result.traces], "accepted.jsonl")
+```
+
+`Runner.run`, `generate`, and `generate_sync` all accept `seed_path` and
+`fail_fast`. Each valid Seed compiles to its own immutable Run Plan. Each Trace
+gets fresh Agent, Reviewer, Tool, Environment, Verifier, Interaction, and Task
+Step state. Its terminal generation snapshot, any Verification sidecars, and
+index entry are durable before the next Seed compiles or executes.
+
+By default, invalid and failed attempts are recorded and processing continues.
+`fail_fast=True` or CLI `--fail-fast` stops after the first **invalid or failed**
+attempt; rejected quality decisions and unverified Traces continue. The returned
+Run status is `finished`, `stopped` for fail-fast, or `failed` for a source or
+storage-publication error.
+Counts and ordered references include every attempted record, including partial
+failed generation. These invocation summaries remain unchanged by reverification.
+
+Malformed JSONL records, non-object array elements, duplicate IDs, missing
+Variables, and rendering failures become invalid Traces with no Conversation.
+Their standalone snapshots retain Task identity/digest, full available input in
+`seed_record` with origin and digest, raw malformed text when needed, and precise
+failure Events. `run_plan` is empty and no executable `run-plan.json` is invented.
+They can be exported natively but never become empty OpenAI training records.
+Source errors that prevent reliable enumeration, such as malformed array syntax
+or an unreadable file, fail the Run and retain its available Traces and manifest
+diagnostic. Package-wide validation still precedes Run creation.
+If storage cannot publish a complete Trace/index pair, generation stops before
+the next Seed; available snapshots and the failure diagnostic are retained where
+the storage remains writable.
+
+`validate --json` returns `plans`, ordered per-record diagnostics, and valid/invalid
+counts for a collection. A source error also appears as `source_error`; already
+compiled records remain in the report. A single valid record additionally retains
+the existing `plan` field. `TaskPackage.compile()` remains the one-record API and
+rejects sources with zero or multiple records. CSV, directory sources, Python
+iterables, and Seed JSON Schema validation arrive in ticket 11.
 
 ## Generate and export a dialogue
 
@@ -452,8 +519,8 @@ uv run agentinstruct validate examples/single-agent --json
 uv run agentinstruct validate examples/single-agent --seed /path/to/seed.json
 ```
 
-`--json` emits the compiled Run Plan on success and a structured validation error
-on failure. Validation failures exit with status 2. The default Seed path is
+`--json` emits compiled Run Plans and per-record diagnostics; a single valid
+record also has a `plan` field. Validation failures exit with status 2. The default Seed path is
 relative to the Task Package; an explicit `--seed` override is relative to the
 working directory. Validation reads inputs without creating Run outputs.
 
@@ -470,11 +537,10 @@ print(plan.to_json())
 ```
 
 The current implementation supports schema version `"1"`, a `single` or `dialogue`
-Environment, exactly one explicit Target Agent, the `local` Runtime, and a JSON
-object Seed. Every Agent requires `agents/<id>/instruction.md`. Unknown configuration
+Environment, exactly one explicit Target Agent, the `local` Runtime, and JSON
+object/array or JSONL Seeds. Every Agent requires `agents/<id>/instruction.md`. Unknown configuration
 fields and unsupported component selections fail validation. Task Steps are
-optional; a Task without declared steps omits the `steps/` directory. Seed
-collections arrive in later tickets.
+optional; a Task without declared steps omits the `steps/` directory.
 
 `[variables]` maps template aliases to dot paths through nested JSON mappings.
 Array indexing and empty path segments are unsupported. Every selector must

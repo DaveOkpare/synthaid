@@ -6,7 +6,14 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, cast
 
-from agentinstruct.plans import FrozenJsonValue, VerifierPlan, freeze, json_value
+from agentinstruct.plans import (
+    FrozenJsonValue,
+    TaskIdentity,
+    VerifierPlan,
+    freeze,
+    json_value,
+)
+from agentinstruct.seeds import SeedRecord
 
 type TraceStatus = Literal["invalid", "failed", "unverified", "rejected", "accepted"]
 STATUSES: tuple[TraceStatus, ...] = (
@@ -141,6 +148,9 @@ class TraceSnapshot:
     duration_seconds: float
     verification: tuple[VerificationAttempt, ...] = ()
     selected_verification_id: str | None = None
+    # Invalid attempts have no executable Plan; retain their source evidence here.
+    seed_record: SeedRecord | None = None
+    task: TaskIdentity | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "run_plan", immutable_data(self.run_plan))
@@ -160,6 +170,8 @@ class RunResult:
     path: Path
     traces: tuple[TraceReference, ...]
     counts: Mapping[TraceStatus, int]
+    status: Literal["finished", "stopped", "failed"] = "finished"
+    error: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "counts", MappingProxyType(dict(self.counts)))
@@ -178,4 +190,6 @@ class RunResult:
                 for item in self.traces
             ],
             "counts": dict(self.counts),
+            "status": self.status,
+            "error": self.error,
         }

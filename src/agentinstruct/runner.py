@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Callable
 from pathlib import Path
 from time import monotonic
-from typing import cast
+from typing import Literal, cast
 from uuid import uuid4
 
 from agentinstruct.agent_tool import AgentTool
@@ -22,13 +22,16 @@ from agentinstruct.plans import (
     AgentPlan,
     EnvironmentPlan,
     ReviewerPlan,
+    RunPlan,
+    TaskIdentity,
     ToolPlan,
     VerifierPlan,
 )
 from agentinstruct.review import Reviewer, ReviewError, ReviewExhausted, create_reviewer
+from agentinstruct.seeds import SeedRecord, SeedSourceError
 from agentinstruct.steps import StepProgress
 from agentinstruct.store import LocalRunStore, TraceRecorder, load_trace, timestamp
-from agentinstruct.task_package import TaskPackage
+from agentinstruct.task_package import TaskPackage, TaskValidationError
 from agentinstruct.tools import FunctionTool, Tool, ToolContext, ToolError, create_tool
 from agentinstruct.traces import (
     STATUSES,
@@ -68,11 +71,100 @@ class Runner:
         self._tool_factory = tool_factory
 
     async def run(
-        self, package: TaskPackage, *, seed_path: str | Path | None = None
+        self,
+        package: TaskPackage,
+        *,
+        seed_path: str | Path | None = None,
+        fail_fast: bool = False,
     ) -> RunResult:
-        plan = package.compile(seed_path=seed_path)
-        run_id, trace_id = uuid4().hex, uuid4().hex
+        run_id = uuid4().hex
         path = self._store.open_run(run_id, package.source_files)
+        references: list[TraceReference] = []
+        counts: dict[TraceStatus, int] = {key: 0 for key in STATUSES}
+        status: Literal["finished", "stopped", "failed"] = "finished"
+        error = None
+        try:
+            for compiled in package.compile_records(seed_path=seed_path):
+                if compiled.plan is None:
+                    assert compiled.error is not None
+                    reference = self._invalid_trace(
+                        compiled.record,
+                        compiled.seed_id,
+                        run_id,
+                        path,
+                        TaskValidationError(compiled.error),
+                        package.task,
+                    )
+                else:
+                    reference = await self._run_trace(compiled.plan, run_id, path)
+                references.append(reference)
+                counts[reference.status] += 1
+                self._store.index_trace(path, reference)
+                if fail_fast and reference.status in {"invalid", "failed"}:
+                    status = "stopped"
+                    break
+        except SeedSourceError as exc:
+            status, error = "failed", str(exc)
+        except OSError as exc:
+            # Advancing would violate the durable snapshot/index boundary.
+            # Preserve completed references in the manifest if it remains writable.
+            status, error = (
+                "failed",
+                f"Trace persistence failed ({type(exc).__name__}): {exc}",
+            )
+        result = RunResult(run_id, path, tuple(references), counts, status, error)
+        self._store.finish_run(result)
+        return result
+
+    def _invalid_trace(
+        self,
+        record: SeedRecord,
+        seed_id: str,
+        run_id: str,
+        path: Path,
+        error: TaskValidationError,
+        task: TaskIdentity,
+    ) -> TraceReference:
+        trace_id = uuid4().hex
+        started_at, started = timestamp(), monotonic()
+        recorder = TraceRecorder(path / "traces" / trace_id)
+        recorder.event(
+            Event(
+                uuid4().hex,
+                "error",
+                timestamp(),
+                {
+                    "stage": "seed_compilation",
+                    "exception": type(error).__name__,
+                    "message": str(error),
+                },
+            )
+        )
+        recorder.seal(
+            TraceSnapshot(
+                "1",
+                run_id,
+                trace_id,
+                seed_id,
+                "invalid",
+                GenerationOutcome("failed", "seed_compilation"),
+                {},
+                (),
+                tuple(recorder.events),
+                (),
+                started_at,
+                timestamp(),
+                monotonic() - started,
+                seed_record=record,
+                task=task,
+            )
+        )
+        return TraceReference(trace_id, seed_id, "invalid", recorder.path)
+
+    async def _run_trace(
+        self, plan: RunPlan, run_id: str, path: Path
+    ) -> TraceReference:
+        trace_id = uuid4().hex
         recorder = TraceRecorder(path / "traces" / trace_id, plan)
         progress = StepProgress(plan.steps, recorder)
         started_at, started = timestamp(), monotonic()
@@ -109,6 +201,7 @@ class Runner:
                 started_at,
                 timestamp(),
                 monotonic() - started,
+                task=plan.task,
             )
 
         record("trace_started")
@@ -241,16 +334,7 @@ class Runner:
         if plan.verifier is not None:
             await reverify(recorder.path, verifier_factory=self._verifier_factory)
             status = load_trace(recorder.path).status
-        counts: dict[TraceStatus, int] = {key: 0 for key in STATUSES}
-        counts[status] = 1
-        result = RunResult(
-            run_id,
-            path,
-            (TraceReference(trace_id, plan.seed.id, status, recorder.path),),
-            counts,
-        )
-        self._store.finish_run(result)
-        return result
+        return TraceReference(trace_id, plan.seed.id, status, recorder.path)
 
 
 async def generate(
@@ -258,9 +342,12 @@ async def generate(
     *,
     runner: Runner | None = None,
     seed_path: str | Path | None = None,
+    fail_fast: bool = False,
 ) -> RunResult:
     """Convenience entry point with exactly the Runner lifecycle."""
-    return await (runner or Runner()).run(package, seed_path=seed_path)
+    return await (runner or Runner()).run(
+        package, seed_path=seed_path, fail_fast=fail_fast
+    )
 
 
 def generate_sync(
@@ -268,10 +355,13 @@ def generate_sync(
     *,
     runner: Runner | None = None,
     seed_path: str | Path | None = None,
+    fail_fast: bool = False,
 ) -> RunResult:
     """Run from synchronous code; asynchronous callers should await generate."""
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(generate(package, runner=runner, seed_path=seed_path))
+        return asyncio.run(
+            generate(package, runner=runner, seed_path=seed_path, fail_fast=fail_fast)
+        )
     raise RuntimeError("generate_sync cannot run inside an event loop; await generate")

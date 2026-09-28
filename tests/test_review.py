@@ -490,7 +490,6 @@ async def test_passing_review_does_not_imply_passing_the_independent_verifier(
             "invalid Rubric: threshold: Input should be less than or equal to 1",
         ),
         ("agents/user/reviewer.md", "{{ undeclared }}", "undeclared Variables"),
-        ("agents/user/reviewer.md", "{{ name.missing }}", "rendering failed"),
     ],
 )
 async def test_invalid_review_policy_or_templates_fail_before_a_run_starts(
@@ -503,6 +502,22 @@ async def test_invalid_review_policy_or_templates_fail_before_a_run_starts(
     with pytest.raises(TaskValidationError, match=error):
         await Runner(output_dir=tmp_path / "runs").run(TaskPackage.load(package.root))
     assert not (tmp_path / "runs").exists()
+
+
+@pytest.mark.asyncio
+async def test_review_template_binding_failure_is_indexed_before_generation(
+    tmp_path: Path,
+) -> None:
+    package = make_review_package(tmp_path / "task")
+    (package.root / "agents/user/reviewer.md").write_text("{{ name.missing }}")
+    result = await Runner(output_dir=tmp_path / "runs").run(
+        TaskPackage.load(package.root)
+    )
+    trace = load_trace(result.traces[0].path)
+    assert trace.status == "invalid"
+    assert trace.components == ()
+    assert trace.conversation == ()
+    assert "agents/user/reviewer.md: rendering failed" in str(trace.events[-1].data)
 
 
 class InvalidRevisionAgent:

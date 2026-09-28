@@ -15,6 +15,7 @@ from agentinstruct.traces import (
     Event,
     MessageCommit,
     RunResult,
+    TraceReference,
     TraceSnapshot,
     VerificationAttempt,
 )
@@ -22,6 +23,14 @@ from agentinstruct.traces import (
 
 def timestamp() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _sync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def write_json(path: Path, value: object, *, replace_existing: bool = True) -> None:
@@ -37,11 +46,7 @@ def write_json(path: Path, value: object, *, replace_existing: bool = True) -> N
         else:
             # Atomic publication that fails instead of replacing immutable evidence.
             os.link(temporary, path)
-        descriptor = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        _sync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -56,14 +61,15 @@ def append_json(path: Path, value: object) -> None:
 class TraceRecorder:
     """One Trace's accepted Conversation and operational Events."""
 
-    def __init__(self, path: Path, plan: RunPlan) -> None:
+    def __init__(self, path: Path, plan: RunPlan | None = None) -> None:
         self.path = path
         self.conversation: list[MessageCommit] = []
         self.events: list[Event] = []
         self._sealed = False
         path.mkdir(parents=True)
         (path / "artifacts").mkdir()
-        write_json(path / "run-plan.json", plan.to_dict())
+        if plan is not None:
+            write_json(path / "run-plan.json", plan.to_dict())
         (path / "conversation.jsonl").touch()
         (path / "events.jsonl").touch()
 
@@ -112,23 +118,31 @@ class LocalRunStore:
             },
         )
         (path / "traces.jsonl").touch()
+        _sync_directory(path)
+        _sync_directory(path.parent)
         return path
 
+    def index_trace(self, path: Path, reference: TraceReference) -> None:
+        """Publish a reference only after all terminal Trace evidence is durable."""
+        # Retain newly created Trace/verification directories as well as the
+        # already-fsynced snapshot and sidecar files before publishing discovery.
+        _sync_directory(reference.path)
+        _sync_directory(reference.path.parent)
+        append_json(
+            path / "traces.jsonl",
+            {
+                "trace_id": reference.trace_id,
+                "seed_id": reference.seed_id,
+                "status": reference.status,
+                "path": str(reference.path.relative_to(path)),
+            },
+        )
+        _sync_directory(path)
+
     def finish_run(self, result: RunResult) -> None:
-        # The caller seals each complete snapshot before exposing its reference.
-        for reference in result.traces:
-            append_json(
-                result.path / "traces.jsonl",
-                {
-                    "trace_id": reference.trace_id,
-                    "seed_id": reference.seed_id,
-                    "status": reference.status,
-                    "path": str(reference.path.relative_to(result.path)),
-                },
-            )
         manifest = json.loads((result.path / "manifest.json").read_text())
         manifest.update(result.to_dict())
-        manifest.update(status="finished", ended_at=timestamp())
+        manifest.update(ended_at=timestamp())
         write_json(result.path / "manifest.json", manifest)
 
 

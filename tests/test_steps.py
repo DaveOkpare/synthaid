@@ -550,12 +550,23 @@ async def test_later_step_templates_fail_before_first_generation(
         template
     )
     agent = SteppedAgent()
-    with pytest.raises(
-        TaskValidationError,
-        match=r"steps/conclude/agents/assistant/instruction\.md:",
-    ):
-        await Runner(output_dir=tmp_path / "runs", agent_factory=lambda _: agent).run(
-            TaskPackage.load(package.root)
+    if template == "{{ unknown }}":
+        with pytest.raises(
+            TaskValidationError,
+            match=r"steps/conclude/agents/assistant/instruction\.md:",
+        ):
+            await Runner(
+                output_dir=tmp_path / "runs", agent_factory=lambda _: agent
+            ).run(TaskPackage.load(package.root))
+    else:
+        result = await Runner(
+            output_dir=tmp_path / "runs", agent_factory=lambda _: agent
+        ).run(TaskPackage.load(package.root))
+        trace = load_trace(result.traces[0].path)
+        assert trace.status == "invalid"
+        assert trace.components == ()
+        assert "steps/conclude/agents/assistant/instruction.md:" in str(
+            trace.events[-1].data
         )
     assert agent.seen == []
 

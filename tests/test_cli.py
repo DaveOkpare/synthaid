@@ -167,15 +167,86 @@ def test_run_reports_failed_trace_for_unavailable_model_adapter(tmp_path: Path) 
     assert any(event["kind"] == "error" for event in trace["events"])
 
 
-def test_run_rejects_invalid_input_before_creating_output(tmp_path: Path) -> None:
+def test_run_records_source_failure_without_inventing_a_trace(tmp_path: Path) -> None:
     (tmp_path / "bad.json").write_text("{")
 
     result = run_command(
         ["run", str(EXAMPLE), "--seed", "bad.json", "--json"], tmp_path
     )
 
+    assert result.returncode == 1
+    report = json.loads(result.stdout)
+    assert report["status"] == "failed"
+    assert "malformed JSON" in report["error"]
+    assert report["traces"] == []
+    manifest = json.loads((Path(report["path"]) / "manifest.json").read_text())
+    assert manifest["status"] == "failed"
+
+
+@pytest.mark.parametrize("fail_fast, count", [(False, 2), (True, 1)])
+def test_collection_run_forwards_fail_fast(
+    tmp_path: Path, fail_fast: bool, count: int
+) -> None:
+    source = tmp_path / "collection.jsonl"
+    source.write_text('{broken\n{"name":"Ada"}\n')
+    args = [
+        "run",
+        str(EXAMPLE.parent / "verified-single"),
+        "--seed",
+        str(source),
+        "--json",
+    ]
+    result = run_command([*args, *(["--fail-fast"] if fail_fast else [])], tmp_path)
+    assert result.returncode == 1
+    report = json.loads(result.stdout)
+    assert len(report["traces"]) == count
+    assert report["counts"]["invalid"] == 1
+
+
+def test_validate_reports_every_collection_record_without_run_storage(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "collection.jsonl"
+    source.write_text('\n{"name":"Ada"}\n{broken\n{"name":"Lin"}\n')
+    result = run_command(
+        [
+            "validate",
+            str(EXAMPLE.parent / "verified-single"),
+            "--seed",
+            str(source),
+            "--json",
+        ],
+        tmp_path,
+    )
     assert result.returncode == 2
-    assert json.loads(result.stdout)["status"] == "error"
+    report = json.loads(result.stdout)
+    assert report["status"] == "invalid"
+    assert report["counts"] == {"valid": 2, "invalid": 1}
+    assert [record["origin"]["record"] for record in report["records"]] == [2, 3, 4]
+    assert "column 2" in report["records"][1]["error"]
+    assert len(report["plans"]) == 2
+    assert not (tmp_path / "runs").exists()
+
+
+def test_validate_compiles_an_entire_valid_collection(tmp_path: Path) -> None:
+    source = tmp_path / "collection.json"
+    source.write_text('[{"name":"Ada"},{"name":"Lin"}]')
+    result = run_command(
+        [
+            "validate",
+            str(EXAMPLE.parent / "verified-single"),
+            "--seed",
+            str(source),
+            "--json",
+        ],
+        tmp_path,
+    )
+    assert result.returncode == 0
+    report = json.loads(result.stdout)
+    assert report["status"] == "valid"
+    assert report["counts"] == {"valid": 2, "invalid": 0}
+    assert len(report["plans"]) == 2
+    assert "plan" not in report
     assert not (tmp_path / "runs").exists()
 
 

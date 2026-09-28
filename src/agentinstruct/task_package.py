@@ -1,7 +1,6 @@
-"""Load Task Packages and compile one JSON Seed without constructing components."""
+"""Load Task Packages and compile Seed records without constructing components."""
 
 import json
-import math
 import platform
 import tomllib
 from collections.abc import Callable, Iterator, Mapping
@@ -30,7 +29,6 @@ from agentinstruct.plans import (
     RuntimePlan,
     ScriptedResponse,
     Seed,
-    SeedOrigin,
     StepAgentPlan,
     StepPlan,
     TaskIdentity,
@@ -38,8 +36,10 @@ from agentinstruct.plans import (
     VerifierPlan,
     content_digest,
     freeze,
+    json_value,
 )
 from agentinstruct.quality import Criterion, Rubric
+from agentinstruct.seeds import SeedRecord, SeedSourceError, read_seed_records
 from agentinstruct.task_config import PackageConfig, RubricConfig, StepRubricConfig
 from agentinstruct.tools import schema_validator
 
@@ -190,22 +190,6 @@ def _render_template(
         ) from exc
 
 
-def _json_object(pairs: list[tuple[str, JsonValue]]) -> dict[str, JsonValue]:
-    result: dict[str, JsonValue] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate JSON object key")
-        result[key] = value
-    return result
-
-
-def _json_float(value: str) -> float:
-    result = float(value)
-    if not math.isfinite(result):
-        raise ValueError("non-finite numbers are not valid JSON Seed data")
-    return result
-
-
 @dataclass(frozen=True)
 class AgentSource:
     id: str
@@ -234,6 +218,50 @@ class StepSource:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "agents", MappingProxyType(dict(self.agents)))
+
+
+@dataclass(frozen=True)
+class SeedCompilation:
+    record: SeedRecord
+    seed_id: str
+    plan: RunPlan | None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    records: tuple[SeedCompilation, ...]
+    source_error: str | None = None
+
+    @property
+    def valid(self) -> bool:
+        return self.source_error is None and all(
+            item.plan is not None for item in self.records
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        plans = [item.plan.to_dict() for item in self.records if item.plan is not None]
+        errors = [item.error for item in self.records if item.error is not None]
+        result: dict[str, object] = {
+            "status": "valid" if self.valid else "invalid",
+            "counts": {"valid": len(plans), "invalid": len(errors)},
+            "plans": plans,
+            "records": [
+                {
+                    "seed_id": item.seed_id,
+                    "origin": json_value(item.record.origin),
+                    "status": "valid" if item.plan is not None else "invalid",
+                    "error": item.error,
+                }
+                for item in self.records
+            ],
+            "source_error": self.source_error,
+        }
+        if not self.valid:
+            result["error"] = self.source_error or errors[0]
+        if self.valid and len(plans) == 1:
+            result["plan"] = plans[0]
+        return result
 
 
 @dataclass(frozen=True)
@@ -453,56 +481,112 @@ class TaskPackage:
             steps=tuple(steps),
         )
 
-    def compile(self, *, seed_path: str | Path | None = None) -> RunPlan:
-        """Bind one JSON object Seed to this package's frozen authoring snapshot."""
-        if seed_path is None:
-            path = _package_path(self.root, self.seed_source.path)
-            origin = self.seed_source.path
-        else:
-            path = _external_path(seed_path)
-            origin = str(path)
-        raw = _read_text(path, origin)
+    def seed_records(
+        self, *, seed_path: str | Path | None = None
+    ) -> Iterator[SeedRecord]:
+        """Enumerate source records without constructing runtime components."""
         try:
-            data = json.loads(
-                raw,
-                object_pairs_hook=_json_object,
-                parse_float=_json_float,
-                parse_constant=_json_float,
-            )
-        except json.JSONDecodeError as exc:
-            raise TaskValidationError(
-                f"{origin}: malformed JSON at line {exc.lineno}, column {exc.colno}"
-            ) from exc
-        except ValueError as exc:
-            raise TaskValidationError(f"{origin}: {exc}") from exc
-        if not isinstance(data, dict):
-            raise TaskValidationError(f"{origin}: expected one JSON object Seed")
-        seed_data = cast(dict[str, JsonValue], data)
-        extracted: dict[str, JsonValue] = {}
-        for alias, selector in self.variables.items():
-            value: JsonValue = seed_data
-            for segment in selector.split("."):
-                if not isinstance(value, dict) or segment not in value:
+            if seed_path is None:
+                path = _package_path(self.root, self.seed_source.path)
+                origin = self.seed_source.path
+            else:
+                path = _external_path(seed_path)
+                origin = str(path)
+        except TaskValidationError as exc:
+            raise SeedSourceError(str(exc)) from exc
+        yield from read_seed_records(path, origin)
+
+    def compile(self, *, seed_path: str | Path | None = None) -> RunPlan:
+        """Compile exactly one record; use Runner or validate for collections."""
+        try:
+            records = self.seed_records(seed_path=seed_path)
+            record = next(records, None)
+            if record is None or next(records, None) is not None:
+                raise TaskValidationError("compile requires exactly one Seed record")
+            return self.compile_seed(self.bind_seed(record))
+        except SeedSourceError as exc:
+            raise TaskValidationError(str(exc)) from exc
+
+    def compile_records(
+        self, *, seed_path: str | Path | None = None
+    ) -> Iterator[SeedCompilation]:
+        """Compile independently and enforce Run-wide identity without live state."""
+        seen: set[str] = set()
+        for record in self.seed_records(seed_path=seed_path):
+            seed_id = record.digest
+            try:
+                seed = self.bind_seed(record)
+                seed_id = seed.id
+                if seed_id in seen:
                     raise TaskValidationError(
-                        f"{origin}: Variable {alias!r} selector "
-                        f"{selector!r} does not resolve"
+                        f"{record.origin.path}: record {record.origin.record}: "
+                        f"duplicate Seed ID {seed_id!r}"
                     )
-                value = value[segment]
-            extracted[alias] = value
-        seed_digest = content_digest(seed_data)
-        seed_id = seed_digest
+                seen.add(seed_id)
+                plan = self.compile_seed(seed)
+            except TaskValidationError as exc:
+                yield SeedCompilation(record, seed_id, None, str(exc))
+            else:
+                yield SeedCompilation(record, seed_id, plan)
+
+    def validate(self, *, seed_path: str | Path | None = None) -> ValidationResult:
+        """Validate every selected record without creating Run storage or components."""
+        records: list[SeedCompilation] = []
+        source_error = None
+        try:
+            records.extend(self.compile_records(seed_path=seed_path))
+        except SeedSourceError as exc:
+            source_error = str(exc)
+        return ValidationResult(tuple(records), source_error)
+
+    def _variable(
+        self, alias: str, data: Mapping[str, FrozenJsonValue]
+    ) -> FrozenJsonValue:
+        selector = self.variables[alias]
+        value: FrozenJsonValue = data
+        for segment in selector.split("."):
+            if not isinstance(value, Mapping) or segment not in value:
+                raise TaskValidationError(
+                    f"Variable {alias!r} selector {selector!r} does not resolve"
+                )
+            value = value[segment]
+        return value
+
+    def bind_seed(self, record: SeedRecord) -> Seed:
+        """Assign stable logical identity before rendering any executable Plan."""
+        label = f"{record.origin.path}: record {record.origin.record}"
+        if record.error is not None:
+            raise TaskValidationError(record.error)
+        if not isinstance(record.data, Mapping):
+            raise TaskValidationError(f"{label}: expected a JSON object Seed")
+        seed_id = record.digest
         if self.seed_source.id_variable is not None:
-            id_value = extracted[self.seed_source.id_variable]
+            try:
+                value = self._variable(self.seed_source.id_variable, record.data)
+            except TaskValidationError as exc:
+                raise TaskValidationError(f"{label}: {exc}") from exc
             if (
-                isinstance(id_value, bool)
-                or not isinstance(id_value, (str, int))
-                or not str(id_value).strip()
+                isinstance(value, bool)
+                or not isinstance(value, (str, int))
+                or not str(value).strip()
             ):
                 raise TaskValidationError(
-                    f"{origin}: seed.id_variable must resolve to a "
+                    f"{label}: seed.id_variable must resolve to a "
                     "nonempty string or integer"
                 )
-            seed_id = str(id_value)
+            seed_id = str(value)
+        return Seed(seed_id, record.data, record.origin, record.digest)
+
+    def compile_seed(self, seed: Seed) -> RunPlan:
+        """Compile one bound Seed into an independent immutable execution input."""
+        extracted: dict[str, JsonValue] = {}
+        for alias in self.variables:
+            try:
+                extracted[alias] = json_value(self._variable(alias, seed.data))
+            except TaskValidationError as exc:
+                raise TaskValidationError(
+                    f"{seed.origin.path}: record {seed.origin.record}: {exc}"
+                ) from exc
 
         env = _template_environment()
         agents: dict[str, AgentPlan] = {}
@@ -546,12 +630,11 @@ class TaskPackage:
                 additions[agent_id] = replace(addition, instruction=instruction)
             steps.append(StepPlan(step.id, additions))
 
-        frozen_data = cast(Mapping[str, FrozenJsonValue], freeze(seed_data))
         frozen_variables = cast(Mapping[str, FrozenJsonValue], freeze(extracted))
         return RunPlan(
             schema_version=self.schema_version,
             task=self.task,
-            seed=Seed(seed_id, frozen_data, SeedOrigin(origin), seed_digest),
+            seed=seed,
             variables=frozen_variables,
             providers=self.providers,
             agents=MappingProxyType(agents),

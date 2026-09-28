@@ -26,13 +26,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         "validate", help="Compile a Task Package without model calls"
     )
     validate.add_argument("package", help="Task Package directory")
-    validate.add_argument("--seed", help="Override the single JSON Seed path")
+    validate.add_argument("--seed", help="Override the JSON or JSONL Seed source")
     validate.add_argument("--json", action="store_true", dest="as_json")
-    run = commands.add_parser("run", help="Generate a durable Trace")
+    run = commands.add_parser("run", help="Generate durable Traces from a Seed source")
     run.add_argument("package", help="Task Package directory")
-    run.add_argument("--seed", help="Override the single JSON Seed path")
+    run.add_argument("--seed", help="Override the JSON or JSONL Seed source")
     run.add_argument("--output", default="runs", help="Run output directory")
     run.add_argument("--json", action="store_true", dest="as_json")
+    run.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="Stop after the first invalid or failed Trace",
+    )
     export = commands.add_parser("export", help="Export persisted Traces as JSONL")
     export.add_argument("traces", nargs="+", help="Trace directories or snapshot files")
     export.add_argument("--format", choices=["native", "openai"], default="openai")
@@ -60,7 +65,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         from agentinstruct.task_package import TaskPackage, TaskValidationError
 
         try:
-            plan = TaskPackage.load(args.package).compile(seed_path=args.seed)
+            report = TaskPackage.load(args.package).validate(seed_path=args.seed)
         except TaskValidationError as exc:
             if args.as_json:
                 print(json.dumps({"status": "invalid", "error": str(exc)}))
@@ -68,13 +73,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"Validation failed: {exc}", file=sys.stderr)
             return 2
         if args.as_json:
-            print(json.dumps({"status": "valid", "plan": plan.to_dict()}))
-        else:
+            print(json.dumps(report.to_dict()))
+        elif report.valid and len(report.records) == 1:
+            plan = report.records[0].plan
+            assert plan is not None
             print(
                 f"Valid Task {plan.task.id}; Seed {plan.seed.id}; "
                 f"Run Plan {plan.digest}"
             )
-        return 0
+        elif report.valid:
+            print(f"Valid Task Package; {len(report.records)} Seed records")
+        else:
+            print(f"Validation failed: {report.to_dict()['error']}", file=sys.stderr)
+        return 0 if report.valid else 2
     if args.command == "run":
         from agentinstruct import (
             Runner,
@@ -88,6 +99,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 TaskPackage.load(args.package),
                 runner=Runner(output_dir=args.output),
                 seed_path=args.seed,
+                fail_fast=args.fail_fast,
             )
         except (TaskValidationError, OSError) as exc:
             if args.as_json:
@@ -99,8 +111,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(result.to_dict()))
         else:
             counts = ", ".join(f"{key}={value}" for key, value in result.counts.items())
-            print(f"Run {result.run_id}: {counts}\n{result.path}")
-        return 1 if result.counts["failed"] or result.counts["invalid"] else 0
+            print(f"Run {result.run_id}: {result.status}; {counts}\n{result.path}")
+            if result.error is not None:
+                print(result.error, file=sys.stderr)
+        return (
+            1
+            if result.status == "failed"
+            or result.counts["failed"]
+            or result.counts["invalid"]
+            else 0
+        )
     if args.command == "export":
         from agentinstruct import export_native, export_openai
 

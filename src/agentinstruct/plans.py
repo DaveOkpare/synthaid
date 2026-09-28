@@ -79,6 +79,9 @@ class Seed:
     origin: SeedOrigin
     digest: str
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "data", freeze(json_value(self.data)))
+
 
 @dataclass(frozen=True)
 class ProviderPlan:
