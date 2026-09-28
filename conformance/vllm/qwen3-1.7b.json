@@ -1,0 +1,40 @@
+{
+  "type": "vllm",
+  "vllm_profile": {
+    "vllm_version": "0.30.0",
+    "model": "Qwen/Qwen3-1.7B",
+    "model_revision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+    "chat_template": "tokenizer_config.json.chat_template@70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+    "server_flags": [
+      "--revision", "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+      "--tokenizer-revision", "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+      "--enable-auto-tool-choice", "--tool-call-parser", "hermes",
+      "--reasoning-parser", "qwen3",
+      "--structured-outputs-config.backend", "xgrammar"
+    ],
+    "hardware": "UNVERIFIED: operator must supply the actual hardware class",
+    "request_profile": "agentinstruct-vllm-v1-qwen3-candidate",
+    "reasoning_parser": "qwen3",
+    "tool_parser": "hermes",
+    "surfaces": {
+      "chat_completions": {
+        "response_formats": ["text", "json_object", "json_schema"],
+        "tool_choices": ["none", "auto", "required", "named"],
+        "parallel_tool_calls": false,
+        "reasoning": true,
+        "reasoning_controls": ["enable_thinking", "include_reasoning", "thinking_token_budget"],
+        "native_modes": ["regex"],
+        "combinations": [
+          "json_object+reasoning", "json_schema+reasoning",
+          "native:regex+reasoning", "reasoning+tools"
+        ],
+        "conformance": "unverified"
+      }
+    }
+  },
+  "vllm_options": {
+    "include_reasoning": true,
+    "thinking_token_budget": 128,
+    "chat_template_kwargs": {"enable_thinking": true}
+  }
+}

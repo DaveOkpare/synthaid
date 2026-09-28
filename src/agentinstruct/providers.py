@@ -24,6 +24,7 @@ from agentinstruct.plans import (
     ReasoningControls,
     StructuredOutputPlan,
     ToolPlan,
+    VllmOptions,
     canonical_json,
     freeze,
     json_value,
@@ -114,6 +115,10 @@ class ProviderCapabilities:
                     )
                 )
             )
+            or (
+                request.vllm_options is not None
+                and "vllm" not in profile.native_extensions
+            )
             or (request.continuations and not profile.reasoning)
             or (
                 isinstance(request.structured_output, type)
@@ -123,6 +128,50 @@ class ProviderCapabilities:
             raise ProviderError("unsupported_feature")
         if request.structured_plan is not None:
             preflight_structured_output(request.structured_plan)
+
+
+class CompatibleCapabilities(ProviderCapabilities):
+    def __init__(self, plan: ProviderPlan) -> None:
+        assert plan.endpoint_profile is not None
+        object.__setattr__(self, "plan", plan)
+        super().__init__(
+            {
+                api: SurfaceCapabilities(
+                    response_formats=frozenset(surface.response_formats),
+                    function_tools=bool(surface.tool_choices),
+                    tool_choices=frozenset(surface.tool_choices),
+                    parallel_tool_calls=surface.parallel_tool_calls,
+                    pydantic_round_trip="json_schema" in surface.response_formats,
+                    reasoning=surface.reasoning,
+                    reasoning_controls=frozenset(surface.reasoning_controls),
+                )
+                for api, surface in plan.endpoint_profile.surfaces.items()
+                if api == "chat_completions" or surface.conformance == "passed"
+            }
+        )
+
+    plan: ProviderPlan
+
+    def require(self, api: str, request: ProviderRequest) -> None:
+        super().require(api, request)
+        assert self.plan.endpoint_profile is not None
+        profile = self.plan.endpoint_profile
+        if profile.model != request.model:
+            raise ProviderError("unsupported_feature")
+        surface = profile.surfaces[api]
+        if api == "chat_completions" and (
+            surface.reasoning or (request.reasoning and request.reasoning.summary)
+        ):
+            raise ProviderError("unsupported_feature")
+        features: set[str] = set()
+        if surface.reasoning:
+            features.add("reasoning")
+        if request.tools and request.tool_choice != "none":
+            features.add("tools")
+        if request.response_format.type != "text":
+            features.add(request.response_format.type)
+        if len(features) > 1 and "+".join(sorted(features)) not in surface.combinations:
+            raise ProviderError("unsupported_feature")
 
 
 @dataclass(frozen=True)
@@ -227,6 +276,7 @@ class ProviderRequest:
     structured_plan: StructuredOutputPlan | None = field(default=None, init=False)
     reasoning: ReasoningControls | None = None
     continuations: tuple[ReasoningContinuation, ...] = ()
+    vllm_options: VllmOptions | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "continuations", tuple(self.continuations))
@@ -427,6 +477,10 @@ class _HTTPProvider:
 
     @property
     def capabilities(self) -> ProviderCapabilities:
+        if self._plan.endpoint_profile is not None:
+            return CompatibleCapabilities(self._plan)
+        if self._plan.type == "openai-compatible" and self.api == "responses":
+            return ProviderCapabilities({})
         return ProviderCapabilities(
             {
                 self.api: SurfaceCapabilities(
@@ -490,6 +544,16 @@ class _HTTPProvider:
             try:
                 raw = self._scrub_data(parse_json(response.text, "provider response"))
                 result = self._normalize(raw, request_id, monotonic() - started)
+                declared = self.capabilities.surfaces[self._plan.api]
+                if (
+                    (result.message.tool_calls and not declared.function_tools)
+                    or (
+                        len(result.message.tool_calls) > 1
+                        and not declared.parallel_tool_calls
+                    )
+                    or (result.reasoning and not declared.reasoning)
+                ):
+                    raise ProviderError("unsupported_feature", request_id=request_id)
                 if request.structured_plan is not None:
                     if result.refused:
                         raise ProviderError("refusal", request_id=request_id)
@@ -634,6 +698,19 @@ class ResponsesProvider(_HTTPProvider):
 
 
 def create_provider(plan: ProviderPlan) -> Provider:
+    if plan.type == "vllm":
+        from agentinstruct.vllm import VllmProvider
+
+        return VllmProvider(plan)
+    if plan.type == "openai-compatible" and plan.api == "responses":
+        surface = (
+            plan.endpoint_profile.surfaces.get("responses")
+            if plan.endpoint_profile
+            else None
+        )
+        if surface is None or surface.conformance != "passed":
+            raise ProviderError("unsupported_feature")
+        return ResponsesProvider(plan)
     if plan.type == "openai" and plan.api == "responses":
         return ResponsesProvider(plan)
     if plan.type in {"openai", "openai-compatible"} and plan.api == "chat_completions":
@@ -800,6 +877,7 @@ def reasoning_evidence(
     return immutable_data(
         {
             "requested": request.reasoning,
+            **({"vllm_options": request.vllm_options} if request.vllm_options else {}),
             "returned": bool(response.reasoning),
             "retained": bool(response.reasoning) and retain,
             "items": response.reasoning if retain else (),

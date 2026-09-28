@@ -97,6 +97,7 @@ class QualityCall:
             inference=InferenceControls(self.model.temperature, self.model.max_tokens),
             structured_output=QualityDecision,
             reasoning=self.model.reasoning,
+            vllm_options=self.provider_plan.vllm_options,
             metadata={"actor_id": actor_id, "turn_id": turn_id, "step_id": step_id},
         )
         response = None

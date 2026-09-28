@@ -555,6 +555,9 @@ class TaskPackage:
                 base_url=provider.base_url,
                 api_key_env=provider.api_key_env,
                 retain_reasoning=provider.retain_reasoning,
+                vllm_profile=provider.vllm_profile,
+                vllm_options=provider.vllm_options,
+                endpoint_profile=provider.endpoint_profile,
             )
             for provider_id, provider in config.providers.items()
         }

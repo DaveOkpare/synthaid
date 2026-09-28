@@ -4,6 +4,8 @@ from agentinstruct.agent_tool import AgentTool
 from agentinstruct.execution import Agent, Agents, Environment, Observation, TaskContext
 from agentinstruct.export import export_native, export_openai
 from agentinstruct.plans import (
+    CompatibleEndpointProfile,
+    CompatibleSurface,
     ModelPlan,
     ProviderPlan,
     ReasoningControls,
@@ -16,6 +18,11 @@ from agentinstruct.plans import (
     StructuredOutputPlan,
     ToolPlan,
     VerifierPlan,
+    VllmChatTemplateKwargs,
+    VllmOptions,
+    VllmProfile,
+    VllmStructuredOutputs,
+    VllmSurface,
 )
 from agentinstruct.provider_errors import StructuredOutputValidationError
 from agentinstruct.providers import (
@@ -60,12 +67,15 @@ from agentinstruct.verification import (
     Verifier,
     reverify,
 )
+from agentinstruct.vllm import VllmProvider
 
 __all__ = [
     "Agent",
     "AgentTool",
     "Agents",
     "ChatCompletionsProvider",
+    "CompatibleEndpointProfile",
+    "CompatibleSurface",
     "Criterion",
     "DeterministicReviewer",
     "DeterministicVerifier",
@@ -118,6 +128,12 @@ __all__ = [
     "VerificationResult",
     "Verifier",
     "VerifierPlan",
+    "VllmChatTemplateKwargs",
+    "VllmOptions",
+    "VllmProfile",
+    "VllmProvider",
+    "VllmStructuredOutputs",
+    "VllmSurface",
     "compile_structured_output",
     "export_native",
     "export_openai",

@@ -8,10 +8,48 @@ import httpx
 import pytest
 
 from agentinstruct import Message, Runner, TaskPackage, load_trace
-from agentinstruct.plans import ProviderPlan, canonical_json
+from agentinstruct.plans import (
+    CompatibleEndpointProfile,
+    CompatibleSurface,
+    ProviderPlan,
+    canonical_json,
+)
 from agentinstruct.providers import ProviderRequest, ResponsesProvider
 from tests.test_providers import FakeTransport
 from tests.test_runner import make_package
+
+
+def compatible_plan(api: str) -> ProviderPlan:
+    """Deterministic contract declarations, never a real-server compatibility claim."""
+    return ProviderPlan(
+        "test",
+        "openai-compatible",
+        api,
+        "https://test.example/v1",
+        None,
+        endpoint_profile=CompatibleEndpointProfile(
+            "model",
+            "fake-transport-v1",
+            {
+                "responses": CompatibleSurface(
+                    response_formats=("text", "json_object", "json_schema"),
+                    tool_choices=("none", "auto", "required", "named"),
+                    parallel_tool_calls=True,
+                    reasoning=True,
+                    reasoning_controls=("effort", "summary"),
+                    combinations=(
+                        "json_object+reasoning",
+                        "json_schema+reasoning",
+                        "reasoning+tools",
+                    ),
+                    conformance="passed",
+                    report_digest="0" * 64,
+                ),
+            },
+        )
+        if api == "responses"
+        else None,
+    )
 
 
 def response(
@@ -121,9 +159,7 @@ async def test_surfaces_produce_equal_typed_values_or_structured_errors(
     ):
         transport = FakeTransport(wire)
         provider = adapter(
-            ProviderPlan(
-                "test", "openai-compatible", api, "https://test.example/v1", None
-            ),
+            compatible_plan(api),
             transport=transport,
         )
         try:
@@ -309,9 +345,7 @@ async def test_non_success_precedes_partial_tool_and_structured_parsing(
         payload["incomplete_details"] = {"reason": state}
     transport = FakeTransport(httpx.Response(200, json=payload))
     provider = ResponsesProvider(
-        ProviderPlan(
-            "test", "openai-compatible", "responses", "https://test.example/v1", None
-        ),
+        compatible_plan("responses"),
         transport=transport,
     )
     try:
@@ -392,9 +426,7 @@ async def test_ordered_function_calls_and_tool_choices_have_surface_parity(
     ):
         transport = FakeTransport(wire)
         provider = adapter(
-            ProviderPlan(
-                "test", "openai-compatible", api, "https://test.example/v1", None
-            ),
+            compatible_plan(api),
             transport=transport,
         )
         try:
@@ -525,9 +557,7 @@ async def test_malformed_and_hosted_tool_outputs_never_authorize_effects(
 
     transport = FakeTransport(response(output=output))
     provider = ResponsesProvider(
-        ProviderPlan(
-            "test", "openai-compatible", "responses", "https://test.example/v1", None
-        ),
+        compatible_plan("responses"),
         transport=transport,
     )
     try:
@@ -555,7 +585,22 @@ async def test_responses_quality_gates_record_private_reasoning_in_separate_atte
             'type = "openai-compatible"\napi = "responses"',
         )
     )
-    task.write_text(task.read_text() + '\n[verifier]\ntype = "model"\n')
+    task.write_text(
+        task.read_text()
+        + """
+[providers.default.endpoint_profile]
+model = "unused-model"
+request_profile = "fake-quality-v1"
+[providers.default.endpoint_profile.surfaces.responses]
+response_formats = ["text", "json_schema"]
+reasoning = true
+combinations = ["json_schema+reasoning"]
+conformance = "passed"
+report_digest = "0000000000000000000000000000000000000000000000000000000000000000"
+[verifier]
+type = "model"
+"""
+    )
     (root / "verifier").mkdir()
     (root / "verifier/instruction.md").write_text("Judge the conversation.")
     (root / "verifier/rubric.toml").write_text(
@@ -700,9 +745,7 @@ async def test_interleaved_reasoning_and_ordered_calls_keep_continuation_order()
         response("Done."),
     )
     provider = ResponsesProvider(
-        ProviderPlan(
-            "test", "openai-compatible", "responses", "https://test.example/v1", None
-        ),
+        compatible_plan("responses"),
         transport=transport,
     )
     try:
@@ -774,9 +817,7 @@ async def test_unstructured_partial_tool_states_have_semantic_parity(
         ("chat_completions", ChatCompletionsProvider, chat),
     ):
         provider = adapter(
-            ProviderPlan(
-                "test", "openai-compatible", api, "https://test.example/v1", None
-            ),
+            compatible_plan(api),
             transport=FakeTransport(httpx.Response(200, json=payload)),
         )
         try:
@@ -863,9 +904,7 @@ async def test_unknown_response_error_code_does_not_persist_untrusted_text() -> 
     payload["status"] = "failed"
     payload["error"] = {"code": "untrusted-code-payload", "message": "sensitive text"}
     provider = ResponsesProvider(
-        ProviderPlan(
-            "test", "openai-compatible", "responses", "https://test.example/v1", None
-        ),
+        compatible_plan("responses"),
         transport=FakeTransport(httpx.Response(200, json=payload)),
     )
     try:

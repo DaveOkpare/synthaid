@@ -172,6 +172,62 @@ These semantics follow the official [Responses reference](https://developers.ope
 [function-calling guide](https://developers.openai.com/api/docs/guides/function-calling)
 and [reasoning guide](https://developers.openai.com/api/docs/guides/reasoning).
 
+## Use explicit vLLM and compatible endpoint profiles
+
+`vllm` connects to an independently managed external server. There is no core
+vLLM engine dependency. Chat Completions is the default. Define a
+`[providers.<id>.vllm_profile]` with the exact model, revision, vLLM version,
+non-secret launch flags, parser names, tokenizer/chat-template identity, hardware
+class, request-profile name, and per-surface capabilities. These values and typed
+`[providers.<id>.vllm_options]` defaults are preserved in each immutable Run Plan.
+The [pinned candidate and live-suite instructions](conformance/vllm/README.md)
+provide a complete JSON configuration to translate into the same TOML fields.
+
+**The bundled Qwen3 candidate is unverified; this repository currently makes no
+real-server vLLM compatibility claim.** Ordinary tests are deterministic and do not
+contact an inference service. Live checks require the dedicated
+`python -m agentinstruct.vllm_conformance --allow-live ...` command, an explicit
+server URL, actual hardware metadata, and a new report path. A recorded live pass
+is required before declaring compatibility for that exact profile.
+
+Python callers use `VllmProvider`, `VllmProfile`, `VllmSurface`, and `VllmOptions`.
+`ProviderRequest.vllm_options` replaces the Provider Plan's option defaults for
+that request. Native constraints use `VllmStructuredOutputs` with exactly one
+mode: `json`, `choice`, `regex`, `grammar`, `json_object`, or `structural_tag`.
+Typed whitespace/additional-property modifiers are separate. Reasoning controls
+include `reasoning_effort`, integer `thinking_token_budget` (including `-1` for
+unlimited), `include_reasoning`, and
+`VllmChatTemplateKwargs(enable_thinking=...)`. Unknown fields, removed `guided_*`
+fields, and arbitrary extra bodies/template kwargs are rejected. The template
+kwargs currently cover Qwen-style `enable_thinking`; other model-specific keys
+need an explicit typed addition and conformance case.
+
+A surface defaults to text only. Declare each Tool-choice mode, response format,
+native mode and reasoning control actually supported by that deployment.
+`combinations` explicitly lists sorted pairs such as `reasoning+tools` or
+`json_schema+reasoning`. Reasoning-capable profiles are treated conservatively as
+reasoning-enabled unless their typed template option explicitly disables it.
+Model overrides cannot borrow a different model's profile. Every used Agent,
+Reviewer and Verifier is preflighted before participant inference. Use separate
+Provider IDs when generation and judges need different native option defaults.
+Pydantic structured results always undergo the same local validation as OpenAI.
+Private returned reasoning stays in model-call Events under the existing retention
+policy, and Chat Tool continuation sends accepted Messages without replaying
+Responses-only reasoning items.
+
+A vLLM Responses surface needs a separate `conformance = "passed"` declaration
+and `report_digest`; a Chat pass does not enable it. Generic `openai-compatible`
+Responses uses a smaller, distinct `CompatibleEndpointProfile` containing
+`model`, `request_profile`, and `surfaces` of `CompatibleSurface`. In TOML those
+live under `[providers.<id>.endpoint_profile]` and
+`[providers.<id>.endpoint_profile.surfaces.responses]`. Its portable capability
+fields are `response_formats`, `tool_choices`, `parallel_tool_calls`, `reasoning`,
+`reasoning_controls`, and `combinations`, plus `conformance` and `report_digest`.
+For Responses, the declaration must be passed and reference retained conformance
+evidence; an unprofiled base URL cannot enable it. Generic endpoint declarations
+do not accept vLLM parser/engine/native-option fields. Generic Chat retains its
+existing portable behavior; extracted Chat reasoning requires the vLLM adapter.
+
 ## Run a Seed collection
 
 The [offline collection example](examples/seed-collection/task.toml) processes two
@@ -706,7 +762,8 @@ and `max_tokens`, plus typed `reasoning` settings; an Agent's
 `[agents.<id>.model]` may override those fields.
 Provider declarations support `openai`, `openai-compatible`, and `vllm` identities.
 The runtime implements Responses and Chat Completions for `openai` and Chat
-Completions for `openai-compatible`; vLLM runtime profiles remain pending.
+Completions for `openai-compatible`, plus explicitly declared compatible Responses
+and vLLM surfaces as described above.
 OpenAI defaults to the `responses` API surface; the other types default to
 `chat_completions`. An explicit `api` selects either surface. Credentials use
 `api_key_env` references, never inline values. Validation neither reads those
@@ -804,10 +861,12 @@ Python Provider callers may author their own result class:
 from pydantic import BaseModel, ConfigDict
 from agentinstruct import Message, ProviderRequest, compile_structured_output
 
+
 class Assessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
     passed: bool
     feedback: str | None
+
 
 snapshot = compile_structured_output(Assessment)
 # snapshot is immutable JSON data, with name, schema, strictness, description,

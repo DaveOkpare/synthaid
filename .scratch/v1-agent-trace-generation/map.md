@@ -115,4 +115,14 @@
   accepted Tool continuation never replays rejected drafts or another actor's
   reasoning. See [Responses usage](../../README.md#generate-through-responses-and-retain-private-reasoning).
 
-Tickets 15–19 remain unimplemented.
+- **15 — resolved:** [Add tested vLLM Provider profiles](issues/15-tested-vllm-provider-profiles.md#answer).
+  External vLLM inference now has immutable per-model/per-surface declarations,
+  typed native/reasoning options, combined-feature preflight and private Tool
+  continuation. Compatible Responses also requires its own portable declaration.
+  Deterministic contracts and an explicitly opt-in report-producing live harness
+  cover the declared request profile. The pinned Qwen3 candidate is unverified;
+  no real-server compatibility claim is made. See
+  [Provider usage](../../README.md#use-explicit-vllm-and-compatible-endpoint-profiles)
+  and [conformance instructions](../../conformance/vllm/README.md).
+
+Tickets 16–19 remain unimplemented.

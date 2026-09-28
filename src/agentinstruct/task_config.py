@@ -8,12 +8,22 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    TypeAdapter,
+    ValidationInfo,
+    field_serializer,
     field_validator,
     model_validator,
 )
 
 from agentinstruct.paths import portable_name, seed_glob, unique_names
-from agentinstruct.plans import JsonValue
+from agentinstruct.plans import (
+    CompatibleEndpointProfile,
+    JsonValue,
+    VllmOptions,
+    VllmProfile,
+    canonical_json,
+    json_value,
+)
 from agentinstruct.quality import Criterion, Rubric
 from agentinstruct.steps import CONTROL_TOOLS
 
@@ -53,6 +63,72 @@ class ProviderConfig(ConfigModel):
     base_url: str | None = None
     api_key_env: VariableName | None = None
     retain_reasoning: bool = True
+    vllm_profile: VllmProfile | None = None
+    vllm_options: VllmOptions | None = None
+    endpoint_profile: CompatibleEndpointProfile | None = None
+
+    @field_validator("endpoint_profile", mode="before")
+    @classmethod
+    def parse_endpoint_profile(cls, value: object) -> CompatibleEndpointProfile | None:
+        return (
+            None
+            if value is None
+            else TypeAdapter(CompatibleEndpointProfile).validate_json(
+                canonical_json(value)
+            )
+        )
+
+    @field_validator("vllm_profile", mode="before")
+    @classmethod
+    def parse_vllm_profile(cls, value: object) -> VllmProfile | None:
+        return (
+            None
+            if value is None
+            else TypeAdapter(VllmProfile).validate_json(canonical_json(value))
+        )
+
+    @field_validator("vllm_options", mode="before")
+    @classmethod
+    def parse_vllm_options(cls, value: object) -> VllmOptions | None:
+        return (
+            None
+            if value is None
+            else TypeAdapter(VllmOptions).validate_json(canonical_json(value))
+        )
+
+    @field_serializer("vllm_profile", "vllm_options", "endpoint_profile")
+    def serialize_vllm(
+        self, value: VllmProfile | VllmOptions | CompatibleEndpointProfile | None
+    ) -> JsonValue:
+        return json_value(value)
+
+    @model_validator(mode="after")
+    def validate_vllm(self, info: ValidationInfo) -> Self:
+        if self.endpoint_profile is not None:
+            if self.type != "openai-compatible":
+                raise ValueError("Generic endpoint profiles require openai-compatible")
+            surface = self.endpoint_profile.surfaces.get(self.api or "chat_completions")
+            if surface is None or (
+                self.api == "responses" and surface.conformance != "passed"
+            ):
+                raise ValueError(
+                    "Selected compatible surface has no conformance declaration"
+                )
+        if self.type == "vllm":
+            if self.vllm_profile is None or self.base_url is None:
+                raise ValueError("vLLM requires an explicit profile and base URL")
+            vllm_surface = self.vllm_profile.surfaces.get(
+                self.api or "chat_completions"
+            )
+            if vllm_surface is None or (
+                self.api == "responses"
+                and vllm_surface.conformance != "passed"
+                and not (info.context or {}).get("vllm_conformance_probe", False)
+            ):
+                raise ValueError("Selected vLLM surface has no conformance declaration")
+        elif self.vllm_profile is not None or self.vllm_options is not None:
+            raise ValueError("vLLM options and profile require a vLLM Provider")
+        return self
 
     @field_validator("base_url")
     @classmethod

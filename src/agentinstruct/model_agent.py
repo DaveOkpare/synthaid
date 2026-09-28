@@ -93,6 +93,7 @@ class ModelAgent:
                 self._plan.model.temperature, self._plan.model.max_tokens
             ),
             reasoning=self._plan.model.reasoning,
+            vllm_options=self._provider_plan.vllm_options,
             continuations=continuations,
             metadata={
                 "run_id": self._run_id,
@@ -146,7 +147,11 @@ class ModelAgent:
             raise ProviderError("refusal", request_id=response.request_id)
         if response.finish_state in {"length", "content_filter"}:
             raise ProviderError("incomplete", request_id=response.request_id)
-        if response.message.tool_calls and response.reasoning:
+        if (
+            self._provider_plan.api == "responses"
+            and response.message.tool_calls
+            and response.reasoning
+        ):
             self._pending_reasoning = (
                 response.message,
                 response.reasoning,
