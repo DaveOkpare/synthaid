@@ -10,8 +10,9 @@ from uuid import uuid4
 
 from pydantic import TypeAdapter
 
+from agentinstruct.failures import SafeDiagnostics
 from agentinstruct.paths import output_path
-from agentinstruct.plans import RunPlan, canonical_json
+from agentinstruct.plans import RunPlan, canonical_json, json_value
 from agentinstruct.traces import (
     Event,
     MessageCommit,
@@ -20,6 +21,10 @@ from agentinstruct.traces import (
     TraceSnapshot,
     VerificationAttempt,
 )
+
+
+class PersistenceError(OSError):
+    """A storage operation failed, distinct from component-owned I/O failures."""
 
 
 def timestamp() -> str:
@@ -59,34 +64,71 @@ def append_json(path: Path, value: object) -> None:
         os.fsync(stream.fileno())
 
 
+def _write_text(path: Path, text: str) -> None:
+    with path.open("x", encoding="utf-8") as stream:
+        stream.write(text)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
 class TraceRecorder:
     """One Trace's accepted Conversation and operational Events."""
 
-    def __init__(self, path: Path, plan: RunPlan | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        plan: RunPlan | None = None,
+        *,
+        diagnostics: SafeDiagnostics | None = None,
+    ) -> None:
         self.path = path
+        self.diagnostics = diagnostics or SafeDiagnostics(
+            plan.providers.values() if plan else ()
+        )
         self.conversation: list[MessageCommit] = []
         self.events: list[Event] = []
         self._sealed = False
         path.mkdir(parents=True)
         (path / "artifacts").mkdir()
         if plan is not None:
-            write_json(path / "run-plan.json", plan.to_dict())
-        (path / "conversation.jsonl").touch()
-        (path / "events.jsonl").touch()
+            write_json(path / "run-plan.json", self.diagnostics.data(plan.to_dict()))
+        _write_text(path / "conversation.jsonl", "")
+        _write_text(path / "events.jsonl", "")
+        _sync_directory(path / "artifacts")
+        _sync_directory(path)
+        _sync_directory(path.parent)
+        _sync_directory(path.parent.parent)
 
-    def commit(self, commit: MessageCommit) -> None:
+    def commit(self, commit: MessageCommit) -> MessageCommit:
         self.require_open()
-        append_json(self.path / "conversation.jsonl", commit)
+        if self.diagnostics.data(commit) != json_value(commit):
+            raise PersistenceError("Message Commit must be sanitized before acceptance")
+        try:
+            append_json(self.path / "conversation.jsonl", commit)
+        except OSError as exc:
+            raise PersistenceError("Message Commit persistence failed") from exc
         self.conversation.append(commit)
+        return commit
 
     def event(self, event: Event) -> None:
         self.require_open()
-        append_json(self.path / "events.jsonl", event)
-        self.events.append(event)
+        event = TypeAdapter(Event).validate_python(
+            self.diagnostics.data(event, diagnostic=True)
+        )
+        try:
+            append_json(self.path / "events.jsonl", event)
+        except OSError as exc:
+            raise PersistenceError("Event persistence failed") from exc
+        finally:
+            self.events.append(event)
 
     def seal(self, snapshot: TraceSnapshot) -> None:
         self.require_open()
-        write_json(self.path / "trace.json", snapshot, replace_existing=False)
+        write_json(
+            self.path / "trace.json",
+            self.diagnostics.data(snapshot),
+            replace_existing=False,
+        )
         self._sealed = True
 
     def require_open(self) -> None:
@@ -100,15 +142,31 @@ class LocalRunStore:
     def __init__(self, root: str | Path = "runs") -> None:
         self.root = Path(root)
 
-    def open_run(self, run_id: str, source_files: Mapping[str, str]) -> Path:
+    def open_run(
+        self,
+        run_id: str,
+        source_files: Mapping[str, str],
+        *,
+        diagnostics: SafeDiagnostics | None = None,
+    ) -> Path:
         path = output_path(self.root) / run_id
         path.mkdir(parents=True)
         source_root = path / "source-task"
         source_root.mkdir()
+        directories = {path, source_root}
         for relative, text in source_files.items():
             destination = source_root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_text(text, encoding="utf-8")
+            directories.update(
+                parent
+                for parent in destination.parents
+                if parent.is_relative_to(source_root)
+            )
+            _write_text(destination, diagnostics.text(text) if diagnostics else text)
+        for directory in sorted(
+            directories, key=lambda item: len(item.parts), reverse=True
+        ):
+            _sync_directory(directory)
         write_json(
             path / "manifest.json",
             {
@@ -118,13 +176,16 @@ class LocalRunStore:
                 "started_at": timestamp(),
             },
         )
-        (path / "traces.jsonl").touch()
+        _write_text(path / "traces.jsonl", "")
         _sync_directory(path)
         _sync_directory(path.parent)
+        _sync_directory(path.parent.parent)
         return path
 
     def index_trace(self, path: Path, reference: TraceReference) -> None:
         """Publish a reference only after all terminal Trace evidence is durable."""
+        if not (reference.path / "trace.json").is_file():
+            raise OSError("Cannot index a Trace before its snapshot is sealed")
         # Retain newly created Trace/verification directories as well as the
         # already-fsynced snapshot and sidecar files before publishing discovery.
         _sync_directory(reference.path)

@@ -55,8 +55,11 @@ _METHODS: Mapping[ComponentKind, Mapping[str, int]] = {
 
 
 class ComponentError(ValueError):
-    def __init__(self, kind: str, reference: str, problem: str) -> None:
+    def __init__(
+        self, kind: str, reference: str, problem: str, *, cause_type: str | None = None
+    ) -> None:
         self.kind, self.reference = kind, reference
+        self.cause_type = cause_type
         super().__init__(f"{kind} component {reference!r}: {problem}")
 
 
@@ -81,7 +84,10 @@ def import_reference(kind: str, reference: str) -> object:
         return target
     except Exception as exc:
         raise ComponentError(
-            kind, reference, f"lookup failed ({type(exc).__name__})"
+            kind,
+            reference,
+            f"lookup failed ({type(exc).__name__})",
+            cause_type=type(exc).__name__,
         ) from None
 
 
@@ -158,7 +164,10 @@ def construct_component(kind: ComponentKind, selector: str, plan: object) -> obj
             component = constructor(plan)
     except Exception as exc:
         raise ComponentError(
-            kind, selector, f"construction failed ({type(exc).__name__})"
+            kind,
+            selector,
+            f"construction failed ({type(exc).__name__})",
+            cause_type=type(exc).__name__,
         ) from None
     validate_component(kind, component, selector)
     return component

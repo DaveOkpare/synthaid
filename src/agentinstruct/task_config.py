@@ -1,7 +1,6 @@
 """Strict authoring schema for built-in generation Task Packages."""
 
 from typing import Annotated, Literal, Self
-from urllib.parse import urlsplit
 
 from pydantic import (
     AfterValidator,
@@ -24,6 +23,7 @@ from agentinstruct.plans import (
     VllmProfile,
     canonical_json,
     json_value,
+    validate_provider_url,
 )
 from agentinstruct.quality import Criterion, Rubric
 from agentinstruct.steps import CONTROL_TOOLS
@@ -134,25 +134,7 @@ class ProviderConfig(ConfigModel):
     @field_validator("base_url")
     @classmethod
     def validate_base_url(cls, value: str | None) -> str | None:
-        if value is not None:
-            try:
-                url = urlsplit(value)
-                valid = (
-                    url.scheme in {"http", "https"}
-                    and url.hostname
-                    and not url.username
-                    and not url.password
-                    and not url.query
-                    and not url.fragment
-                )
-                _ = url.port
-            except ValueError:
-                valid = False
-            if not valid:
-                raise ValueError(
-                    "expected an HTTP(S) URL without credentials, query, or fragment"
-                )
-        return value
+        return validate_provider_url(value)
 
 
 class ReasoningConfig(ConfigModel):

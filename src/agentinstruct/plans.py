@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, is_dataclass
 from types import MappingProxyType
 from typing import ClassVar, Literal, cast
+from urllib.parse import urlsplit
 
 from pydantic import ConfigDict
 
@@ -36,20 +37,35 @@ def freeze(value: JsonValue) -> FrozenJsonValue:
     return value
 
 
-def json_value(value: object) -> JsonValue:
+def json_value(value: object, *, allow_dataclasses: bool = True) -> JsonValue:
     """Project plan dataclasses and immutable containers into plain JSON data."""
-    if is_dataclass(value) and not isinstance(value, type):
-        return {
-            field.name: json_value(getattr(value, field.name))
-            for field in fields(value)
-        }
-    if isinstance(value, Mapping):
-        return {key: json_value(item) for key, item in value.items()}
-    if isinstance(value, (tuple, list)):
-        return [json_value(item) for item in value]
-    if value is None or isinstance(value, (str, bool, int, float)):
-        return value
-    raise TypeError(f"Cannot serialize {type(value).__name__} as plan data")
+    active: set[int] = set()
+
+    def project(item: object) -> JsonValue:
+        if isinstance(item, float) and not math.isfinite(item):
+            raise ValueError("JSON numbers must be finite")
+        if item is None or isinstance(item, (str, bool, int, float)):
+            return item
+        if id(item) in active:
+            raise ValueError("JSON data cannot contain cycles")
+        active.add(id(item))
+        try:
+            if allow_dataclasses and is_dataclass(item) and not isinstance(item, type):
+                return {
+                    field.name: project(getattr(item, field.name))
+                    for field in fields(item)
+                }
+            if isinstance(item, Mapping):
+                if any(not isinstance(key, str) for key in item):
+                    raise ValueError("JSON object keys must be strings")
+                return {key: project(value) for key, value in item.items()}
+            if isinstance(item, (tuple, list)):
+                return [project(value) for value in item]
+            raise TypeError(f"Cannot serialize {type(item).__name__} as plan data")
+        finally:
+            active.remove(id(item))
+
+    return project(value)
 
 
 def canonical_json(value: object) -> str:
@@ -433,6 +449,46 @@ class ProviderPlan:
     vllm_profile: VllmProfile | None = None
     vllm_options: VllmOptions | None = None
     endpoint_profile: CompatibleEndpointProfile | None = None
+
+    def __post_init__(self) -> None:
+        validate_provider_url(self.base_url)
+        if self.api_key_env is not None and (
+            not isinstance(self.api_key_env, str)
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", self.api_key_env) is None
+        ):
+            raise ValueError(
+                "Provider credentials require an environment variable name"
+            )
+        if self.api not in {"responses", "chat_completions"}:
+            raise ValueError("Unknown Provider API surface")
+        if type(self.retain_reasoning) is not bool:
+            raise ValueError("Reasoning retention must be Boolean")
+
+
+def validate_provider_url(value: str | None) -> str | None:
+    if value is not None:
+        try:
+            if not isinstance(value, str) or any(
+                char.isspace() or ord(char) < 32 for char in value
+            ):
+                raise ValueError
+            url = urlsplit(value)
+            valid = (
+                url.scheme in {"http", "https"}
+                and bool(url.hostname)
+                and url.username is None
+                and url.password is None
+                and not url.query
+                and not url.fragment
+            )
+            _ = url.port
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ValueError(
+                "expected an HTTP(S) URL without credentials, query, or fragment"
+            )
+    return value
 
 
 @dataclass(frozen=True)

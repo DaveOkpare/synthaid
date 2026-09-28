@@ -1,20 +1,25 @@
 """Agent protocols and the Interaction acceptance boundary."""
 
+import asyncio
 from collections import deque
 from collections.abc import AsyncIterator, Iterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
-from typing import Literal, Protocol, cast
+from typing import Literal, Never, Protocol, cast
 from uuid import uuid4
+
+from pydantic import TypeAdapter
 
 from agentinstruct.plans import (
     AgentPlan,
     EnvironmentPlan,
     FrozenJsonValue,
+    JsonValue,
     TaskIdentity,
     ToolPlan,
     canonical_json,
 )
+from agentinstruct.providers import ProviderError
 from agentinstruct.quality import Rubric, score_verdicts
 from agentinstruct.review import (
     Reviewer,
@@ -24,7 +29,7 @@ from agentinstruct.review import (
     ReviewResult,
 )
 from agentinstruct.steps import CONTROL_TOOLS, StepProgress
-from agentinstruct.store import TraceRecorder, timestamp
+from agentinstruct.store import PersistenceError, TraceRecorder, timestamp
 from agentinstruct.tools import (
     Tool,
     ToolContext,
@@ -123,6 +128,12 @@ class TurnResult:
     terminated: bool = False
 
 
+class AgentError(RuntimeError):
+    def __init__(self, kind: Literal["execution", "malformed"]) -> None:
+        self.kind = kind
+        super().__init__(f"Agent {kind} failed")
+
+
 class Interaction:
     def __init__(
         self,
@@ -143,6 +154,37 @@ class Interaction:
         self._tool_plans = tool_plans or {}
         self._tool_context = tool_context
         self._progress = progress or StepProgress((), recorder)
+        self._proposal_attempt = 0
+        self._revision = 0
+
+    async def _generate(
+        self, turn_id: str, feedback: str | None = None
+    ) -> Message | list[Message]:
+        self._proposal_attempt += 1
+        try:
+            action = await self._agent.generate(
+                self._observation(feedback, turn_id=turn_id)
+            )
+        except PersistenceError:
+            raise
+        except (Exception, asyncio.CancelledError) as exc:
+            self._event(
+                "agent_error",
+                self._recorder.diagnostics.failure(
+                    exc,
+                    "agent_generate",
+                    proposal_attempt=self._proposal_attempt,
+                    revision=self._revision,
+                ),
+                turn_id,
+                failure=exc,
+            )
+            if isinstance(exc, (ProviderError, asyncio.CancelledError)):
+                raise
+            raise AgentError("execution") from exc
+        if isinstance(action, list) and not action:
+            self._proposal_error(ValueError("Agent returned no Messages"), turn_id)
+        return action
 
     @property
     def _instruction(self) -> str:
@@ -174,25 +216,62 @@ class Interaction:
         )
 
     def _event(
-        self, kind: str, data: object, turn_id: str, step_id: str | None = None
+        self,
+        kind: str,
+        data: object,
+        turn_id: str,
+        step_id: str | None = None,
+        *,
+        failure: BaseException | None = None,
     ) -> None:
-        self._recorder.event(
-            Event(
-                uuid4().hex,
-                kind,
-                timestamp(),
-                immutable_data(data),
-                self._plan.id,
-                turn_id,
-                step_id if step_id is not None else self._progress.step_id,
+        try:
+            self._recorder.event(
+                Event(
+                    uuid4().hex,
+                    kind,
+                    timestamp(),
+                    immutable_data(data),
+                    self._plan.id,
+                    turn_id,
+                    step_id if step_id is not None else self._progress.step_id,
+                )
             )
-        )
+        except OSError:
+            if isinstance(failure, asyncio.CancelledError):
+                raise failure from None
+            raise
 
     def _proposal(self, proposal: Message, turn_id: str) -> Message:
+        try:
+            return self._validate_proposal(proposal, turn_id)
+        except PersistenceError:
+            raise
+        except Exception as exc:
+            self._proposal_error(exc, turn_id)
+
+    def _proposal_error(self, exc: Exception, turn_id: str) -> Never:
+        self._event(
+            "agent_error",
+            self._recorder.diagnostics.failure(
+                exc,
+                "agent_proposal",
+                proposal_attempt=self._proposal_attempt,
+                revision=self._revision,
+            ),
+            turn_id,
+        )
+        raise AgentError("malformed") from exc
+
+    def _validate_proposal(self, proposal: Message, turn_id: str) -> Message:
         if (
             not isinstance(proposal, Message)
             or proposal.role not in {"assistant", "user"}
             or not isinstance(proposal.content, str)
+            or (proposal.name is not None and not isinstance(proposal.name, str))
+            or not isinstance(proposal.id, str)
+            or (
+                proposal.actor_id is not None and not isinstance(proposal.actor_id, str)
+            )
         ):
             raise ValueError("Agent must return participant Messages")
         if proposal.tool_call_id is not None or (
@@ -213,6 +292,11 @@ class Interaction:
                 raise ValueError(
                     "Tool calls require function names and stable identifiers"
                 )
+        # Validate the original shape before normalization, then review exactly
+        # the safe proposal that can be committed and used for effects.
+        proposal = TypeAdapter(Message).validate_python(
+            self._recorder.diagnostics.data(proposal)
+        )
         call_ids = [call.id for call in proposal.tool_calls]
         accepted_ids = {
             call.id
@@ -278,18 +362,27 @@ class Interaction:
                     "Reviewer must return a ReviewResult with text feedback"
                 )
             score = score_verdicts(request.rubric, result.criteria)
-        except Exception as exc:
+        except PersistenceError:
+            raise
+        except (Exception, asyncio.CancelledError) as exc:
             self._event(
                 "review_error",
-                {
-                    "review_id": review_id,
-                    "message_id": message.id,
-                    "kind": stage,
-                    "exception": type(exc).__name__,
-                    "message": str(exc),
-                },
+                self._recorder.diagnostics.failure(
+                    exc,
+                    "reviewer",
+                    review_id=review_id,
+                    message_id=message.id,
+                    kind="cancelled"
+                    if isinstance(exc, asyncio.CancelledError)
+                    else stage,
+                    proposal_attempt=self._proposal_attempt,
+                    revision=self._revision,
+                ),
                 turn_id,
+                failure=exc,
             )
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             raise ReviewError(stage) from exc
         accepted = score >= request.rubric.threshold
         self._event(
@@ -338,21 +431,27 @@ class Interaction:
         ):
             raise ValueError("Incoming reply must reference an accepted Message")
         turn_id = uuid4().hex
+        self._proposal_attempt = 0 if action is None else 1
+        self._revision = 0
         if action is None:
-            action = await self._agent.generate(self._observation(turn_id=turn_id))
+            action = await self._generate(turn_id)
         proposals = deque(action if isinstance(action, list) else [action])
         if not proposals:
             raise ValueError("Agent returned no Messages")
         last_reply: Message | None = None
         while proposals:
+            self._revision = 0
             message = self._proposal(proposals.popleft(), turn_id)
             revisions = 0
             review_exhausted = False
             while True:
                 if message.tool_calls and proposals:
-                    raise ValueError(
-                        "Tool-call Message must be the last pending Message; "
-                        "the Agent must observe its result before continuing"
+                    self._proposal_error(
+                        ValueError(
+                            "Tool-call Message must be the last pending Message; "
+                            "the Agent must observe its result before continuing"
+                        ),
+                        turn_id,
                     )
                 review_id, feedback = await self._review(message, turn_id)
                 if feedback is None:
@@ -376,9 +475,8 @@ class Interaction:
                     if review_exhausted:
                         break
                     raise ReviewExhausted("Reviewer revisions exhausted")
-                revision = await self._agent.generate(
-                    self._observation(feedback, turn_id=turn_id)
-                )
+                self._revision = revisions + 1
+                revision = await self._generate(turn_id, feedback)
                 revised = revision if isinstance(revision, list) else [revision]
                 if not revised:
                     raise ValueError("Agent returned no Messages")
@@ -398,7 +496,7 @@ class Interaction:
                     },
                     turn_id,
                 )
-            self._recorder.commit(
+            committed = self._recorder.commit(
                 MessageCommit(
                     message,
                     turn_id,
@@ -410,13 +508,13 @@ class Interaction:
                     visibility="private" if message.tool_calls else "shared",
                 )
             )
+            message = committed.message
             self._event("message_committed", {"message_id": message.id}, turn_id)
             if message.tool_calls:
                 for call in message.tool_calls:
                     await self._execute_tool(call, message, turn_id)
-                continuation = await self._agent.generate(
-                    self._observation(turn_id=turn_id)
-                )
+                self._revision = 0
+                continuation = await self._generate(turn_id)
                 proposals.extend(
                     continuation if isinstance(continuation, list) else [continuation]
                 )
@@ -475,30 +573,45 @@ class Interaction:
                     ),
                 )
             stage = "result"
-            content = tool_result_content(result, tool_plan.output_schema)
-        except Exception as exc:
+            validated: JsonValue = TypeAdapter(JsonValue).validate_python(
+                result, strict=True
+            )
+            content = tool_result_content(
+                self._recorder.diagnostics.data(validated), tool_plan.output_schema
+            )
+        except PersistenceError:
+            raise
+        except (Exception, asyncio.CancelledError) as exc:
             kind = exc.kind if isinstance(exc, ToolError) else stage
             self._event(
                 "tool_error",
-                {
-                    "message_id": message.id,
-                    "tool_call_id": call.id,
-                    "kind": kind,
-                    "exception": type(exc).__name__,
-                    "message": "Tool execution failed"
-                    if stage == "execution"
-                    else str(exc),
-                },
+                self._recorder.diagnostics.failure(
+                    exc,
+                    "tool",
+                    message_id=message.id,
+                    tool_call_id=call.id,
+                    kind="cancelled"
+                    if isinstance(exc, asyncio.CancelledError)
+                    else kind,
+                    operation=stage,
+                    proposal_attempt=self._proposal_attempt,
+                    revision=self._revision,
+                ),
                 turn_id,
                 step_id,
+                failure=exc,
             )
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             if (
                 stage == "execution"
                 and kind == "execution"
                 and tool_plan.execution_errors == "result"
             ):
                 content = canonical_json(
-                    {"error": ToolExecutionFailure(type(exc).__name__)}
+                    self._recorder.diagnostics.data(
+                        {"error": ToolExecutionFailure(type(exc).__name__)}
+                    )
                 )
             else:
                 raise ToolError(kind) from exc

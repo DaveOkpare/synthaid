@@ -1,12 +1,10 @@
 """Adapt a fresh, isolated subordinate Agent to the public Tool contract."""
 
-import json
 from collections.abc import Callable, Mapping
-
-from pydantic import TypeAdapter
 
 from agentinstruct.execution import Agent, Observation
 from agentinstruct.plans import FrozenJsonValue, JsonValue, ToolPlan, canonical_json
+from agentinstruct.seeds import parse_json
 from agentinstruct.tools import (
     ToolContext,
     ToolError,
@@ -56,6 +54,7 @@ class AgentTool:
                 "AgentTool factory",
                 self._agent_reference,
                 f"construction failed ({type(exc).__name__})",
+                cause_type=type(exc).__name__,
             ) from None
         validate_component("agent", agent, self._agent_reference)
         action = await agent.generate(
@@ -82,9 +81,7 @@ class AgentTool:
             message = messages[0]
             if message.role != "assistant":
                 raise ValueError("Agent Tool requires an assistant reply")
-            result: JsonValue = TypeAdapter(JsonValue).validate_python(
-                json.loads(message.content), strict=True
-            )
+            result = parse_json(message.content, "Agent Tool result")
             tool_result_content(result, self.output_schema)
             return result
         except Exception as exc:

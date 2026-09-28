@@ -11,9 +11,10 @@ from time import monotonic
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 from uuid import uuid4
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from agentinstruct.components import validate_component
+from agentinstruct.failures import SafeDiagnostics, complete_cleanup
 from agentinstruct.plans import (
     FrozenJsonValue,
     ProviderPlan,
@@ -25,6 +26,7 @@ from agentinstruct.providers import Provider, ProviderError, create_provider
 from agentinstruct.quality import Verdicts, score_verdicts
 from agentinstruct.quality_provider import QualityCall, quality_request
 from agentinstruct.store import (
+    _sync_directory,
     load_trace,
     timestamp,
     verification_directory,
@@ -36,6 +38,7 @@ from agentinstruct.traces import (
     TraceSnapshot,
     VerificationAttempt,
     VerificationError,
+    immutable_data,
 )
 
 if TYPE_CHECKING:
@@ -153,7 +156,10 @@ async def reverify(
         stored_plan = trace.run_plan.get("verifier")
         if stored_plan is None:
             raise ValueError("Trace has no Verifier Plan; supply one to reverify")
-        plan = TypeAdapter(VerifierPlan).validate_json(canonical_json(stored_plan))
+        try:
+            plan = TypeAdapter(VerifierPlan).validate_json(canonical_json(stored_plan))
+        except ValidationError:
+            raise ValueError("Persisted Verifier Plan is invalid") from None
     started_at, started = timestamp(), monotonic()
     provenance = ComponentProvenance("verifier", plan.type, None)
     status: Literal["accepted", "rejected", "unverified"] = "unverified"
@@ -161,11 +167,53 @@ async def reverify(
     criteria: dict[str, bool] = {}
     feedback = ""
     error = None
-    stage: Literal["execution", "malformed", "timeout"] = "execution"
+    stage: Literal["execution", "malformed", "timeout", "cancelled"] = "execution"
     deadline = asyncio.timeout(plan.timeout_seconds)
     provider = None
     verifier: Verifier
     events: list[Event] = []
+    stored_providers = trace.run_plan.get("providers", {})
+    try:
+        diagnostics = SafeDiagnostics(
+            (provider_plan,)
+            if provider_plan is not None
+            else (
+                TypeAdapter(ProviderPlan).validate_json(canonical_json(item))
+                for item in stored_providers.values()
+            )
+            if isinstance(stored_providers, Mapping)
+            else ()
+        )
+    except ValidationError:
+        raise ValueError("Persisted Provider Plan is invalid") from None
+
+    def record_event(event: Event) -> None:
+        events.append(
+            TypeAdapter(Event).validate_python(diagnostics.data(event, diagnostic=True))
+        )
+
+    def failure(
+        exc: BaseException,
+        kind: Literal["execution", "malformed", "timeout", "cancelled"],
+        *,
+        lifecycle: str = "verifier",
+    ) -> VerificationError:
+        evidence = diagnostics.failure(exc, lifecycle, kind=kind)
+        record_event(
+            Event(uuid4().hex, "verifier_error", timestamp(), immutable_data(evidence))
+        )
+        causes = evidence["causes"]
+        assert isinstance(causes, list)
+        return VerificationError(
+            kind,
+            type(exc).__name__,
+            str(evidence["message"]),
+            exc.kind if isinstance(exc, ProviderError) else None,
+            tuple(cast(Mapping[str, FrozenJsonValue], cause) for cause in causes),
+            lifecycle,
+        )
+
+    cancelled: asyncio.CancelledError | None = None
     try:
         async with deadline:
             if plan.type == "model" and verifier_factory is create_verifier:
@@ -192,7 +240,7 @@ async def reverify(
                         plan.structured_output,
                         provider_plan,
                         provider,
-                        events.append,
+                        record_event,
                         "verifier",
                     ),
                 )
@@ -210,8 +258,11 @@ async def reverify(
             )
         score = score_verdicts(plan.rubric, result.criteria)
         criteria = dict(result.criteria)
-        feedback = result.feedback
+        feedback = diagnostics.diagnostic_text(result.feedback)
         status = "accepted" if score >= plan.rubric.threshold else "rejected"
+    except asyncio.CancelledError as exc:
+        cancelled = exc
+        error = failure(exc, "cancelled")
     except Exception as exc:
         score, criteria, feedback = None, {}, ""
         if isinstance(exc, TimeoutError) and deadline.expired():
@@ -221,24 +272,23 @@ async def reverify(
             "schema_mismatch",
         }:
             stage = "malformed"
-        error = VerificationError(
-            stage,
-            type(exc).__name__,
-            str(exc),
-            exc.kind if isinstance(exc, ProviderError) else None,
-        )
+        error = failure(exc, stage)
     finally:
-        if provider is not None:
-            try:
-                await provider.aclose()
-            except Exception:
-                score, criteria, feedback, status = None, {}, "", "unverified"
-                error = VerificationError(
-                    "execution",
-                    "ProviderError",
-                    "Verifier Provider cleanup failed",
-                    "unknown",
-                )
+
+        async def cleanup() -> None:
+            nonlocal score, criteria, feedback, status, error
+            if provider is not None:
+                try:
+                    async with asyncio.timeout(plan.timeout_seconds):
+                        await provider.aclose()
+                except (Exception, asyncio.CancelledError) as exc:
+                    score, criteria, feedback, status = None, {}, "", "unverified"
+                    error = failure(exc, "execution", lifecycle="provider_cleanup")
+
+        if await complete_cleanup(cleanup()):
+            cancelled = asyncio.CancelledError()
+            score, criteria, feedback, status = None, {}, "", "unverified"
+            error = failure(cancelled, "cancelled", lifecycle="cleanup")
     attempt = VerificationAttempt(
         schema_version="1",
         id=uuid4().hex,
@@ -257,7 +307,18 @@ async def reverify(
         events=tuple(events),
         provider=provider_plan,
     )
+    attempt = TypeAdapter(VerificationAttempt).validate_json(
+        canonical_json(diagnostics.data(attempt))
+    )
     attempts = verification_directory(path)
-    attempts.mkdir(exist_ok=True)
-    write_json(attempts / f"{attempt.id}.json", attempt, replace_existing=False)
+    try:
+        attempts.mkdir(exist_ok=True)
+        _sync_directory(attempts.parent)
+        write_json(attempts / f"{attempt.id}.json", attempt, replace_existing=False)
+    except OSError:
+        if cancelled is not None:
+            raise cancelled from None
+        raise
+    if cancelled is not None:
+        raise cancelled
     return attempt

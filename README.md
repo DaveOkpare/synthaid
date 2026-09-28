@@ -381,6 +381,34 @@ If storage cannot publish a complete Trace/index pair, generation stops before
 the next Seed; available snapshots and the failure diagnostic are retained where
 the storage remains writable.
 
+### Failure evidence and cleanup
+
+Lifecycle failures retain their stage, timestamp, safe exception/cause identities,
+and available actor, Step, turn, proposal-attempt and revision context. Invalid
+Agent return shapes fail before acceptance; Tool arguments and results require
+strict JSON, including string object keys and finite numbers. No infrastructure
+retry is performed.
+
+External cancellation finalizes the Environment and closes every constructed
+Provider, then seals and indexes the available failed Trace before propagating
+`CancelledError`. Cleanup uses the configured Environment timeout for generation
+resources and the Verifier timeout for verification resources. One failed or
+timed-out cleanup does not skip remaining Providers. Reverification cancellation
+appends an unverified attempt where storage permits, preserving earlier valid
+quality decisions and all sealed generation files. When storage itself fails,
+the framework preserves available evidence without publishing an unsealed Trace.
+
+Credentials remain environment references in configuration. At execution time,
+configured credential values are removed from recorded content, identifiers,
+metadata keys, provenance and diagnostics; authentication headers are also
+removed from diagnostic evidence, including quoted dictionary/JSON header values.
+Proposals are redacted before review, and Tool results before output-schema
+validation. Persistence rejects unsanitized Message Commits instead of changing
+approved or validated values; later relay and Tool effects use those same Messages.
+Authored non-secret Task/Seed fields remain intact. Source snapshots, their nested
+directories, empty journals, terminal snapshots and verification sidecars are
+synced before their published Run references.
+
 `validate --json` returns `plans`, ordered per-record diagnostics, and valid/invalid
 counts for a collection. A source error also appears as `source_error`; already
 compiled records remain in the report. A single valid record additionally retains

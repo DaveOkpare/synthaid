@@ -142,4 +142,13 @@
   provenance, failures and artifacts without invoking components or changing
   recorded evidence. See [inspection usage](../../README.md#inspect-recorded-runs-and-traces).
 
-Tickets 18–19 remain unimplemented.
+- **18 — resolved:** [Harden failure persistence and provenance](issues/18-harden-failure-persistence-provenance.md#answer).
+  Narrow safe failure/cause evidence, strict JSON boundaries and runtime credential
+  redaction preserve accepted partial history and reviewed effects. Cancellation
+  persists failed generation or unverified sidecars before propagating where
+  storage permits; configured cleanup deadlines and independent resource closing
+  survive recording failures. Source/journal/directory sync precedes index
+  publication, and safe Seed references match snapshots. See
+  [failure behavior](../../README.md#failure-evidence-and-cleanup).
+
+Ticket 19 remains unimplemented.

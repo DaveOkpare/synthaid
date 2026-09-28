@@ -39,7 +39,11 @@ class FunctionCall:
     arguments: Mapping[str, FrozenJsonValue]
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "arguments", immutable_data(self.arguments))
+        object.__setattr__(
+            self,
+            "arguments",
+            immutable_data(json_value(self.arguments, allow_dataclasses=False)),
+        )
 
 
 @dataclass(frozen=True)
@@ -110,10 +114,17 @@ class ComponentProvenance:
 
 @dataclass(frozen=True)
 class VerificationError:
-    kind: Literal["execution", "malformed", "timeout"]
+    kind: Literal["execution", "malformed", "timeout", "cancelled"]
     exception: str
     message: str
     provider_kind: str | None = None
+    causes: tuple[Mapping[str, FrozenJsonValue], ...] = ()
+    stage: str = "verifier"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "causes", tuple(immutable_data(cause) for cause in self.causes)
+        )
 
 
 @dataclass(frozen=True)

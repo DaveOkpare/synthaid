@@ -628,7 +628,7 @@ async def test_tool_call_cannot_accept_a_precomputed_reply_from_the_same_action(
     assert len([event for event in trace.events if event.kind == "tool_started"]) == (
         1 if path == "continuation" else 0
     )
-    error = next(event for event in trace.events if event.kind == "error")
+    error = next(event for event in trace.events if event.kind == "agent_error")
     assert "last pending Message" in str(error.data["message"])
     reviews = [event for event in trace.events if event.kind == "review_result"]
     assert len(reviews) == (0 if path == "initial" else 1)
@@ -720,7 +720,7 @@ async def test_tool_revision_cannot_skip_an_older_pending_reply(
     trace = load_trace(result.traces[0].path)
     assert trace.status == "failed"
     assert trace.conversation == ()
-    error = next(event for event in trace.events if event.kind == "error")
+    error = next(event for event in trace.events if event.kind == "agent_error")
     assert "last pending Message" in str(error.data["message"])
     assert not any(event.kind == "tool_started" for event in trace.events)
 
@@ -920,7 +920,7 @@ async def test_ambiguous_call_identifiers_cannot_authorize_more_effects(
     assert len(
         [event for event in trace.events if event.kind == "review_requested"]
     ) == (1 if reuse else 0)
-    error = next(event for event in trace.events if event.kind == "error")
+    error = next(event for event in trace.events if event.kind == "agent_error")
     assert "unique" in str(error.data["message"])
 
 

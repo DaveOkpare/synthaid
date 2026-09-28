@@ -155,7 +155,7 @@ async def test_simulator_cannot_accept_a_task_completion_proposal(
     assert result.counts["failed"] == 1
     assert trace.conversation == ()
     assert any(
-        event.kind == "error" and "Target Agent" in str(event.data["message"])
+        event.kind == "agent_error" and "Target Agent" in str(event.data["message"])
         for event in trace.events
     )
     dataset = tmp_path / "empty.jsonl"
@@ -342,10 +342,10 @@ async def test_extension_timeout_retains_a_failed_partial_trace_for_explicit_exp
     trace = load_trace(result.traces[0].path)
     assert result.counts["failed"] == 1
     assert trace.generation.state == "failed"
-    assert trace.generation.reason == "environment_run"
+    assert trace.generation.reason == "agent_execution"
     assert [commit.message.content for commit in trace.conversation] == ["user sees []"]
     assert any(
-        event.kind == "error" and event.data["message"] == "extension timed out"
+        event.kind == "agent_error" and event.data["message"] == "extension timed out"
         for event in trace.events
     )
     paths = [result.traces[0].path]
