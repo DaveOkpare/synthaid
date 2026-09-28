@@ -43,7 +43,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Stop after the first invalid or failed Trace",
     )
     export = commands.add_parser("export", help="Export persisted Traces as JSONL")
-    export.add_argument("traces", nargs="+", help="Trace directories or snapshot files")
+    export.add_argument(
+        "traces", nargs="+", help="Run/Trace directories or snapshot files"
+    )
     export.add_argument("--format", choices=["native", "openai"], default="openai")
     export.add_argument("--output", required=True, help="Destination JSONL file")
     export.add_argument(
@@ -52,6 +54,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="append",
         help="Include status (repeatable)",
     )
+    for identity in ("run", "trace", "seed"):
+        export.add_argument(
+            f"--{identity}-id",
+            action="append",
+            help=f"Include {identity} ID (repeatable)",
+        )
     export.add_argument("--json", action="store_true", dest="as_json")
     export.add_argument("--verification", help="Select a valid Verification attempt ID")
     reverification = commands.add_parser(
@@ -192,6 +200,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.output,
                 statuses=set(args.status or ["accepted"]),
                 verification_id=args.verification,
+                run_ids=set(args.run_id) if args.run_id is not None else None,
+                trace_ids=set(args.trace_id) if args.trace_id is not None else None,
+                seed_ids=set(args.seed_id) if args.seed_id is not None else None,
             )
         except (OSError, ValueError) as exc:
             if args.as_json:

@@ -151,4 +151,16 @@
   publication, and safe Seed references match snapshots. See
   [failure behavior](../../README.md#failure-evidence-and-cleanup).
 
-Ticket 19 remains unimplemented.
+- **19 — resolved:** [Pass the complete V1 release workflow](issues/19-pass-v1-release-workflow.md#answer).
+  The deterministic two-Step dialogue fixture proves independent accepted Seeds,
+  reviewed conversation and private Tool effects, every terminal status, persisted
+  reverification/inspection/export, and async/sync/CLI parity. Run/Trace/Seed/status
+  selectors preserve input order, current quality decisions and source protection.
+  Strict startup plus separate collection audits prohibit inference/storage effects.
+  All 552 deterministic tests, locked dependencies, lint/format/type checks, 12 CLI
+  smokes and source/wheel packaging passed. Both archives contain `py.typed` and
+  exclude generated/private/development content. See the
+  [first complete workflow](../../README.md#complete-an-offline-workflow).
+
+All 19 implementation tickets are resolved. The pinned vLLM profile remains an
+unverified candidate pending an explicitly supplied live conformance endpoint.

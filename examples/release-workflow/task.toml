@@ -1,0 +1,50 @@
+schema_version = "1"
+[task]
+id = "release-dialogue"
+version = "1"
+steps = ["collect", "conclude"]
+[seed]
+path = "seeds.jsonl"
+id_variable = "case_id"
+[variables]
+case_id = "id"
+name = "name"
+outcome = "outcome"
+[providers.default]
+type = "openai"
+[model]
+provider = "default"
+name = "unused-offline-model"
+[runtime]
+type = "local"
+[environment]
+type = "dialogue"
+max_rounds = 3
+[agents.user]
+type = "release_components:Participant"
+target = false
+[agents.assistant]
+type = "release_components:Participant"
+target = true
+tools = ["lookup"]
+[agents.user.reviewer]
+type = "release_components:Reviewer"
+max_revisions = 1
+[agents.assistant.reviewer]
+type = "release_components:Reviewer"
+max_revisions = 1
+[tools.lookup]
+type = "release_components:Lookup"
+description = "Return a reviewed label and this Trace's invocation count."
+[tools.lookup.input_schema]
+type = "object"
+properties = { label = { type = "string" } }
+required = ["label"]
+additionalProperties = false
+[tools.lookup.output_schema]
+type = "object"
+properties = { label = { type = "string" }, invocation = { const = 1 }, seed = { type = "string" } }
+required = ["label", "invocation", "seed"]
+additionalProperties = false
+[verifier]
+type = "release_components:Verifier"

@@ -1,0 +1,6 @@
+{"id":"ada","name":"Ada","outcome":"accepted"}
+{"id":"lin","name":"Lin","outcome":"accepted"}
+{"id":"rejected","name":"Rejected","outcome":"rejected"}
+{"id":"unverified","name":"Unverified","outcome":"unverified"}
+{"id":"invalid","outcome":"accepted"}
+{"id":"failed","name":"Failed","outcome":"failed"}

@@ -5,10 +5,46 @@ A Python framework for generating verified traces from agent interactions.
 Task Package validation, compilation, deterministic single-Agent and dialogue
 generation, reviewed private function Tools, per-Agent Review and revision,
 final Verification, reverification, sequential file and iterable Seed collections,
-and native/OpenAI JSONL export
-are available through the typed library
-and CLI. Further capabilities follow the
-[V1 specification](.scratch/v1-agent-trace-generation/spec.md).
+ordered Task Steps, persisted inspection, and native/OpenAI JSONL export are
+available through the typed library and CLI. OpenAI Responses/Chat Completions and
+explicit compatible/vLLM profiles share the same reviewed execution boundary.
+The pinned vLLM candidate remains unverified until its opt-in live conformance
+report passes; the [V1 specification](.scratch/v1-agent-trace-generation/spec.md)
+describes the supported scope.
+
+## Complete an offline workflow
+
+From the repository root, the [release example](examples/release-workflow/task.toml)
+produces two accepted Seeds through a reviewed two-Step dialogue and private Tool
+calls. Its explicit Python components require no inference service or credentials:
+
+```sh
+uv sync --locked
+export PYTHONPATH="$PWD/examples/release-workflow${PYTHONPATH:+:$PYTHONPATH}"
+uv run agentinstruct validate examples/release-workflow --json
+uv run agentinstruct run examples/release-workflow --output /tmp/agentinstruct-runs --json
+```
+
+Use the Run `path` printed by `run` as `RUN`, and one returned Trace `path` as
+`TRACE`:
+
+```sh
+RUN=/tmp/agentinstruct-runs/<run-id>
+TRACE="$RUN/traces/<trace-id>"
+uv run agentinstruct inspect "$RUN"
+uv run agentinstruct inspect "$RUN" --tui
+uv run agentinstruct export "$RUN" --format native --output /tmp/native.jsonl
+uv run agentinstruct export "$RUN" --format openai --output /tmp/accepted.jsonl
+uv run agentinstruct export "$RUN" --seed-id ada --output /tmp/ada.jsonl
+uv run agentinstruct reverify "$TRACE" --package examples/release-workflow --json
+```
+
+In the terminal inspector, use `trace 1`, `conversation`, `tools`, `reviews`,
+`verification`, `next`, and `quit`. Reverification appends evidence without changing
+sealed generation. The fixture's optional `--seed examples/release-workflow/coverage.jsonl`
+adds deliberate rejected, unverified, invalid and failed records; that Run exits 1
+while retaining all six attempts. Default exports still include only the two
+accepted records. Repeat `--status` to include other statuses intentionally.
 
 ## Generate a Trace
 
@@ -208,7 +244,8 @@ Library callers may inject `Runner(provider_factory=...)`; a
 `ChatCompletionsProvider(plan, transport=...)` accepts a public HTTPX asynchronous
 transport and owns its cleanup. The deterministic tests use this boundary without
 network calls. Both surfaces share mandatory local structured-result validation
-and Provider-backed quality gates. Tested vLLM profiles arrive in ticket 15.
+and Provider-backed quality gates. vLLM profiles declare their per-surface
+capabilities; see the explicit profile and conformance instructions below.
 
 ## Generate through Responses and retain private reasoning
 
@@ -486,18 +523,17 @@ bounds setup and generation together, and grants finalization its own equal
 timeout. A framework deadline produces `truncated/timeout`; accepted partial
 history stays in the Trace. Agent or Environment exceptions produce `failed`.
 
-For the current single-step dialogue, the target can return
+For a single-step dialogue, the target can return
 `Message(role="assistant", content="Done.", control="complete")`. The completion
 proposal takes effect only after that Message is accepted and persisted, producing
 `terminated/completed`, even on the last allowed turn. A scripted target may use
 `{ content = "Done.", control = "complete" }` in its `responses` array. Plain text
-and script exhaustion never signal completion; exhaustion fails the Trace. This
-interim Message control will evolve into reviewed framework control Tool calls
-with Task Steps in ticket 09. The single-Agent Environment completes after its
+and script exhaustion never signal completion; exhaustion fails the Trace. Tasks with ordered Steps use reviewed `advance_step` and `complete_task` Tool
+calls instead. The single-Agent Environment completes after its
 one accepted Interaction.
 
-Export one or more persisted Trace directories (or `trace.json` paths) returned
-by `run`:
+Export persisted Run directories, Trace directories, or standalone `trace.json`
+paths returned by `run`:
 
 ```sh
 uv run agentinstruct export runs/<run-id>/traces/<trace-id> \
@@ -506,6 +542,15 @@ uv run agentinstruct export runs/<run-id>/traces/<trace-id> \
 
 `--format native` exports complete Trace snapshots. Both formats select only
 `accepted` by default; repeat `--status` to explicitly select other statuses.
+`--run-id`, `--trace-id`, and `--seed-id` filter identities; each is repeatable,
+values within a filter are alternatives, and different filters intersect. Python
+exports accept `run_ids`, `trace_ids`, and `seed_ids` sets. Input order and each
+Run index order are preserved. Selection uses current persisted Verification
+status, not historical Run counts; `--verification` explicitly selects a valid
+attempt. Empty selections still protect every input Run and its evidence from
+being overwritten. Tool arguments remain structured JSON in both formats; only
+Provider wire requests stringify them.
+
 `--json` reports the exported count. OpenAI JSONL contains one `messages` array
 per nonempty selected Trace: Target Agent replies map to `assistant`, and shared
 replies from the other participant map to `user`. Native IDs, control metadata,
@@ -573,7 +618,7 @@ The example uses `type = "deterministic"` with a
 `[agents.user.reviewer.checks]` mapping from its Criterion IDs to
 `"nonempty_content"`. This built-in check only requires non-whitespace text; it
 does not assess semantic quality. Custom Reviewers omit `checks`.
-Provider-backed judges arrive in a later ticket.
+Model Reviewers use `type = "model"` with the structured quality contract below.
 
 ## Review Tool calls before effects
 
@@ -598,8 +643,8 @@ A custom `Tool` exposes `id`, `description`, `input_schema`, `output_schema`,
 `async call(args, context) -> JsonValue`; its declaration must match the compiled
 plan. `FunctionTool(plan, async_function)` adapts a function with that same
 arguments/context signature. Its provenance records the wrapped callable's
-identity and available source digest. Explicit import-reference loading comes
-in a later ticket; the example wires its runtime factories in Python.
+identity and available source digest. Explicit `module:function` references are
+supported through `type = "function"`; the example demonstrates injected factories.
 
 The Agent receives only its assigned `ToolPlan` declarations in
 `Observation.tools`. It proposes an assistant `Message` with a `tool_calls`
@@ -738,8 +783,8 @@ implementing `async verify(trace: TraceSnapshot) -> VerificationResult`. Return
 The result may also contain a sequence of `(criterion_id, bool)` pairs. Missing,
 duplicate, unknown, and non-Boolean verdicts are errors. Factory exceptions,
 verification exceptions, timeout, and malformed results record an **unverified**
-attempt with error details and no invented false verdicts. Provider-backed judges
-arrive in a later ticket.
+attempt with error details and no invented false verdicts. Model Verifiers use
+`type = "model"` with the structured quality contract below.
 
 Verification starts after Environment finalization and durable generation sealing.
 Each attempt records a schema version, sequence, unique ID, Verifier identity and
@@ -927,11 +972,13 @@ print(plan.digest)
 print(plan.to_json())
 ```
 
-The current implementation supports schema version `"1"`, a `single` or `dialogue`
-Environment, exactly one explicit Target Agent, the `local` Runtime, and JSON
-object/array or JSONL Seeds. Every Agent requires `agents/<id>/instruction.md`. Unknown configuration
-fields and unsupported component selections fail validation. Task Steps are
-optional; a Task without declared steps omits the `steps/` directory.
+Schema version `"1"` supports built-in `single` and `dialogue` Environments plus
+[explicit custom Environments](#load-custom-components), exactly one Target Agent,
+and the `local` Runtime. [Seed sources](#run-a-seed-collection) include JSON
+objects/arrays, JSONL, CSV and ordered directory sources; Python callers may also
+supply iterable Seeds. Every Agent requires `agents/<id>/instruction.md`. Unknown
+configuration fields and unsupported component selections fail validation. Task
+Steps are optional; a Task without declared steps omits the `steps/` directory.
 
 `[variables]` maps template aliases to dot paths through nested JSON mappings.
 Array indexing and empty path segments are unsupported. Every selector must
@@ -1021,7 +1068,8 @@ inherit that Agent's resolved model settings. A model Verifier uses
 `[verifier] type = "model"`, `verifier/rubric.toml`, and a required
 `verifier/instruction.md`; `[verifier.model]` inherits Task model defaults.
 Instructions are strict templates rendered from each Seed before generation.
-Choose `api = "chat_completions"` for these flows at this implementation stage.
+Both `responses` and `chat_completions` support these flows when the selected
+Provider surface declares the required structured-output capabilities.
 
 Both model judges receive a Pydantic `QualityDecision` with a list of
 `{"id": "criterion-id", "passed": true}` entries and text `feedback`. The
