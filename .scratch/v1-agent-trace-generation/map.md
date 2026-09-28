@@ -99,4 +99,13 @@
   [Provider usage](../../README.md#generate-through-a-chat-completions-provider)
   and the [model example](../../examples/chat-completions/task.toml).
 
-Tickets 13–19 remain unimplemented.
+- **13 — resolved:** [Use Pydantic structured outputs for quality gates](issues/13-pydantic-structured-quality-gates.md#answer).
+  Immutable schema snapshots and typed Provider results now support Pydantic
+  classes and explicit JSON Schema with mandatory local validation. Model Reviewers
+  score exact active criteria before effects; model Verifiers use rendered Task
+  instructions and append-only attempt evidence, including endpoint provenance.
+  Reverification binds policy overrides to persisted Seeds without changing
+  generation files. See [structured quality usage](../../README.md#use-structured-quality-gates)
+  and the [offline example](../../examples/structured-quality/run.py).
+
+Tickets 14–19 remain unimplemented.

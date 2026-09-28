@@ -548,6 +548,8 @@ async def test_semantic_request_maps_tools_choice_formats_controls_and_immutable
     schema: dict[str, FrozenJsonValue] = {
         "type": "object",
         "properties": {"answer": {"type": "string"}},
+        "required": ("answer",),
+        "additionalProperties": False,
     }
     response_format = ResponseFormat("json_schema", schema=schema)
     schema["properties"] = {"changed": True}
@@ -598,7 +600,12 @@ async def test_semantic_request_maps_tools_choice_formats_controls_and_immutable
         "type": "json_schema",
         "json_schema": {
             "name": "result",
-            "schema": {"type": "object", "properties": {"answer": {"type": "string"}}},
+            "schema": {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": ["answer"],
+                "additionalProperties": False,
+            },
             "strict": True,
         },
     }

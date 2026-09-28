@@ -262,6 +262,8 @@ class Interaction:
             self._observation().messages,
             self._instruction,
             self._progress.step_id,
+            self._plan.id,
+            turn_id,
         )
         self._event(
             "review_requested",

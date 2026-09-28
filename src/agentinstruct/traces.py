@@ -8,6 +8,7 @@ from typing import Literal, cast
 
 from agentinstruct.plans import (
     FrozenJsonValue,
+    ProviderPlan,
     TaskIdentity,
     VerifierPlan,
     freeze,
@@ -108,6 +109,7 @@ class VerificationError:
     kind: Literal["execution", "malformed", "timeout"]
     exception: str
     message: str
+    provider_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -126,9 +128,12 @@ class VerificationAttempt:
     ended_at: str
     duration_seconds: float
     error: VerificationError | None = None
+    events: tuple[Event, ...] = ()
+    provider: ProviderPlan | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "criteria", MappingProxyType(dict(self.criteria)))
+        object.__setattr__(self, "events", tuple(self.events))
 
 
 @dataclass(frozen=True)

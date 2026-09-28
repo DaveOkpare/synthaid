@@ -1,0 +1,4 @@
+threshold = 1.0
+[[criteria]]
+id = "greeting"
+description = "The Message contains a polite greeting."

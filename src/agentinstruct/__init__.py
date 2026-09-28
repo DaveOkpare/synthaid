@@ -12,9 +12,11 @@ from agentinstruct.plans import (
     SeedOrigin,
     StepAgentPlan,
     StepPlan,
+    StructuredOutputPlan,
     ToolPlan,
     VerifierPlan,
 )
+from agentinstruct.provider_errors import StructuredOutputValidationError
 from agentinstruct.providers import (
     ChatCompletionsProvider,
     InferenceControls,
@@ -37,6 +39,7 @@ from agentinstruct.review import (
 )
 from agentinstruct.runner import Runner, generate, generate_sync
 from agentinstruct.store import load_trace
+from agentinstruct.structured import JsonSchemaSpec, compile_structured_output
 from agentinstruct.task_package import TaskPackage, TaskValidationError
 from agentinstruct.tools import FunctionTool, Tool, ToolContext, ToolExecutionFailure
 from agentinstruct.traces import (
@@ -66,6 +69,7 @@ __all__ = [
     "FunctionCall",
     "FunctionTool",
     "InferenceControls",
+    "JsonSchemaSpec",
     "Message",
     "ModelPlan",
     "NamedToolChoice",
@@ -89,6 +93,8 @@ __all__ = [
     "SeedOrigin",
     "StepAgentPlan",
     "StepPlan",
+    "StructuredOutputPlan",
+    "StructuredOutputValidationError",
     "SurfaceCapabilities",
     "TaskContext",
     "TaskPackage",
@@ -104,6 +110,7 @@ __all__ = [
     "VerificationResult",
     "Verifier",
     "VerifierPlan",
+    "compile_structured_output",
     "export_native",
     "export_openai",
     "generate",

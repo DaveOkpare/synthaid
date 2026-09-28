@@ -5,6 +5,7 @@ from typing import Literal, Protocol
 
 from agentinstruct.plans import ReviewerPlan
 from agentinstruct.quality import Rubric, Verdicts
+from agentinstruct.quality_provider import QualityCall
 from agentinstruct.traces import Message
 
 
@@ -16,6 +17,8 @@ class ReviewRequest:
     messages: tuple[Message, ...]
     agent_instruction: str
     step_id: str | None = None
+    actor_id: str | None = None
+    turn_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -26,6 +29,29 @@ class ReviewResult:
 
 class Reviewer(Protocol):
     async def review(self, request: ReviewRequest) -> ReviewResult: ...
+
+
+class ModelReviewer:
+    def __init__(self, call: QualityCall) -> None:
+        self.call = call
+
+    async def review(self, request: ReviewRequest) -> ReviewResult:
+        decision = await self.call.evaluate(
+            request.instruction,
+            {
+                "rubric": request.rubric,
+                "proposal": request.message,
+                "accepted_messages": request.messages,
+                "agent_instruction": request.agent_instruction,
+            },
+            request.rubric,
+            actor_id=request.actor_id,
+            turn_id=request.turn_id,
+            step_id=request.step_id,
+        )
+        return ReviewResult(
+            [(item.id, item.passed) for item in decision.criteria], decision.feedback
+        )
 
 
 class ReviewExhausted(RuntimeError):

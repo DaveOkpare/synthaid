@@ -715,3 +715,83 @@ distributed package.
 - `.scratch/`: the V1 specification and implementation tickets.
 - `CONTEXT.md` and `docs/adr/`: domain vocabulary and architectural decisions.
 - `research/` and `prototypes/`: design evidence, outside the runtime package.
+
+### Use structured quality gates
+
+A model Reviewer uses the same pre-acceptance boundary as a custom Reviewer;
+set `type = "model"` in `[agents.<id>.reviewer]` and provide the existing
+`reviewer.md` and `rubric.toml`. Optional `[agents.<id>.reviewer.model]` fields
+inherit that Agent's resolved model settings. A model Verifier uses
+`[verifier] type = "model"`, `verifier/rubric.toml`, and a required
+`verifier/instruction.md`; `[verifier.model]` inherits Task model defaults.
+Instructions are strict templates rendered from each Seed before generation.
+Choose `api = "chat_completions"` for these flows at this implementation stage.
+
+Both model judges receive a Pydantic `QualityDecision` with a list of
+`{"id": "criterion-id", "passed": true}` entries and text `feedback`. The
+framework requires every active Criterion exactly once, with actual Booleans,
+and derives the weighted score. Reviewer step criteria append normally;
+Verification uses its own Rubric. Invalid output fails Review before any Message
+commit or Tool effect, or leaves final Verification unverified. Valid negative
+verdicts follow normal revision or rejection policy.
+
+Run the [offline structured-quality example](examples/structured-quality/run.py):
+
+```bash
+uv run python examples/structured-quality/run.py
+```
+
+Its fake HTTP transport makes no model calls. For live inference, configure a
+real endpoint/model and use `Runner()` without that transport factory.
+
+Python Provider callers may author their own result class:
+
+```python
+from pydantic import BaseModel, ConfigDict
+from agentinstruct import Message, ProviderRequest, compile_structured_output
+
+class Assessment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    passed: bool
+    feedback: str | None
+
+snapshot = compile_structured_output(Assessment)
+# snapshot is immutable JSON data, with name, schema, strictness, description,
+# qualified type name, and a canonical fingerprint. It contains no class object.
+request = ProviderRequest(
+    "your-model",
+    (Message("user", "Assess the response."),),
+    structured_output=Assessment,
+)
+response = await provider.generate(request)
+assert isinstance(response.parsed, Assessment)
+```
+
+Alternatively pass `JsonSchemaSpec("assessment", schema_dict, strict=True)`
+or a compiled `StructuredOutputPlan`; `.parsed` then contains immutable JSON
+values. Mutable schema dictionaries and arrays are detached when compiled.
+Pydantic schemas use validation aliases; strict wire normalization requires all
+fields (nullable values remain allowed) and forbids undeclared properties.
+Explicit JSON Schema contracts are preserved: incompatible strict schemas fail
+preflight instead of having their constraints removed.
+
+Chat Completions preflight checks its documented strict schema subset, including
+local recursive references. Remote schema references are unsupported and never
+fetched. Local JSON, schema, format, and strict Pydantic validation remain mandatory
+regardless of server constrained decoding. Duplicate object keys and nonfinite
+numbers are invalid JSON; numeric/string Boolean substitutes and extra fields
+fail the schema. `ProviderError.kind` distinguishes `refusal`, `incomplete`,
+`invalid_json`, `schema_mismatch`, and `unsupported_schema`; the last three use
+`StructuredOutputValidationError`. There are no automatic retries. The schema
+rules follow [OpenAI's structured-output guide](https://developers.openai.com/api/docs/guides/structured-outputs)
+and [Pydantic strict JSON validation](https://pydantic.dev/docs/validation/latest/concepts/strict_mode/).
+
+Verifier calls, typed results or failures, usage, and the selected Provider Plan
+are persisted in the immutable Verification attempt sidecar. Reverification
+opens and closes fresh Provider resources and never changes generation files.
+`reverify(path, package=TaskPackage.load("new-policy"))` and CLI
+`reverify --package new-policy` compile the policy against the persisted Seed,
+including when the new package's seed file differs. The attempt snapshots its
+actual endpoint/API/model/schema and rendered instruction. These rules also
+apply to standalone native snapshots; later judge errors preserve the latest
+valid decision's export eligibility.

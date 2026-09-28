@@ -97,10 +97,17 @@ class ScriptedResponseConfig(ConfigModel):
 
 
 class ReviewerConfig(ConfigModel):
-    type: Literal["custom", "deterministic"]
+    type: Literal["custom", "deterministic", "model"]
+    model: ModelOverride = Field(default_factory=ModelOverride)
     max_revisions: Annotated[int, Field(ge=0)] = 1
     accept_on_revision_exhaustion: bool = False
     checks: dict[Identifier, Literal["nonempty_content"]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_model(self) -> Self:
+        if self.type != "model" and self.model.model_fields_set:
+            raise ValueError("Only model Reviewers accept model settings")
+        return self
 
 
 class AgentConfig(ConfigModel):
@@ -177,11 +184,18 @@ class StepRubricConfig(ConfigModel):
 
 
 class VerifierConfig(ConfigModel):
-    type: Literal["custom", "deterministic"]
+    type: Literal["custom", "deterministic", "model"]
+    model: ModelOverride = Field(default_factory=ModelOverride)
     timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 60.0
     checks: dict[
         Identifier, Literal["nonempty_conversation", "generation_terminated"]
     ] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_model(self) -> Self:
+        if self.type != "model" and self.model.model_fields_set:
+            raise ValueError("Only model Verifiers accept model settings")
+        return self
 
 
 class ToolConfig(ConfigModel):
@@ -244,6 +258,13 @@ class PackageConfig(ConfigModel):
             for agent in self.agents.values()
             if agent.model.provider is not None
         ]
+        references += [
+            agent.reviewer.model.provider
+            for agent in self.agents.values()
+            if agent.reviewer is not None and agent.reviewer.model.provider is not None
+        ]
+        if self.verifier is not None and self.verifier.model.provider is not None:
+            references.append(self.verifier.model.provider)
         for reference in references:
             if reference not in self.providers:
                 raise ValueError(

@@ -44,6 +44,7 @@ from agentinstruct.plans import (
     json_value,
 )
 from agentinstruct.quality import Criterion, Rubric
+from agentinstruct.quality_provider import QualityDecision
 from agentinstruct.seeds import (
     SeedInput,
     SeedRecord,
@@ -53,8 +54,24 @@ from agentinstruct.seeds import (
     read_seed_records,
     seed_files,
 )
-from agentinstruct.task_config import PackageConfig, RubricConfig, StepRubricConfig
+from agentinstruct.structured import compile_structured_output
+from agentinstruct.task_config import (
+    ModelConfig,
+    ModelOverride,
+    PackageConfig,
+    RubricConfig,
+    StepRubricConfig,
+)
 from agentinstruct.tools import schema_validator
+
+
+def _model_plan(base: ModelPlan | ModelConfig, override: ModelOverride) -> ModelPlan:
+    return ModelPlan(
+        override.provider or base.provider,
+        override.name or base.name,
+        override.temperature if override.temperature is not None else base.temperature,
+        override.max_tokens if override.max_tokens is not None else base.max_tokens,
+    )
 
 
 class TaskValidationError(ValueError):
@@ -358,6 +375,7 @@ class TaskPackage:
             label = f"agents/{agent_id}/instruction.md"
             instruction = _load_template(root, label, env, config.variables)
             source_files[label] = instruction
+            model = _model_plan(config.model, agent.model)
             reviewer = None
             rubric = None
             if agent.reviewer is not None:
@@ -376,26 +394,17 @@ class TaskPackage:
                         agent.reviewer.max_revisions,
                         agent.reviewer.accept_on_revision_exhaustion,
                         agent.reviewer.checks,
+                        _model_plan(model, agent.reviewer.model)
+                        if agent.reviewer.type == "model"
+                        else None,
+                        compile_structured_output(QualityDecision)
+                        if agent.reviewer.type == "model"
+                        else None,
                     )
                 except ValueError as exc:
                     raise TaskValidationError(
                         f"agents/{agent_id}/reviewer: {exc}"
                     ) from exc
-            override = agent.model
-            model = ModelPlan(
-                provider=override.provider or config.model.provider,
-                name=override.name or config.model.name,
-                temperature=(
-                    override.temperature
-                    if override.temperature is not None
-                    else config.model.temperature
-                ),
-                max_tokens=(
-                    override.max_tokens
-                    if override.max_tokens is not None
-                    else config.model.max_tokens
-                ),
-            )
             sources[agent_id] = AgentSource(
                 agent_id,
                 agent.target,
@@ -468,7 +477,18 @@ class TaskPackage:
 
         verifier = None
         if config.verifier is not None:
-            _directory_members(root, "verifier", {"rubric.toml"})
+            verifier_files = {"rubric.toml"}
+            verifier_instruction = (
+                "Evaluate the completed Trace against every declared Criterion."
+            )
+            if config.verifier.type == "model":
+                verifier_files.add("instruction.md")
+                label = "verifier/instruction.md"
+                verifier_instruction = _load_template(
+                    root, label, env, config.variables
+                )
+                source_files[label] = verifier_instruction
+            _directory_members(root, "verifier", verifier_files)
             label = "verifier/rubric.toml"
             verifier_rubric, rubric_text = _load_rubric(root, label)
             source_files[label] = rubric_text
@@ -478,6 +498,13 @@ class TaskPackage:
                     verifier_rubric,
                     config.verifier.timeout_seconds,
                     config.verifier.checks,
+                    _model_plan(config.model, config.verifier.model)
+                    if config.verifier.type == "model"
+                    else None,
+                    compile_structured_output(QualityDecision)
+                    if config.verifier.type == "model"
+                    else None,
+                    verifier_instruction,
                 )
             except ValueError as exc:
                 raise TaskValidationError(f"verifier: {exc}") from exc
@@ -742,6 +769,17 @@ class TaskPackage:
             steps.append(StepPlan(step.id, additions))
 
         frozen_variables = cast(Mapping[str, FrozenJsonValue], freeze(extracted))
+        verifier = self.verifier
+        if verifier is not None and verifier.type == "model":
+            verifier = replace(
+                verifier,
+                instruction=_render_template(
+                    verifier.instruction,
+                    "verifier/instruction.md",
+                    env,
+                    extracted,
+                ),
+            )
         return RunPlan(
             schema_version=self.schema_version,
             task=self.task,
@@ -754,7 +792,7 @@ class TaskPackage:
             provenance=PlanProvenance(
                 version("agentinstruct"), platform.python_version()
             ),
-            verifier=self.verifier,
+            verifier=verifier,
             tools=self.tools,
             steps=tuple(steps),
         )

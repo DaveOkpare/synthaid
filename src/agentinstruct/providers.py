@@ -6,11 +6,10 @@ transport is a public injection seam; no vendor response crosses this module.
 
 from __future__ import annotations
 
-import json
 import math
 import os
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from time import monotonic
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Protocol, cast
@@ -22,56 +21,33 @@ from agentinstruct.plans import (
     JsonSchema,
     JsonValue,
     ProviderPlan,
+    StructuredOutputPlan,
     ToolPlan,
     canonical_json,
     freeze,
     json_value,
+)
+from agentinstruct.provider_errors import ProviderError as ProviderError
+from agentinstruct.provider_errors import (
+    ProviderErrorKind,
+    StructuredOutputValidationError,
+)
+from agentinstruct.seeds import parse_json
+from agentinstruct.structured import (
+    JsonSchemaSpec,
+    StructuredOutput,
+    compile_structured_output,
+    preflight_structured_output,
+    validate_structured_output,
 )
 from agentinstruct.traces import FunctionCall, Message, ToolCall, immutable_data
 
 if TYPE_CHECKING:
     import httpx
 
-type ProviderErrorKind = Literal[
-    "authentication",
-    "authorization",
-    "rate_limit",
-    "timeout",
-    "network",
-    "invalid_request",
-    "unsupported_feature",
-    "model_unavailable",
-    "server",
-    "malformed_response",
-    "unknown",
-    "refusal",
-    "incomplete",
-]
 type ToolChoiceMode = Literal["none", "auto", "required", "named"]
 type ResponseFormatMode = Literal["text", "json_object", "json_schema"]
 type FinishState = Literal["stop", "tool_calls", "length", "content_filter"]
-
-
-class ProviderError(Exception):
-    """A classified failure containing only framework-approved diagnostic data."""
-
-    def __init__(
-        self,
-        kind: ProviderErrorKind,
-        *,
-        status_code: int | None = None,
-        request_id: str | None = None,
-        code: str | None = None,
-    ) -> None:
-        self.kind = kind
-        self.metadata = immutable_data(
-            {
-                "status_code": status_code,
-                "request_id": request_id,
-                "code": code,
-            }
-        )
-        super().__init__(f"Provider failure: {kind}")
 
 
 @dataclass(frozen=True)
@@ -124,8 +100,14 @@ class ProviderCapabilities:
             or (mode is not None and mode not in profile.tool_choices)
             or (request.parallel_tool_calls is True and not profile.parallel_tool_calls)
             or request.response_format.type not in profile.response_formats
+            or (
+                isinstance(request.structured_output, type)
+                and not profile.pydantic_round_trip
+            )
         ):
             raise ProviderError("unsupported_feature")
+        if request.structured_plan is not None:
+            preflight_structured_output(request.structured_plan)
 
 
 @dataclass(frozen=True)
@@ -143,6 +125,7 @@ class ResponseFormat:
     name: str = "result"
     schema: JsonSchema | None = None
     strict: bool = True
+    description: str | None = None
 
     def __post_init__(self) -> None:
         if self.type not in {"text", "json_object", "json_schema"}:
@@ -191,8 +174,45 @@ class ProviderRequest:
     response_format: ResponseFormat = field(default_factory=ResponseFormat)
     inference: InferenceControls = field(default_factory=InferenceControls)
     metadata: Mapping[str, FrozenJsonValue] = field(default_factory=dict)
+    structured_output: StructuredOutput | None = None
+    structured_plan: StructuredOutputPlan | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
+        output = self.structured_output
+        if output is not None:
+            if self.response_format.type != "text":
+                raise ValueError(
+                    "Choose structured_output or response_format, not both"
+                )
+            plan = compile_structured_output(output)
+            object.__setattr__(self, "structured_plan", plan)
+            object.__setattr__(
+                self,
+                "response_format",
+                ResponseFormat(
+                    "json_schema",
+                    plan.name,
+                    plan.schema,
+                    plan.strict,
+                    plan.description,
+                ),
+            )
+        elif self.response_format.type == "json_schema":
+            schema = self.response_format.schema
+            if not isinstance(schema, Mapping):
+                raise ProviderError("unsupported_schema")
+            object.__setattr__(
+                self,
+                "structured_plan",
+                compile_structured_output(
+                    JsonSchemaSpec(
+                        self.response_format.name,
+                        schema,
+                        self.response_format.strict,
+                        self.response_format.description,
+                    )
+                ),
+            )
         object.__setattr__(self, "messages", tuple(self.messages))
         object.__setattr__(self, "tools", tuple(self.tools))
         object.__setattr__(self, "metadata", immutable_data(self.metadata))
@@ -249,6 +269,7 @@ class ProviderResponse:
     latency_seconds: float = 0.0
     refused: bool = False
     metadata: Mapping[str, FrozenJsonValue] = field(default_factory=dict)
+    parsed: BaseModel | FrozenJsonValue = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "metadata", immutable_data(self.metadata))
@@ -340,7 +361,9 @@ class ChatCompletionsProvider:
 
     @property
     def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities({"chat_completions": SurfaceCapabilities()})
+        return ProviderCapabilities(
+            {"chat_completions": SurfaceCapabilities(pydantic_round_trip=True)}
+        )
 
     async def generate(self, request: ProviderRequest) -> ProviderResponse:
         import httpx
@@ -379,15 +402,51 @@ class ChatCompletionsProvider:
             if not response.is_success:
                 raise _http_error(response, request_id)
             try:
-                raw = self._scrub_data(response.json())
+                raw = self._scrub_data(parse_json(response.text, "provider response"))
                 parsed = _Completion.model_validate(raw)
-                return _response(
+                if request.structured_plan is not None:
+                    choice = parsed.choices[0]
+                    if choice.message.refusal is not None:
+                        raise ProviderError("refusal", request_id=request_id)
+                    if choice.finish_reason in {"length", "content_filter"}:
+                        raise ProviderError("incomplete", request_id=request_id)
+                result = _response(
                     parsed,
                     self._plan.id,
                     request_id,
                     monotonic() - started,
                     self._scrub_data,
                 )
+                if request.structured_plan is not None:
+                    if result.message.tool_calls:
+                        raise StructuredOutputValidationError(
+                            "schema_mismatch", request_id=request_id
+                        )
+                    try:
+                        decoded = parse_json(
+                            result.message.content, "structured output"
+                        )
+                    except (ValueError, RecursionError):
+                        raise StructuredOutputValidationError(
+                            "invalid_json", request_id=request_id
+                        ) from None
+                    scrubbed = self._scrub_data(decoded)
+                    if scrubbed != decoded:
+                        result = replace(
+                            result,
+                            message=replace(
+                                result.message, content=canonical_json(scrubbed)
+                            ),
+                        )
+                    value = validate_structured_output(
+                        result.message.content,
+                        request.structured_plan,
+                        request.structured_output
+                        if isinstance(request.structured_output, type)
+                        else None,
+                    )
+                    result = replace(result, parsed=value)
+                return result
             except (ValidationError, ValueError, TypeError, KeyError):
                 raise ProviderError(
                     "malformed_response", request_id=request_id
@@ -501,6 +560,10 @@ def _request_body(request: ProviderRequest) -> dict[str, JsonValue]:
                 "schema": json_value(request.response_format.schema),
                 "strict": request.response_format.strict,
             }
+            if request.response_format.description is not None:
+                cast(dict[str, JsonValue], response_format["json_schema"])[
+                    "description"
+                ] = request.response_format.description
         body["response_format"] = response_format
     for name, wire_name in (
         ("temperature", "temperature"),
@@ -524,7 +587,7 @@ def _response(
     choice = raw.choices[0]
     calls: list[ToolCall] = []
     for call in choice.message.tool_calls or ():
-        arguments = redact(json.loads(call.function.arguments))
+        arguments = redact(parse_json(call.function.arguments, "Tool arguments"))
         if (
             not isinstance(arguments, dict)
             or not call.id.strip()

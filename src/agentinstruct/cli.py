@@ -155,12 +155,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         from agentinstruct.traces import VerificationAttempt
 
         async def append_attempts() -> list[VerificationAttempt]:
-            policy = None
+            package = None
             if args.package is not None:
-                policy = TaskPackage.load(args.package).verifier
-                if policy is None:
+                package = TaskPackage.load(args.package)
+                if package.verifier is None:
                     raise ValueError("Selected Task Package has no Verifier policy")
-            return [await reverify(path, plan=policy) for path in args.traces]
+            return [await reverify(path, package=package) for path in args.traces]
 
         try:
             attempts = asyncio.run(append_attempts())

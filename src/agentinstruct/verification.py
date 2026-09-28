@@ -3,17 +3,19 @@
 import asyncio
 import hashlib
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import uuid4
 
 from pydantic import TypeAdapter
 
-from agentinstruct.plans import VerifierPlan, canonical_json
+from agentinstruct.plans import ProviderPlan, Seed, VerifierPlan, canonical_json
+from agentinstruct.providers import Provider, ProviderError, create_provider
 from agentinstruct.quality import Verdicts, score_verdicts
+from agentinstruct.quality_provider import QualityCall, quality_request
 from agentinstruct.store import (
     load_trace,
     timestamp,
@@ -22,10 +24,14 @@ from agentinstruct.store import (
 )
 from agentinstruct.traces import (
     ComponentProvenance,
+    Event,
     TraceSnapshot,
     VerificationAttempt,
     VerificationError,
 )
+
+if TYPE_CHECKING:
+    from agentinstruct.task_package import TaskPackage
 
 
 def component_provenance(kind: str, component: object) -> ComponentProvenance:
@@ -53,6 +59,27 @@ class VerificationResult:
 
 class Verifier(Protocol):
     async def verify(self, trace: TraceSnapshot) -> VerificationResult: ...
+
+
+class ModelVerifier:
+    def __init__(self, plan: VerifierPlan, call: QualityCall) -> None:
+        self.plan, self.call = plan, call
+
+    async def verify(self, trace: TraceSnapshot) -> VerificationResult:
+        decision = await self.call.evaluate(
+            self.plan.instruction,
+            {
+                "rubric": self.plan.rubric,
+                "task": trace.task,
+                "seed": trace.run_plan.get("seed"),
+                "generation": trace.generation,
+                "conversation": trace.conversation,
+            },
+            self.plan.rubric,
+        )
+        return VerificationResult(
+            [(item.id, item.passed) for item in decision.criteria], decision.feedback
+        )
 
 
 class DeterministicVerifier:
@@ -85,9 +112,26 @@ async def reverify(
     *,
     plan: VerifierPlan | None = None,
     verifier_factory: Callable[[VerifierPlan], Verifier] = create_verifier,
+    provider_factory: Callable[[ProviderPlan], Provider] = create_provider,
+    provider_plan: ProviderPlan | None = None,
+    package: "TaskPackage | None" = None,
 ) -> VerificationAttempt:
     """Append a quality decision without changing any sealed generation files."""
     trace = load_trace(path)
+    if package is not None:
+        if plan is not None or provider_plan is not None:
+            raise ValueError("Choose a Task Package or explicit Verifier Plan override")
+        plan = package.verifier
+        if plan is None:
+            raise ValueError("Selected Task Package has no Verifier policy")
+        if plan.type == "model":
+            stored_seed = trace.run_plan.get("seed")
+            if stored_seed is None:
+                raise ValueError("Model Verifier override requires a persisted Seed")
+            seed = TypeAdapter(Seed).validate_json(canonical_json(stored_seed))
+            plan = package.compile_seed(seed).verifier
+            assert plan is not None and plan.model is not None
+            provider_plan = package.providers[plan.model.provider]
     if plan is None:
         stored_plan = trace.run_plan.get("verifier")
         if stored_plan is None:
@@ -102,10 +146,42 @@ async def reverify(
     error = None
     stage: Literal["execution", "malformed", "timeout"] = "execution"
     deadline = asyncio.timeout(plan.timeout_seconds)
+    provider = None
+    verifier: Verifier
+    events: list[Event] = []
     try:
-        verifier = verifier_factory(plan)
-        provenance = component_provenance("verifier", verifier)
         async with deadline:
+            if plan.type == "model" and verifier_factory is create_verifier:
+                assert plan.model is not None and plan.structured_output is not None
+                if provider_plan is None:
+                    stored_providers = trace.run_plan["providers"]
+                    assert isinstance(stored_providers, Mapping)
+                    provider_plan = TypeAdapter(ProviderPlan).validate_json(
+                        canonical_json(stored_providers[plan.model.provider])
+                    )
+                if provider_plan.id != plan.model.provider:
+                    raise ValueError(
+                        "Verifier Provider must match the model's declared Provider"
+                    )
+                provider = provider_factory(provider_plan)
+                provider.capabilities.require(
+                    provider_plan.api,
+                    quality_request(plan.model, plan.structured_output),
+                )
+                verifier = ModelVerifier(
+                    plan,
+                    QualityCall(
+                        plan.model,
+                        plan.structured_output,
+                        provider_plan,
+                        provider,
+                        events.append,
+                        "verifier",
+                    ),
+                )
+            else:
+                verifier = verifier_factory(plan)
+            provenance = component_provenance("verifier", verifier)
             result = await verifier.verify(trace)
         stage = "malformed"
         if not isinstance(result, VerificationResult) or not isinstance(
@@ -122,7 +198,29 @@ async def reverify(
         score, criteria, feedback = None, {}, ""
         if isinstance(exc, TimeoutError) and deadline.expired():
             stage = "timeout"
-        error = VerificationError(stage, type(exc).__name__, str(exc))
+        if isinstance(exc, ProviderError) and exc.kind in {
+            "invalid_json",
+            "schema_mismatch",
+        }:
+            stage = "malformed"
+        error = VerificationError(
+            stage,
+            type(exc).__name__,
+            str(exc),
+            exc.kind if isinstance(exc, ProviderError) else None,
+        )
+    finally:
+        if provider is not None:
+            try:
+                await provider.aclose()
+            except Exception:
+                score, criteria, feedback, status = None, {}, "", "unverified"
+                error = VerificationError(
+                    "execution",
+                    "ProviderError",
+                    "Verifier Provider cleanup failed",
+                    "unknown",
+                )
     attempt = VerificationAttempt(
         schema_version="1",
         id=uuid4().hex,
@@ -138,6 +236,8 @@ async def reverify(
         ended_at=timestamp(),
         duration_seconds=monotonic() - started,
         error=error,
+        events=tuple(events),
+        provider=provider_plan,
     )
     attempts = verification_directory(path)
     attempts.mkdir(exist_ok=True)

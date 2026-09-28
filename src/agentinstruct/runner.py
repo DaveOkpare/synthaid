@@ -35,7 +35,14 @@ from agentinstruct.providers import (
     ProviderRequest,
     create_provider,
 )
-from agentinstruct.review import Reviewer, ReviewError, ReviewExhausted, create_reviewer
+from agentinstruct.quality_provider import QualityCall, quality_request
+from agentinstruct.review import (
+    ModelReviewer,
+    Reviewer,
+    ReviewError,
+    ReviewExhausted,
+    create_reviewer,
+)
 from agentinstruct.seeds import SeedInput, SeedRecord, SeedSourceError
 from agentinstruct.steps import CONTROL_TOOLS, StepProgress
 from agentinstruct.store import LocalRunStore, TraceRecorder, load_trace, timestamp
@@ -249,6 +256,37 @@ class Runner:
                             tool_choice="auto" if required_tools else None,
                         ),
                     )
+            quality_plans: list[ReviewerPlan | VerifierPlan] = [
+                agent.reviewer
+                for agent in plan.agents.values()
+                if agent.reviewer is not None
+                and agent.reviewer.type == "model"
+                and self._reviewer_factory is create_reviewer
+            ]
+            if (
+                plan.verifier is not None
+                and plan.verifier.type == "model"
+                and self._verifier_factory is create_verifier
+            ):
+                quality_plans.append(plan.verifier)
+            for quality_plan in quality_plans:
+                assert (
+                    quality_plan.model is not None
+                    and quality_plan.structured_output is not None
+                )
+                provider_id = quality_plan.model.provider
+                provider_plan = plan.providers[provider_id]
+                if provider_id not in providers:
+                    providers[provider_id] = self._provider_factory(provider_plan)
+                    components.append(
+                        component_provenance(
+                            f"provider:{provider_id}", providers[provider_id]
+                        )
+                    )
+                providers[provider_id].capabilities.require(
+                    provider_plan.api,
+                    quality_request(quality_plan.model, quality_plan.structured_output),
+                )
             tools: dict[str, Tool] = {}
             for tool_id, tool_plan in plan.tools.items():
                 tool = self._tool_factory(tool_plan)
@@ -293,9 +331,29 @@ class Runner:
                 else:
                     agent = create_agent(agent_plan)
                 components.append(component_provenance(f"agent:{agent_id}", agent))
-                reviewer = None
+                reviewer: Reviewer | None = None
                 if agent_plan.reviewer is not None:
-                    reviewer = self._reviewer_factory(agent_plan.reviewer)
+                    review_plan = agent_plan.reviewer
+                    if (
+                        review_plan.type == "model"
+                        and self._reviewer_factory is create_reviewer
+                    ):
+                        assert (
+                            review_plan.model is not None
+                            and review_plan.structured_output is not None
+                        )
+                        reviewer = ModelReviewer(
+                            QualityCall(
+                                review_plan.model,
+                                review_plan.structured_output,
+                                plan.providers[review_plan.model.provider],
+                                providers[review_plan.model.provider],
+                                recorder.event,
+                                "reviewer",
+                            )
+                        )
+                    else:
+                        reviewer = self._reviewer_factory(review_plan)
                     components.append(
                         component_provenance(f"reviewer:{agent_id}", reviewer)
                     )
@@ -405,7 +463,11 @@ class Runner:
         record("trace_finished", status=status)
         recorder.seal(snapshot())
         if plan.verifier is not None:
-            await reverify(recorder.path, verifier_factory=self._verifier_factory)
+            await reverify(
+                recorder.path,
+                verifier_factory=self._verifier_factory,
+                provider_factory=self._provider_factory,
+            )
             status = load_trace(recorder.path).status
         return TraceReference(trace_id, plan.seed.id, status, recorder.path)
 

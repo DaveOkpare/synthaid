@@ -102,6 +102,35 @@ class ModelPlan:
 
 
 @dataclass(frozen=True)
+class StructuredOutputPlan:
+    """Portable schema snapshot; the runtime Python class is never persisted."""
+
+    name: str
+    schema: Mapping[str, FrozenJsonValue]
+    strict: bool = True
+    description: str | None = None
+    qualified_type: str | None = None
+    fingerprint: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "schema", freeze(json_value(self.schema)))
+        fingerprint = content_digest(
+            {
+                "name": self.name,
+                "schema": self.schema,
+                "strict": self.strict,
+                "description": self.description,
+                "qualified_type": self.qualified_type,
+            }
+        )
+        if self.fingerprint and self.fingerprint != fingerprint:
+            raise ValueError(
+                "Structured output fingerprint does not match its snapshot"
+            )
+        object.__setattr__(self, "fingerprint", fingerprint)
+
+
+@dataclass(frozen=True)
 class ScriptedResponse:
     content: str
     control: Literal["complete"] | None = None
@@ -109,11 +138,13 @@ class ScriptedResponse:
 
 @dataclass(frozen=True)
 class ReviewerPlan:
-    type: Literal["custom", "deterministic"]
+    type: Literal["custom", "deterministic", "model"]
     instruction: str
     max_revisions: int = 1
     accept_on_revision_exhaustion: bool = False
     checks: Mapping[str, Literal["nonempty_content"]] = field(default_factory=dict)
+    model: ModelPlan | None = None
+    structured_output: StructuredOutputPlan | None = None
 
     def __post_init__(self) -> None:
         if type(self.max_revisions) is not int or self.max_revisions < 0:
@@ -121,10 +152,18 @@ class ReviewerPlan:
         if type(self.accept_on_revision_exhaustion) is not bool:
             raise ValueError("Reviewer exhaustion fallback must be a Boolean")
         object.__setattr__(self, "checks", MappingProxyType(dict(self.checks)))
+        if (self.type == "model") != (
+            self.model is not None and self.structured_output is not None
+        ):
+            raise ValueError("Model Reviewer requires a model and structured output")
+        if self.type != "model" and (
+            self.model is not None or self.structured_output is not None
+        ):
+            raise ValueError("Only model Reviewers accept model settings")
         if self.type == "deterministic":
             if set(self.checks.values()) - {"nonempty_content"}:
                 raise ValueError("Unknown deterministic Reviewer check")
-        elif self.type != "custom" or self.checks:
+        elif self.type not in {"custom", "model"} or self.checks:
             raise ValueError(
                 "Custom Reviewers require a factory and no built-in checks"
             )
@@ -205,12 +244,15 @@ class PlanProvenance:
 
 @dataclass(frozen=True)
 class VerifierPlan:
-    type: Literal["custom", "deterministic"]
+    type: Literal["custom", "deterministic", "model"]
     rubric: Rubric
     timeout_seconds: float = 60.0
     checks: Mapping[str, Literal["nonempty_conversation", "generation_terminated"]] = (
         field(default_factory=dict)
     )
+    model: ModelPlan | None = None
+    structured_output: StructuredOutputPlan | None = None
+    instruction: str = "Evaluate the completed Trace against every declared Criterion."
 
     def __post_init__(self) -> None:
         if (
@@ -220,6 +262,14 @@ class VerifierPlan:
         ):
             raise ValueError("Verifier timeout must be finite and positive")
         object.__setattr__(self, "checks", MappingProxyType(dict(self.checks)))
+        if (self.type == "model") != (
+            self.model is not None and self.structured_output is not None
+        ):
+            raise ValueError("Model Verifier requires a model and structured output")
+        if self.type != "model" and (
+            self.model is not None or self.structured_output is not None
+        ):
+            raise ValueError("Only model Verifiers accept model settings")
         if self.type == "deterministic":
             if set(self.checks) != {criterion.id for criterion in self.rubric.criteria}:
                 raise ValueError("Deterministic checks must match every Criterion ID")
@@ -228,7 +278,7 @@ class VerifierPlan:
                 "generation_terminated",
             }:
                 raise ValueError("Unknown deterministic Verifier check")
-        elif self.type != "custom" or self.checks:
+        elif self.type not in {"custom", "model"} or self.checks:
             raise ValueError(
                 "Custom Verifiers require a factory and no built-in checks"
             )
