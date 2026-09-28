@@ -62,4 +62,14 @@
   [Tool usage](../../README.md#review-tool-calls-before-effects) and the
   [offline multi-Tool example](../../examples/multi-tool/run.py).
 
-Tickets 09–19 remain unimplemented.
+- **09 — resolved:** [Retain history across Task Steps](issues/09-retain-history-across-task-steps.md#answer).
+  Ordered immutable Step Plans compile every participant's temporary additions
+  before generation. Base instructions, configured review thresholds, shared
+  Conversation, and actor-private Tool history persist as only active additions
+  change. Target and Environment controls cross the existing reviewed durable
+  Tool-call boundary, with ordered progress, isolated calls, safe completion,
+  and coherent step references. See
+  [Task Step usage](../../README.md#retain-history-across-task-steps) and the
+  [offline stepped dialogue](../../examples/stepped-dialogue/run.py).
+
+Tickets 10–19 remain unimplemented.

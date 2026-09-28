@@ -1,0 +1,3 @@
+[[criteria]]
+id = "collect_explanation"
+description = "The collection-phase Message has a nonempty explanation."

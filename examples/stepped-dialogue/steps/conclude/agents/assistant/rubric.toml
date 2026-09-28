@@ -1,0 +1,3 @@
+[[criteria]]
+id = "conclude_explanation"
+description = "The concluding Message has a nonempty explanation."

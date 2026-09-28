@@ -26,6 +26,7 @@ from agentinstruct.plans import (
     VerifierPlan,
 )
 from agentinstruct.review import Reviewer, ReviewError, ReviewExhausted, create_reviewer
+from agentinstruct.steps import StepProgress
 from agentinstruct.store import LocalRunStore, TraceRecorder, load_trace, timestamp
 from agentinstruct.task_package import TaskPackage
 from agentinstruct.tools import FunctionTool, Tool, ToolContext, ToolError, create_tool
@@ -73,6 +74,7 @@ class Runner:
         run_id, trace_id = uuid4().hex, uuid4().hex
         path = self._store.open_run(run_id, package.source_files)
         recorder = TraceRecorder(path / "traces" / trace_id, plan)
+        progress = StepProgress(plan.steps, recorder)
         started_at, started = timestamp(), monotonic()
         components: list[ComponentProvenance] = []
         status: TraceStatus = "unverified"
@@ -84,10 +86,13 @@ class Runner:
             plan.environment.max_turns,
             plan.environment.max_rounds,
             plan.environment.timeout_seconds,
+            tuple(step.id for step in plan.steps),
         )
 
         def record(kind: str, **data: str) -> None:
-            recorder.event(Event(uuid4().hex, kind, timestamp(), data))
+            recorder.event(
+                Event(uuid4().hex, kind, timestamp(), data, step_id=progress.step_id)
+            )
 
         def snapshot() -> TraceSnapshot:
             return TraceSnapshot(
@@ -163,6 +168,7 @@ class Runner:
                         run_id,
                         trace_id,
                     ),
+                    progress,
                 )
             agents = Agents(handles)
             environment = (
@@ -172,12 +178,19 @@ class Runner:
             )
             components.append(component_provenance("environment", environment))
             async with deadline:
+                progress.start()
                 stage = "environment_setup"
                 record(stage)
                 await environment.setup(agents)
                 stage = "environment_run"
                 record(stage)
                 outcome = await environment.run(context, agents) or outcome
+                if (
+                    plan.steps
+                    and outcome.state == "terminated"
+                    and not progress.completed
+                ):
+                    outcome = GenerationOutcome("truncated", "incomplete_steps")
             if outcome.state == "failed":
                 status = "failed"
         except ToolError as exc:

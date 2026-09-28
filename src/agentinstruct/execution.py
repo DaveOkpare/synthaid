@@ -15,7 +15,7 @@ from agentinstruct.plans import (
     ToolPlan,
     canonical_json,
 )
-from agentinstruct.quality import score_verdicts
+from agentinstruct.quality import Rubric, score_verdicts
 from agentinstruct.review import (
     Reviewer,
     ReviewError,
@@ -23,6 +23,7 @@ from agentinstruct.review import (
     ReviewRequest,
     ReviewResult,
 )
+from agentinstruct.steps import CONTROL_TOOLS, StepProgress
 from agentinstruct.store import TraceRecorder, timestamp
 from agentinstruct.tools import (
     Tool,
@@ -51,6 +52,7 @@ class Observation:
     messages: tuple[Message, ...]
     review_feedback: str | None = None
     tools: tuple[ToolPlan, ...] = ()
+    step_id: str | None = None
 
 
 class Agent(Protocol):
@@ -92,9 +94,29 @@ class TaskContext:
     max_turns: int
     max_rounds: int = 10
     timeout_seconds: float | None = None
+    steps: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "variables", immutable_data(self.variables))
+        object.__setattr__(self, "steps", tuple(self.steps))
+
+    def advance_step(self, step_id: str) -> Message:
+        """Propose a transition; submit through the Target Interaction's control()."""
+        return Message(
+            "assistant",
+            tool_calls=(
+                ToolCall(
+                    uuid4().hex, FunctionCall("advance_step", {"step_id": step_id})
+                ),
+            ),
+        )
+
+    def complete_task(self) -> Message:
+        """Propose completion through the same reviewed boundary as Agent Tools."""
+        return Message(
+            "assistant",
+            tool_calls=(ToolCall(uuid4().hex, FunctionCall("complete_task", {})),),
+        )
 
 
 @dataclass(frozen=True)
@@ -113,6 +135,7 @@ class Interaction:
         tools: Mapping[str, Tool] | None = None,
         tool_plans: Mapping[str, ToolPlan] | None = None,
         tool_context: ToolContext | None = None,
+        progress: StepProgress | None = None,
     ) -> None:
         self._plan = plan
         self._agent = agent
@@ -121,21 +144,37 @@ class Interaction:
         self._tools = tools or {}
         self._tool_plans = tool_plans or {}
         self._tool_context = tool_context
+        self._progress = progress or StepProgress((), recorder)
+
+    @property
+    def _instruction(self) -> str:
+        active = self._progress.active
+        return self._plan.base_instruction + (
+            "\n\n" + active.agents[self._plan.id].instruction if active else ""
+        )
 
     def _observation(self, feedback: str | None = None) -> Observation:
         return Observation(
             self._plan.id,
-            self._plan.base_instruction,
+            self._instruction,
             tuple(
                 item.message
                 for item in self._recorder.conversation
                 if item.visibility == "shared" or item.message.actor_id == self._plan.id
             ),
             feedback,
-            tuple(self._tool_plans[tool_id] for tool_id in self._plan.tools),
+            ()
+            if self._progress.completed
+            else (
+                tuple(self._tool_plans[tool_id] for tool_id in self._plan.tools)
+                + (self._progress.available_controls if self._plan.target else ())
+            ),
+            self._progress.step_id,
         )
 
-    def _event(self, kind: str, data: object, turn_id: str) -> None:
+    def _event(
+        self, kind: str, data: object, turn_id: str, step_id: str | None = None
+    ) -> None:
         self._recorder.event(
             Event(
                 uuid4().hex,
@@ -144,6 +183,7 @@ class Interaction:
                 immutable_data(data),
                 self._plan.id,
                 turn_id,
+                step_id if step_id is not None else self._progress.step_id,
             )
         )
 
@@ -183,6 +223,15 @@ class Interaction:
             raise ValueError("Tool call identifiers must be unique for each Agent")
         if proposal.control not in {None, "complete"}:
             raise ValueError("Unknown Message control proposal")
+        if proposal.control is not None and self._progress.steps:
+            raise ValueError(
+                "Task Steps require complete_task Tool calls instead of Message.control"
+            )
+        if (
+            any(call.function.name in CONTROL_TOOLS for call in proposal.tool_calls)
+            and len(proposal.tool_calls) != 1
+        ):
+            raise ValueError("Task Step control must be the only call in its Message")
         if proposal.control == "complete" and not self._plan.target:
             raise ValueError("Only the Target Agent may complete the Task")
         message = replace(proposal, id=uuid4().hex, actor_id=self._plan.id)
@@ -195,13 +244,20 @@ class Interaction:
         if self._plan.reviewer is None:
             return None, None
         assert self._reviewer is not None and self._plan.rubric is not None
+        active = self._progress.active
+        rubric = Rubric(
+            self._plan.rubric.criteria
+            + (active.agents[self._plan.id].appended_rubric if active else ()),
+            self._plan.rubric.threshold,
+        )
         review_id = uuid4().hex
         request = ReviewRequest(
             self._plan.reviewer.instruction,
-            self._plan.rubric,
+            rubric,
             message,
             self._observation().messages,
-            self._plan.base_instruction,
+            self._instruction,
+            self._progress.step_id,
         )
         self._event(
             "review_requested",
@@ -254,13 +310,33 @@ class Interaction:
         return review_id, None if accepted else result.feedback
 
     async def turn(self, incoming: Message | None = None) -> TurnResult:
+        return await self._turn(incoming)
+
+    async def control(self, proposal: Message) -> TurnResult:
+        """Submit an Environment control proposal to the Target's normal review loop."""
+        if (
+            len(proposal.tool_calls) != 1
+            or proposal.tool_calls[0].function.name not in CONTROL_TOOLS
+        ):
+            raise ValueError("Environment controls require one Task Step control call")
+        return await self._turn(action=proposal)
+
+    async def _turn(
+        self,
+        incoming: Message | None = None,
+        *,
+        action: Message | list[Message] | None = None,
+    ) -> TurnResult:
         self._recorder.require_open()
+        if self._progress.completed:
+            raise ValueError("Task is already complete")
         if incoming is not None and not any(
             item.message == incoming for item in self._recorder.conversation
         ):
             raise ValueError("Incoming reply must reference an accepted Message")
         turn_id = uuid4().hex
-        action = await self._agent.generate(self._observation())
+        if action is None:
+            action = await self._agent.generate(self._observation())
         proposals = deque(action if isinstance(action, list) else [action])
         if not proposals:
             raise ValueError("Agent returned no Messages")
@@ -322,6 +398,7 @@ class Interaction:
                     message,
                     turn_id,
                     timestamp(),
+                    step_id=self._progress.step_id,
                     causal_message_id=incoming.id if incoming else None,
                     review_id=review_id,
                     review_exhausted=review_exhausted,
@@ -343,16 +420,26 @@ class Interaction:
             if message.control == "complete":
                 return TurnResult(message, terminated=True)
         assert last_reply is not None
-        return TurnResult(last_reply)
+        return TurnResult(last_reply, terminated=self._progress.completed)
 
     async def _execute_tool(
         self, call: ToolCall, message: Message, turn_id: str
     ) -> None:
         stage: Literal["assignment", "arguments", "execution", "result"] = "assignment"
+        step_id = self._progress.step_id
         try:
-            if call.function.name not in self._plan.tools:
+            control = call.function.name in CONTROL_TOOLS
+            if (
+                self._progress.completed
+                or (control and not (self._plan.target and self._progress.steps))
+                or (not control and call.function.name not in self._plan.tools)
+            ):
                 raise ValueError("Tool is not assigned to the invoking Agent")
-            tool_plan = self._tool_plans[call.function.name]
+            tool_plan = (
+                CONTROL_TOOLS[call.function.name]
+                if control
+                else self._tool_plans[call.function.name]
+            )
             stage = "arguments"
             validate_tool_data(call.function.arguments, tool_plan.input_schema)
             assert self._tool_context is not None
@@ -362,10 +449,24 @@ class Interaction:
                 turn_id,
             )
             stage = "execution"
-            result = await self._tools[call.function.name].call(
-                call.function.arguments,
-                replace(self._tool_context, turn_id=turn_id, tool_call_id=call.id),
-            )
+            if control:
+                result = self._progress.apply(
+                    call.function.name,
+                    call.function.arguments,
+                    actor_id=self._plan.id,
+                    turn_id=turn_id,
+                    message_id=message.id,
+                )
+            else:
+                result = await self._tools[call.function.name].call(
+                    call.function.arguments,
+                    replace(
+                        self._tool_context,
+                        turn_id=turn_id,
+                        tool_call_id=call.id,
+                        step_id=step_id,
+                    ),
+                )
             stage = "result"
             content = tool_result_content(result, tool_plan.output_schema)
         except Exception as exc:
@@ -382,6 +483,7 @@ class Interaction:
                     else str(exc),
                 },
                 turn_id,
+                step_id,
             )
             if (
                 stage == "execution"
@@ -405,11 +507,12 @@ class Interaction:
                 response,
                 turn_id,
                 timestamp(),
+                step_id=step_id,
                 visibility="private",
                 causal_message_id=message.id,
             )
         )
-        self._event("message_committed", {"message_id": response.id}, turn_id)
+        self._event("message_committed", {"message_id": response.id}, turn_id, step_id)
 
 
 class AgentHandle:
@@ -424,9 +527,10 @@ class AgentHandle:
         tools: Mapping[str, Tool] | None = None,
         tool_plans: Mapping[str, ToolPlan] | None = None,
         tool_context: ToolContext | None = None,
+        progress: StepProgress | None = None,
     ) -> None:
         self._interaction = Interaction(
-            plan, agent, recorder, reviewer, tools, tool_plans, tool_context
+            plan, agent, recorder, reviewer, tools, tool_plans, tool_context, progress
         )
 
     @asynccontextmanager
@@ -467,8 +571,11 @@ class SingleAgentEnvironment:
 
     async def run(self, task: TaskContext, agents: Agents) -> GenerationOutcome:
         async with agents[next(iter(agents))].interaction(task) as interaction:
-            await interaction.turn()
-        return GenerationOutcome("terminated", "completed")
+            for _ in range(task.max_turns):
+                result = await interaction.turn()
+                if result.terminated or not task.steps:
+                    return GenerationOutcome("terminated", "completed")
+        return GenerationOutcome("truncated", "max_turns")
 
 
 class DialogueEnvironment:

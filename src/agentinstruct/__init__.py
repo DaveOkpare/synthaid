@@ -3,7 +3,14 @@
 from agentinstruct.agent_tool import AgentTool
 from agentinstruct.execution import Agent, Agents, Environment, Observation, TaskContext
 from agentinstruct.export import export_native, export_openai
-from agentinstruct.plans import ReviewerPlan, RunPlan, ToolPlan, VerifierPlan
+from agentinstruct.plans import (
+    ReviewerPlan,
+    RunPlan,
+    StepAgentPlan,
+    StepPlan,
+    ToolPlan,
+    VerifierPlan,
+)
 from agentinstruct.quality import Criterion, Rubric
 from agentinstruct.review import (
     DeterministicReviewer,
@@ -50,6 +57,8 @@ __all__ = [
     "RunPlan",
     "RunResult",
     "Runner",
+    "StepAgentPlan",
+    "StepPlan",
     "TaskContext",
     "TaskPackage",
     "TaskValidationError",

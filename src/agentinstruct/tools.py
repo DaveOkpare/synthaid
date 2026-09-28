@@ -31,6 +31,7 @@ class ToolContext:
     trace_id: str
     turn_id: str = ""
     tool_call_id: str = ""
+    step_id: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "variables", immutable_data(self.variables))

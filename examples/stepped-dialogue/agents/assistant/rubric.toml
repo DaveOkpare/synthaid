@@ -1,0 +1,5 @@
+threshold = 1.0
+
+[[criteria]]
+id = "nonempty"
+description = "The Message contains a nonempty explanation."

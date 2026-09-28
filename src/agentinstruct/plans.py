@@ -8,7 +8,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from types import MappingProxyType
 from typing import Literal, cast
 
-from agentinstruct.quality import Rubric
+from agentinstruct.quality import Criterion, Rubric
 
 type JsonValue = (
     bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
@@ -162,6 +162,24 @@ class AgentPlan:
 
 
 @dataclass(frozen=True)
+class StepAgentPlan:
+    instruction: str
+    appended_rubric: tuple[Criterion, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "appended_rubric", tuple(self.appended_rubric))
+
+
+@dataclass(frozen=True)
+class StepPlan:
+    id: str
+    agents: Mapping[str, StepAgentPlan]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "agents", MappingProxyType(dict(self.agents)))
+
+
+@dataclass(frozen=True)
 class EnvironmentPlan:
     type: str
     max_turns: int
@@ -227,9 +245,11 @@ class RunPlan:
     provenance: PlanProvenance
     verifier: VerifierPlan | None = None
     tools: Mapping[str, ToolPlan] = field(default_factory=dict)
+    steps: tuple[StepPlan, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "tools", MappingProxyType(dict(self.tools)))
+        object.__setattr__(self, "steps", tuple(self.steps))
 
     @property
     def digest(self) -> str:

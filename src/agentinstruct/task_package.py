@@ -31,14 +31,16 @@ from agentinstruct.plans import (
     ScriptedResponse,
     Seed,
     SeedOrigin,
+    StepAgentPlan,
+    StepPlan,
     TaskIdentity,
     ToolPlan,
     VerifierPlan,
     content_digest,
     freeze,
 )
-from agentinstruct.quality import Rubric
-from agentinstruct.task_config import PackageConfig, RubricConfig
+from agentinstruct.quality import Criterion, Rubric
+from agentinstruct.task_config import PackageConfig, RubricConfig, StepRubricConfig
 from agentinstruct.tools import schema_validator
 
 
@@ -68,11 +70,16 @@ def _package_path(root: Path, relative: str) -> Path:
     return resolved
 
 
-def _load_rubric(root: Path, label: str) -> tuple[Rubric, str]:
+def _load_rubric(root: Path, label: str, *, step: bool = False) -> tuple[Rubric, str]:
     """Load weighted Criteria and source text with input-scrubbed diagnostics."""
     text = _read_text(_package_path(root, label), label)
     try:
-        rubric = RubricConfig.model_validate(tomllib.loads(text))
+        data = tomllib.loads(text)
+        rubric = (
+            Rubric(StepRubricConfig.model_validate(data).to_criteria())
+            if step
+            else RubricConfig.model_validate(data).to_rubric()
+        )
     except tomllib.TOMLDecodeError as exc:
         raise TaskValidationError(f"{label}: malformed TOML: {exc}") from exc
     except ValidationError as exc:
@@ -82,7 +89,7 @@ def _load_rubric(root: Path, label: str) -> tuple[Rubric, str]:
             for error in exc.errors(include_input=False, include_url=False)
         )
         raise TaskValidationError(f"{label}: invalid Rubric: {problems}") from exc
-    return rubric.to_rubric(), text
+    return rubric, text
 
 
 def _external_path(path: str | Path) -> Path:
@@ -90,6 +97,18 @@ def _external_path(path: str | Path) -> Path:
         return Path(path).resolve()
     except (OSError, RuntimeError, ValueError) as exc:
         raise TaskValidationError(f"{path}: cannot resolve input path") from exc
+
+
+def _directory_members(root: Path, label: str, expected: set[str]) -> None:
+    path = _package_path(root, label)
+    try:
+        actual = {child.name for child in path.iterdir()}
+    except OSError as exc:
+        raise TaskValidationError(f"{label}: expected a readable directory") from exc
+    if actual != expected:
+        raise TaskValidationError(
+            f"{label}: directories must match declared participation"
+        )
 
 
 def _template_value(value: object) -> object:
@@ -137,6 +156,40 @@ def _template_environment() -> ImmutableSandboxedEnvironment:
     return env
 
 
+def _load_template(
+    root: Path,
+    label: str,
+    env: ImmutableSandboxedEnvironment,
+    variables: Mapping[str, str],
+) -> str:
+    instruction = _read_text(_package_path(root, label), label)
+    try:
+        unknown = meta.find_undeclared_variables(env.parse(instruction)) - set(
+            variables
+        )
+        if unknown:
+            raise TaskValidationError(
+                f"{label}: undeclared Variables: {', '.join(sorted(unknown))}"
+            )
+    except TemplateError as exc:
+        raise TaskValidationError(f"{label}: invalid template: {exc}") from exc
+    return instruction
+
+
+def _render_template(
+    instruction: str,
+    label: str,
+    env: ImmutableSandboxedEnvironment,
+    variables: Mapping[str, JsonValue],
+) -> str:
+    try:
+        return env.from_string(instruction).render(variables)
+    except (TemplateError, TypeError, ValueError, ArithmeticError) as exc:
+        raise TaskValidationError(
+            f"{label}: rendering failed ({type(exc).__name__}): {exc}"
+        ) from exc
+
+
 def _json_object(pairs: list[tuple[str, JsonValue]]) -> dict[str, JsonValue]:
     result: dict[str, JsonValue] = {}
     for key, value in pairs:
@@ -173,6 +226,17 @@ class SeedSource:
 
 
 @dataclass(frozen=True)
+class StepSource:
+    """Unresolved step additions, compiled for every Seed before execution."""
+
+    id: str
+    agents: Mapping[str, StepAgentPlan]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "agents", MappingProxyType(dict(self.agents)))
+
+
+@dataclass(frozen=True)
 class TaskPackage:
     root: Path
     schema_version: str
@@ -186,6 +250,7 @@ class TaskPackage:
     source_files: Mapping[str, str]
     verifier: VerifierPlan | None = None
     tools: Mapping[str, ToolPlan] = field(default_factory=dict)
+    steps: tuple[StepSource, ...] = ()
 
     @classmethod
     def load(cls, path: str | Path) -> Self:
@@ -209,37 +274,16 @@ class TaskPackage:
         env = _template_environment()
         for agent_id, agent in config.agents.items():
             label = f"agents/{agent_id}/instruction.md"
-            instruction = _read_text(_package_path(root, label), label)
+            instruction = _load_template(root, label, env, config.variables)
             source_files[label] = instruction
-            try:
-                unknown = meta.find_undeclared_variables(env.parse(instruction)) - set(
-                    config.variables
-                )
-                if unknown:
-                    raise TaskValidationError(
-                        f"{label}: undeclared Variables: {', '.join(sorted(unknown))}"
-                    )
-            except TemplateError as exc:
-                raise TaskValidationError(f"{label}: invalid template: {exc}") from exc
             reviewer = None
             rubric = None
             if agent.reviewer is not None:
                 label = f"agents/{agent_id}/reviewer.md"
-                reviewer_instruction = _read_text(_package_path(root, label), label)
+                reviewer_instruction = _load_template(
+                    root, label, env, config.variables
+                )
                 source_files[label] = reviewer_instruction
-                try:
-                    unknown = meta.find_undeclared_variables(
-                        env.parse(reviewer_instruction)
-                    ) - set(config.variables)
-                    if unknown:
-                        raise TaskValidationError(
-                            f"{label}: undeclared Variables: "
-                            f"{', '.join(sorted(unknown))}"
-                        )
-                except TemplateError as exc:
-                    raise TaskValidationError(
-                        f"{label}: invalid template: {exc}"
-                    ) from exc
                 label = f"agents/{agent_id}/rubric.toml"
                 rubric, rubric_text = _load_rubric(root, label)
                 source_files[label] = rubric_text
@@ -251,12 +295,6 @@ class TaskPackage:
                         agent.reviewer.accept_on_revision_exhaustion,
                         agent.reviewer.checks,
                     )
-                    if reviewer.type == "deterministic" and set(reviewer.checks) != {
-                        criterion.id for criterion in rubric.criteria
-                    }:
-                        raise ValueError(
-                            "Deterministic checks must match every Criterion ID"
-                        )
                 except ValueError as exc:
                     raise TaskValidationError(
                         f"agents/{agent_id}/reviewer: {exc}"
@@ -292,6 +330,53 @@ class TaskPackage:
                 rubric,
                 tuple(agent.tools),
             )
+
+        steps: list[StepSource] = []
+        if config.task.steps:
+            _directory_members(root, "steps", set(config.task.steps))
+        elif (root / "steps").exists() or (root / "steps").is_symlink():
+            raise TaskValidationError("steps: directory requires declared Task Steps")
+        for step_id in config.task.steps:
+            _directory_members(root, f"steps/{step_id}", {"agents"})
+            _directory_members(root, f"steps/{step_id}/agents", set(sources))
+            additions: dict[str, StepAgentPlan] = {}
+            for agent_id in sources:
+                label = f"steps/{step_id}/agents/{agent_id}/instruction.md"
+                instruction = _load_template(root, label, env, config.variables)
+                source_files[label] = instruction
+                rubric_label = f"steps/{step_id}/agents/{agent_id}/rubric.toml"
+                appended: tuple[Criterion, ...] = ()
+                if (root / rubric_label).exists() or (root / rubric_label).is_symlink():
+                    if sources[agent_id].rubric is None:
+                        raise TaskValidationError(
+                            f"{rubric_label}: step Criteria require an Agent Reviewer"
+                        )
+                    step_rubric, text = _load_rubric(root, rubric_label, step=True)
+                    source_files[rubric_label] = text
+                    appended = step_rubric.criteria
+                    base = sources[agent_id].rubric
+                    assert base is not None
+                    try:
+                        Rubric(base.criteria + appended, base.threshold)
+                    except ValueError as exc:
+                        raise TaskValidationError(f"{rubric_label}: {exc}") from exc
+                additions[agent_id] = StepAgentPlan(instruction, appended)
+            steps.append(StepSource(step_id, MappingProxyType(additions)))
+
+        for agent_id, source in sources.items():
+            if source.reviewer is not None and source.reviewer.type == "deterministic":
+                assert source.rubric is not None
+                criteria = {criterion.id for criterion in source.rubric.criteria}
+                criteria.update(
+                    criterion.id
+                    for step in steps
+                    for criterion in step.agents[agent_id].appended_rubric
+                )
+                if set(source.reviewer.checks) != criteria:
+                    raise TaskValidationError(
+                        f"agents/{agent_id}/reviewer: Deterministic checks must "
+                        "match every Criterion ID"
+                    )
 
         verifier = None
         if config.verifier is not None:
@@ -331,6 +416,7 @@ class TaskPackage:
             {
                 "config": config.model_dump(mode="json"),
                 "agents": sources,
+                "steps": steps,
                 "verifier": verifier,
             }
         )
@@ -364,6 +450,7 @@ class TaskPackage:
             source_files=MappingProxyType(source_files),
             verifier=verifier,
             tools=MappingProxyType(tools),
+            steps=tuple(steps),
         )
 
     def compile(self, *, seed_path: str | Path | None = None) -> RunPlan:
@@ -420,27 +507,20 @@ class TaskPackage:
         env = _template_environment()
         agents: dict[str, AgentPlan] = {}
         for agent_id, source in self.agents.items():
-            try:
-                instruction = env.from_string(source.instruction).render(extracted)
-            except (TemplateError, TypeError, ValueError, ArithmeticError) as exc:
-                raise TaskValidationError(
-                    f"agents/{agent_id}/instruction.md: rendering failed "
-                    f"({type(exc).__name__}): {exc}"
-                ) from exc
+            instruction = _render_template(
+                source.instruction, f"agents/{agent_id}/instruction.md", env, extracted
+            )
             reviewer = source.reviewer
             if reviewer is not None:
-                try:
-                    reviewer = replace(
-                        reviewer,
-                        instruction=env.from_string(reviewer.instruction).render(
-                            extracted
-                        ),
-                    )
-                except (TemplateError, TypeError, ValueError, ArithmeticError) as exc:
-                    raise TaskValidationError(
-                        f"agents/{agent_id}/reviewer.md: rendering failed "
-                        f"({type(exc).__name__}): {exc}"
-                    ) from exc
+                reviewer = replace(
+                    reviewer,
+                    instruction=_render_template(
+                        reviewer.instruction,
+                        f"agents/{agent_id}/reviewer.md",
+                        env,
+                        extracted,
+                    ),
+                )
             agents[agent_id] = AgentPlan(
                 agent_id,
                 source.target,
@@ -452,6 +532,19 @@ class TaskPackage:
                 source.rubric,
                 source.tools,
             )
+
+        steps: list[StepPlan] = []
+        for step in self.steps:
+            additions: dict[str, StepAgentPlan] = {}
+            for agent_id, addition in step.agents.items():
+                instruction = _render_template(
+                    addition.instruction,
+                    f"steps/{step.id}/agents/{agent_id}/instruction.md",
+                    env,
+                    extracted,
+                )
+                additions[agent_id] = replace(addition, instruction=instruction)
+            steps.append(StepPlan(step.id, additions))
 
         frozen_data = cast(Mapping[str, FrozenJsonValue], freeze(seed_data))
         frozen_variables = cast(Mapping[str, FrozenJsonValue], freeze(extracted))
@@ -469,4 +562,5 @@ class TaskPackage:
             ),
             verifier=self.verifier,
             tools=self.tools,
+            steps=tuple(steps),
         )

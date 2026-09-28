@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from agentinstruct.plans import JsonValue
 from agentinstruct.quality import Criterion, Rubric
+from agentinstruct.steps import CONTROL_TOOLS
 
 Identifier = Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]*$")]
 VariableName = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
@@ -21,6 +22,22 @@ class ConfigModel(BaseModel):
 class TaskConfig(ConfigModel):
     id: Identifier
     version: NonemptyString
+    steps: list[Identifier] = Field(default_factory=list)
+
+    @field_validator("steps")
+    @classmethod
+    def validate_steps(cls, steps: list[str]) -> list[str]:
+        names = {step.casefold() for step in steps}
+        if len(names) != len(steps):
+            raise ValueError(
+                "Task Step identifiers must be unique after case normalization"
+            )
+        reserved = {"con", "prn", "aux", "nul"} | {
+            f"{prefix}{number}" for prefix in ("com", "lpt") for number in range(1, 10)
+        }
+        if names.intersection(reserved) or any(len(step) > 255 for step in steps):
+            raise ValueError("Task Step identifiers must be portable directory names")
+        return steps
 
 
 class SeedSourceConfig(ConfigModel):
@@ -141,6 +158,22 @@ class RubricConfig(ConfigModel):
         return self
 
 
+class StepRubricConfig(ConfigModel):
+    """Only Criteria append; the Agent's base threshold remains authoritative."""
+
+    criteria: list[CriterionConfig]
+
+    def to_criteria(self) -> tuple[Criterion, ...]:
+        return Rubric(
+            tuple(Criterion(c.id, c.weight, c.description) for c in self.criteria)
+        ).criteria
+
+    @model_validator(mode="after")
+    def validate_criteria(self) -> Self:
+        self.to_criteria()
+        return self
+
+
 class VerifierConfig(ConfigModel):
     type: Literal["custom", "deterministic"]
     timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 60.0
@@ -197,6 +230,10 @@ class PackageConfig(ConfigModel):
                 raise ValueError("Agent Tool assignments must be unique")
             if set(agent.tools) - self.tools.keys():
                 raise ValueError("Agent tools reference an undeclared Tool")
+        if {name.casefold() for name in self.tools}.intersection(CONTROL_TOOLS):
+            raise ValueError(
+                "Tool identifiers collide with reserved Task Step controls"
+            )
         references = [self.model.provider] + [
             agent.model.provider
             for agent in self.agents.values()

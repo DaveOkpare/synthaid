@@ -15,6 +15,7 @@ class ReviewRequest:
     message: Message
     messages: tuple[Message, ...]
     agent_instruction: str
+    step_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -48,7 +49,7 @@ class DeterministicReviewer:
     async def review(self, request: ReviewRequest) -> ReviewResult:
         nonempty = bool(request.message.content.strip())
         return ReviewResult(
-            {identifier: nonempty for identifier in self.plan.checks},
+            {criterion.id: nonempty for criterion in request.rubric.criteria},
             "" if nonempty else "Provide nonempty message content.",
         )
 

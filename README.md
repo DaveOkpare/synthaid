@@ -371,6 +371,75 @@ independently of the original Run directory. Run Results, manifests, and the Run
 index retain the original invocation's counts; inspect the Trace for current
 verification status.
 
+## Retain history across Task Steps
+
+Declare ordered steps under `[task]`:
+
+```toml
+[task]
+id = "stepped-dialogue"
+version = "1"
+steps = ["collect", "conclude"]
+```
+
+Every Agent participates in every step and requires
+`steps/<step-id>/agents/<agent-id>/instruction.md`. Its rendered base instruction
+stays active; only the current step's addition is appended. Optional step
+`rubric.toml` files append `[[criteria]]` to that Agent's base Rubric. Criterion
+IDs must be unique within each composed Rubric. Step files cannot set a
+`threshold`; the base Rubric's reviewer threshold applies throughout. Step
+Criteria require a configured Reviewer. A deterministic Reviewer's `checks`
+must cover the union of its base and step Criterion IDs; only active Criteria
+are scored. All step templates render before the first generation call.
+
+Accepted Conversation and each Agent's private Tool history persist across
+steps. The Target Agent receives the framework's `advance_step` Tool with the
+next step ID in its input schema, or `complete_task` in the final step. These
+identifiers are reserved against Task Tool declarations. Each control must be
+the only Tool call in its Message and the last pending Message in its Action.
+The same review, revision, durable intent, and private-result rules apply as
+for ordinary Tools. Rejection cannot advance or complete a Task, including
+when conversational exhaustion fallback is enabled.
+
+An accepted advancement replaces the active additions for all Agents. Its call
+and result retain the step that authorized them; `step_started` and subsequent
+proposals reference the new step. `Observation.step_id`, `ReviewRequest.step_id`,
+`ToolContext.step_id`, Message Commits, and Events expose that attribution.
+Accepted completion produces a private result, then requests a final reply under
+the final step's Rubric with no Tools available. The existing
+`Message(control="complete")` shorthand remains supported only for Tasks that
+omit steps; stepped Tasks use `complete_task`.
+
+Environments receive immutable ordered IDs in `TaskContext.steps` and propose
+controls through the Target Interaction:
+
+```python
+async with agents["assistant"].interaction(task) as interaction:
+    reply = await interaction.control(task.advance_step("conclude"))
+    # The Target Agent sees the result and generates a separately reviewed reply.
+    final = await interaction.control(task.complete_task())
+```
+
+`TaskContext` has no recorder or history mutation API. Its helper methods only
+construct proposals; `Interaction.control()` applies the same acceptance loop
+as Agent proposals. Returning a terminated outcome without accepted completion
+truncates a stepped Task as `incomplete_steps`. The single-agent Environment
+uses `max_turns` to bound stepped execution; dialogue retains its `max_rounds`
+limit across all steps.
+
+Run the [offline stepped dialogue](examples/stepped-dialogue/run.py):
+
+```sh
+uv run agentinstruct validate examples/stepped-dialogue --json
+uv run python examples/stepped-dialogue/run.py --output /tmp/stepped-dialogue
+```
+
+It compiles two phases for both participants, reviews the Target's Tool calls
+and replies, and reuses its private greeting lookup in the final phase. Its
+deterministic checks demonstrate the acceptance mechanics; they do not claim
+semantic grading. A final Verifier is omitted, so the terminated Trace is
+`unverified`.
+
 ## Validate a Task Package
 
 The [single-agent example](examples/single-agent/task.toml) contains `task.toml`,
@@ -403,8 +472,9 @@ print(plan.to_json())
 The current implementation supports schema version `"1"`, a `single` or `dialogue`
 Environment, exactly one explicit Target Agent, the `local` Runtime, and a JSON
 object Seed. Every Agent requires `agents/<id>/instruction.md`. Unknown configuration
-fields and unsupported component selections fail validation. Multi-step Tasks and
-Seed collections arrive in later tickets.
+fields and unsupported component selections fail validation. Task Steps are
+optional; a Task without declared steps omits the `steps/` directory. Seed
+collections arrive in later tickets.
 
 `[variables]` maps template aliases to dot paths through nested JSON mappings.
 Array indexing and empty path segments are unsupported. Every selector must
