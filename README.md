@@ -739,6 +739,68 @@ independently of the original Run directory. Run Results, manifests, and the Run
 index retain the original invocation's counts; inspect the Trace for current
 verification status.
 
+## Inspect recorded Runs and Traces
+
+Inspection reads a recorded Run directory, Trace directory, or standalone Trace
+snapshot. It needs no original Task Package, custom component imports, credentials,
+or running model service.
+
+```bash
+uv run agentinstruct inspect runs/RUN_ID
+uv run agentinstruct inspect runs/RUN_ID --json
+uv run agentinstruct inspect runs/RUN_ID --trace 1 --view conversation
+uv run agentinstruct inspect runs/RUN_ID --trace 1 --view participant --participant assistant
+uv run agentinstruct inspect runs/RUN_ID/traces/TRACE_ID --view reasoning --json
+uv run agentinstruct inspect runs/RUN_ID --tui
+```
+
+Run summaries retain the ordered Trace references and all five status counts.
+`counts` uses each Trace's current decision, including appended Verification
+attempts; `recorded_index_counts` and `manifest` preserve the historical Run
+evidence. A failed latest Verification can coexist with an earlier selected valid
+decision. Both are shown in the Trace summary. Relative index paths allow a whole
+Run directory to be moved; escaping paths and mismatched identities are rejected.
+
+The terminal UI uses line commands and requires no terminal framework:
+
+- `trace N` selects a Trace using its one-based position; `next` and `previous`
+  move between Traces; `run` returns to the collection summary.
+- `summary`, `conversation`, `tools`, `reviews`, `verification`, `provenance`,
+  `failures`, `artifacts`, and `reasoning` select operator views.
+- `participant ID` projects only accepted shared Messages and that participant's
+  own private Tool exchanges, with roles relative to that participant.
+- `more`, `back`, and `page N` navigate long views; `help` lists commands; `quit`,
+  EOF, or Ctrl-C ends inspection.
+
+Conversation views label actors, visibility, turns, Task Step boundaries, and
+review-exhausted Messages. Operator views include all actor-private evidence and
+rejected proposals. Participant views contain accepted Messages only and enforce
+Tool ownership. Reasoning views include both
+generation model calls and model calls inside Verification attempts, showing
+declared retention policies, presence, and suppression without inventing missing
+text. Terminal control characters in recorded text are escaped. Artifact views
+list persisted regular files and sizes; standalone snapshots without an artifact
+directory have an empty listing.
+
+The same read-only model is available in Python. Library Trace positions are
+zero-based:
+
+```python
+from agentinstruct import Inspector, load_run
+
+recorded = load_run("runs/RUN_ID")
+for reference in recorded.traces:
+    print(reference.path, reference.snapshot.status, reference.recorded_status)
+
+inspector = Inspector("runs/RUN_ID")
+summary = inspector.summary()
+projection = inspector.view("participant", trace_index=0, participant="assistant")
+print(inspector.render("conversation", trace_index=0))
+```
+
+Inspection never rewrites generation files, appends Verification, resumes a Run,
+or invokes components. Open a new Inspector to read subsequently appended attempts.
+
 ## Retain history across Task Steps
 
 Declare ordered steps under `[task]`:

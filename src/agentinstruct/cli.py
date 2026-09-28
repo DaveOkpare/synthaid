@@ -64,7 +64,64 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--package", help="Override with this Task Package's Verifier policy"
     )
     reverification.add_argument("--json", action="store_true", dest="as_json")
+    from agentinstruct.inspection import VIEWS
+
+    inspection = commands.add_parser("inspect", help="Inspect a persisted Run or Trace")
+    inspection.add_argument(
+        "path", help="Run directory, Trace directory or snapshot file"
+    )
+    display = inspection.add_mutually_exclusive_group()
+    display.add_argument("--json", action="store_true", dest="as_json")
+    display.add_argument(
+        "--tui", action="store_true", help="Open read-only terminal navigation"
+    )
+    inspection.add_argument("--trace", type=int, help="Select a 1-based Trace in a Run")
+    inspection.add_argument("--view", choices=VIEWS, default="summary")
+    inspection.add_argument(
+        "--participant", help="Participant ID for the participant view"
+    )
     args = parser.parse_args(argv)
+    if args.command == "inspect":
+        from agentinstruct.inspection import Inspector, run_terminal, terminal_text
+
+        try:
+            inspector = Inspector(args.path)
+            index = args.trace - 1 if args.trace is not None else None
+            if index is not None and not 0 <= index < len(inspector.traces):
+                raise ValueError("Trace number is out of range")
+            if args.participant is not None and args.view != "participant":
+                raise ValueError("--participant requires --view participant")
+            data = (
+                inspector.summary(trace_index=index)
+                if args.view == "summary"
+                else inspector.view(
+                    args.view, trace_index=index or 0, participant=args.participant
+                )
+            )
+            if args.tui:
+                run_terminal(
+                    inspector,
+                    sys.stdin,
+                    sys.stdout,
+                    trace_index=index,
+                    view=args.view,
+                    participant=args.participant,
+                )
+            elif args.as_json:
+                print(json.dumps(data))
+            else:
+                print(
+                    inspector.render(
+                        args.view, trace_index=index, participant=args.participant
+                    )
+                )
+        except (OSError, ValueError, IndexError) as exc:
+            if args.as_json:
+                print(json.dumps({"status": "error", "error": str(exc)}))
+            else:
+                print(terminal_text(f"Inspection failed: {exc}"), file=sys.stderr)
+            return 1
+        return 0
     if args.command == "validate":
         from agentinstruct.task_package import TaskPackage, TaskValidationError
 

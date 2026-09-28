@@ -134,4 +134,12 @@
   preserve provenance. See [component authoring](../../README.md#load-custom-components)
   and the [offline fixture](../../examples/custom-components/task.toml).
 
-Tickets 17–19 remain unimplemented.
+- **17 — resolved:** [Inspect recorded Runs and Traces](issues/17-inspect-recorded-runs-traces.md#answer).
+  Persisted Run discovery follows ordered confined relative references and exposes
+  current Trace decisions separately from historical Run counts. The Inspector,
+  JSON/static CLI and paginated terminal UI cover accepted and participant views,
+  private Tools, review/Verification evidence, Steps, reasoning retention,
+  provenance, failures and artifacts without invoking components or changing
+  recorded evidence. See [inspection usage](../../README.md#inspect-recorded-runs-and-traces).
+
+Tickets 18–19 remain unimplemented.

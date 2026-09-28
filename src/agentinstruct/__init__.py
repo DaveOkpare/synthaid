@@ -4,6 +4,13 @@ from agentinstruct.agent_tool import AgentTool
 from agentinstruct.components import BUILTIN_COMPONENTS, ComponentError
 from agentinstruct.execution import Agent, Agents, Environment, Observation, TaskContext
 from agentinstruct.export import export_native, export_openai
+from agentinstruct.inspection import (
+    InspectionSession,
+    Inspector,
+    RecordedRun,
+    RecordedTrace,
+    load_run,
+)
 from agentinstruct.plans import (
     CompatibleEndpointProfile,
     CompatibleSurface,
@@ -86,6 +93,8 @@ __all__ = [
     "FunctionCall",
     "FunctionTool",
     "InferenceControls",
+    "InspectionSession",
+    "Inspector",
     "JsonSchemaSpec",
     "Message",
     "ModelPlan",
@@ -100,6 +109,8 @@ __all__ = [
     "ReasoningContinuation",
     "ReasoningControls",
     "ReasoningItem",
+    "RecordedRun",
+    "RecordedTrace",
     "ResponseFormat",
     "ResponsesProvider",
     "ReviewRequest",
@@ -142,6 +153,7 @@ __all__ = [
     "export_openai",
     "generate",
     "generate_sync",
+    "load_run",
     "load_trace",
     "reverify",
 ]
