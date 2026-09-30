@@ -200,6 +200,11 @@ belong in runtime secret sources rather than these retained declarations.
 
 ## Generate through a Chat Completions Provider
 
+For an opt-in live provider smoke, see the
+[Doubleword medagent example](examples/doubleword-medagent/README.md). It uses two
+non-personal scenario extracts, capped requests, a read-only Tool, structured
+Verification, and persisted exports through the existing compatible adapter.
+
 The [model example](examples/chat-completions/task.toml) selects
 `api = "chat_completions"` explicitly. Replace its placeholder model name with a
 model available to your account and set `OPENAI_API_KEY` in your runtime environment.

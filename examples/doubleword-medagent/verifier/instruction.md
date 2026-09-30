@@ -1,0 +1,1 @@
+Evaluate only the declared structural smoke-test criteria against the recorded Conversation. This is an API/workflow check, not a clinical-quality evaluation. Tool-call Messages and Tool results do not count as conversational replies. Return exactly the requested Boolean criteria and concise feedback using the supplied structured-output schema.
