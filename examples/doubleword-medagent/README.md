@@ -73,3 +73,38 @@ zero-data-retention. Only synthetic, non-personal scenario content was used in
 this smoke; consult Doubleword's [data policy](https://doubleword.ai/data-usage-policy/)
 before using other data. Reasoning retention, Responses, async/batch execution,
 parallel Tools, and clinical quality are outside the tested claim.
+
+## Per-turn Review, Revision, and Tool effects
+
+The separate experiment enables a model Reviewer on the assistant, with a strict
+Tool-use rubric and two revisions per proposed Message. It keeps the original
+participant prompts and final Verifier. It also runs two explicitly scripted
+negative controls against the live model Reviewer: a bad Tool call followed by a
+bad reply, and repeated bad Tool calls until revisions are exhausted.
+
+```sh
+uv run --locked python examples/doubleword-medagent/review_smoke.py \
+  --seed-data /path/to/medagent/src/data/eval_pilot_40_sessions.json \
+  --output /tmp/doubleword-review-smoke \
+  --allow-live
+```
+
+This invocation shares a 48-request cap across all three experiments, with the
+same per-request size/token limits as the original smoke. Generation has a
+240-second deadline per Seed. `--natural-only` omits the scripted controls.
+Task variants are saved in the output directory, leaving the original task intact.
+The Tool audit writes a local `effects.jsonl` entry only when the Tool executes,
+including whether its accepted call was already durable. It performs no external
+mutation. `requests.jsonl` records JSON payloads and status codes without HTTP
+headers; payloads include review feedback and the projected scenario data.
+
+`report.json` records every review verdict, proposal, revision count, Tool effect,
+conversation, and model usage. Default OpenAI exports still require final
+Verification; the scripted controls deliberately have no final Verifier and
+remain unverified. A zero script exit means the experiment was recorded, not that
+all model judgments were correct. Inspect the reported outcomes and verdicts.
+
+The [1 October live report](../../research/doubleword-review-live-2026-10-01.md)
+records both the initial Reviewer errors and the successful follow-up after its
+instruction was clarified. No inference retries, relaxed thresholds, or forced
+Tool execution were used to make the natural scenarios pass.

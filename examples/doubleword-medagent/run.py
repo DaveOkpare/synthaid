@@ -62,8 +62,9 @@ def medagent_seeds(path: Path) -> list[dict[str, JsonValue]]:
 
 
 class CallBudget:
-    def __init__(self) -> None:
+    def __init__(self, limit: int = 20) -> None:
         self.calls = 0
+        self.limit = limit
 
 
 class BoundedTransport(httpx.AsyncBaseTransport):
@@ -74,7 +75,7 @@ class BoundedTransport(httpx.AsyncBaseTransport):
         self.transport = httpx.AsyncHTTPTransport(retries=0)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        if self.budget.calls >= 20 or len(request.content) > 32_000:
+        if self.budget.calls >= self.budget.limit or len(request.content) > 32_000:
             raise httpx.RequestError("Smoke request budget exceeded", request=request)
         self.budget.calls += 1
         return await self.transport.handle_async_request(request)
