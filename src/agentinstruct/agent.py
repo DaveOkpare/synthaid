@@ -6,7 +6,7 @@ from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from time import monotonic
-from typing import Any, Literal, cast
+from typing import Any, Literal, Protocol, cast, runtime_checkable
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -21,7 +21,7 @@ from agentinstruct.episode import (
     json_data,
     parse_json,
 )
-from agentinstruct.judge import Judge, Judgment
+from agentinstruct.judge import Evaluator, Judge, Judgment, evaluation_settings
 from agentinstruct.tools import Tool, ToolError, schema_validator
 
 
@@ -35,12 +35,24 @@ class ReviewExhausted(RuntimeError):
     """No approved replacement remains within the Agent's revision budget."""
 
 
+@runtime_checkable
+class Generator(Protocol):
+    async def generate(
+        self,
+        history: Sequence[Message],
+        *,
+        client: Any = None,
+        role: str = "assistant",
+        instruction: str | None = None,
+    ) -> Message | Sequence[Message]: ...
+
+
 @dataclass(frozen=True)
 class Agent:
     model: str | None = None
     instruction: str = ""
     tools: Sequence[Tool] = ()
-    reviewer: Judge | None = None
+    reviewer: Evaluator | None = None
     max_revisions: int = 1
     accept_on_revision_exhaustion: bool = False
     client: Any = field(default=None, repr=False, compare=False)
@@ -50,9 +62,12 @@ class Agent:
     reasoning: Mapping[str, Any] | None = None
     output_schema: Any = None
     extra_body: Mapping[str, Any] = field(default_factory=dict)
+    generator: Generator | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         _validate_settings(self)
+        if self.generator is not None and not isinstance(self.generator, Generator):
+            raise ValueError("Generator must implement generate(history)")
         tools = tuple(self.tools)
         if any(not isinstance(tool, Tool) for tool in tools):
             raise ValueError("Agent tools must be Tool instances")
@@ -74,8 +89,12 @@ class Agent:
         client: Any = None,
         role: str = "assistant",
         instruction: str | None = None,
-    ) -> Message | list[Message]:
+    ) -> Message | Sequence[Message]:
         borrowed = self.client if self.client is not None else client
+        if self.generator is not None:
+            return await self.generator.generate(
+                history, client=borrowed, role=role, instruction=instruction
+            )
         if borrowed is None or not self.model:
             raise ValueError("Model Agent requires an explicit client and model")
         raw, evidence = await _invoke(borrowed, self.api, _request(self, history, role))
@@ -178,6 +197,8 @@ class Agent:
         history = (*_history(episode, role, invocation["instruction"]), message)
         try:
             result = await self.reviewer.evaluate(history)
+            if not isinstance(result, Judgment):
+                raise ValueError("Evaluator must return a Judgment")
         except (Exception, asyncio.CancelledError) as exc:
             _record_failure(episode, exc, "reviewer", role, message.turn_id)
             raise
@@ -267,7 +288,7 @@ class Agent:
             "accept_on_revision_exhaustion": self.accept_on_revision_exhaustion,
             "tools": [tool.declaration() for tool in self.tools],
             "max_revisions": self.max_revisions,
-            "reviewer": self.reviewer.declaration() if self.reviewer else None,
+            "reviewer": evaluation_settings(self.reviewer),
         }
 
 
@@ -280,8 +301,8 @@ def _validate_settings(agent: Agent) -> None:
         raise ValueError("Agent max_revisions must be a nonnegative integer")
     if type(agent.accept_on_revision_exhaustion) is not bool:
         raise ValueError("Agent exhaustion fallback must be Boolean")
-    if agent.reviewer is not None and not isinstance(agent.reviewer, Judge):
-        raise ValueError("Agent reviewer must be a Judge")
+    if agent.reviewer is not None and not isinstance(agent.reviewer, Evaluator):
+        raise ValueError("Agent reviewer must implement evaluate(messages)")
     _model_settings(agent)
 
 
@@ -712,9 +733,9 @@ def _validate_output(message: Message, output: Any) -> None:
 
 
 def _proposals(episode: Episode, value: Any, role: str, turn_id: str) -> list[Message]:
-    proposals = value if isinstance(value, list) else [value]
+    proposals = list(value) if isinstance(value, Sequence) else [value]
     if not proposals or any(not isinstance(item, Message) for item in proposals):
-        raise ValueError("Agent must return one Message or a nonempty list")
+        raise ValueError("Agent must return one Message or a nonempty sequence")
     result = [_safe_proposal(episode, item, role, turn_id) for item in proposals]
     for message in result:
         if message.evidence:
@@ -902,7 +923,9 @@ def _turn_inputs(
     active = agent.instruction if instruction is None else instruction
     if not isinstance(active, str):
         raise ValueError("Active instruction must be text")
-    reviewer_client = agent.reviewer.client if agent.reviewer else None
+    reviewer_client = (
+        agent.reviewer.client if isinstance(agent.reviewer, Judge) else None
+    )
     episode.add_secrets(agent.client, client, reviewer_client)
     return {"role": role, "instruction": active, "client": client}
 

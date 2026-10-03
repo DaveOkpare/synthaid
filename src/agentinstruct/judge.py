@@ -6,7 +6,7 @@ import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from agentinstruct.episode import Message, freeze, parse_json
 
@@ -56,6 +56,12 @@ class Judgment:
     def __post_init__(self) -> None:
         if type(self.passed) is not bool or not isinstance(self.feedback, str):
             raise ValueError("Judgment needs a Boolean verdict and text feedback")
+        if self.score is not None and (
+            isinstance(self.score, bool)
+            or not math.isfinite(self.score)
+            or not 0 <= self.score <= 1
+        ):
+            raise ValueError("Judgment score must be finite and between zero and one")
         if any(
             not isinstance(key, str) or type(value) is not bool
             for key, value in self.criteria.items()
@@ -69,6 +75,20 @@ class JudgeError(RuntimeError):
     def __init__(self, kind: str, evidence: Mapping[str, Any] | None = None) -> None:
         self.kind, self.evidence = kind, freeze(evidence or {})
         super().__init__(f"Judge {kind} failed")
+
+
+@runtime_checkable
+class Evaluator(Protocol):
+    async def evaluate(self, messages: Sequence[Message]) -> Judgment: ...
+
+
+def evaluation_settings(evaluator: Evaluator | None) -> dict[str, Any] | None:
+    if evaluator is None:
+        return None
+    if isinstance(evaluator, Judge):
+        return evaluator.declaration()
+    kind = type(evaluator)
+    return {"type": f"{kind.__module__}:{kind.__qualname__}"}
 
 
 @dataclass(frozen=True)

@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from agentinstruct import Agent, Environment, Episode, Judge, Runner, Task, Tool
+from agentinstruct import Agent, Episode, Judge, Runner, Task, Tool
 from agentinstruct.episode import (
     FunctionCall,
     Message,
@@ -153,12 +153,12 @@ async def test_task_deadline_truncates_and_preserves_partial_accepted_history(
 
 
 @pytest.mark.asyncio
-async def test_cancellation_finishes_owned_cleanup_without_closing_borrowed_clients(
+async def test_application_owns_cleanup_after_environment_cancellation(
     tmp_path: Path,
 ) -> None:
-    generated, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    borrowed = object()
+    generated = asyncio.Event()
     closed: list[str] = []
+    borrowed = object()
 
     class Waiting(Agent):
         async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
@@ -171,49 +171,21 @@ async def test_cancellation_finishes_owned_cleanup_without_closing_borrowed_clie
         try:
             yield None
         finally:
-            cleaning.set()
-            await release.wait()
-            closed.append("owned")
+            closed.append("application")
 
     task = Task(agents={"assistant": Waiting()})
-    task.episode.open(tmp_path / task.episode.id)
-    worker = asyncio.create_task(
-        Environment(task, client=borrowed, resources=[resource()]).run()
-    )
+
+    async def application() -> None:
+        async with resource():
+            await Runner([task], output_dir=tmp_path, client=borrowed).run()
+
+    worker = asyncio.create_task(application())
     await generated.wait()
     worker.cancel()
-    await cleaning.wait()
-    worker.cancel()
-    release.set()
     with pytest.raises(asyncio.CancelledError):
         await worker
-    assert (
-        closed == ["owned"] and task.episode.status == "failed" and task.episode.sealed
-    )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("failure", [TimeoutError, ValueError])
-async def test_cleanup_failure_cannot_be_verified_as_accepted(
-    tmp_path: Path, failure: type[Exception]
-) -> None:
-    judged: list[Sequence[Message]] = []
-
-    @asynccontextmanager
-    async def resource() -> Any:
-        yield None
-        raise failure("cleanup failure")
-
-    def check(messages: Sequence[Message]) -> bool:
-        judged.append(messages)
-        return True
-
-    task = Task(agents={"assistant": Reply()}, verifier=Judge(check=check))
-    task.episode.open(tmp_path / task.episode.id)
-    await Environment(task, resources=[resource()]).run()
-    assert task.episode.generation == {"state": "failed", "reason": "execution"}
-    assert not judged and not task.episode.verification
-    assert any(event["kind"] == "cleanup_error" for event in task.episode.events)
+    assert closed == ["application"]
+    assert task.episode.status == "failed" and task.episode.sealed
 
 
 @pytest.mark.asyncio
@@ -272,31 +244,6 @@ async def test_export_rejects_evidence_aliases_before_writing(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_owned_preparation_shares_deadline_and_cleans_prepared_resources(
-    tmp_path: Path,
-) -> None:
-    closed: list[str] = []
-
-    @asynccontextmanager
-    async def prepared() -> Any:
-        try:
-            yield None
-        finally:
-            closed.append("prepared")
-
-    @asynccontextmanager
-    async def blocked() -> Any:
-        await asyncio.Event().wait()
-        yield None
-
-    task = Task(agents={"assistant": Reply()}, timeout_seconds=0.01)
-    task.episode.open(tmp_path / task.episode.id)
-    await Environment(task, resources=[prepared(), blocked()]).run()
-    assert closed == ["prepared"] and not task.episode.messages
-    assert task.episode.generation == {"state": "truncated", "reason": "timeout"}
-
-
-@pytest.mark.asyncio
 async def test_final_judge_timeout_leaves_sealed_generation_unverified(
     tmp_path: Path,
 ) -> None:
@@ -344,6 +291,27 @@ async def test_final_judge_cancellation_survives_sidecar_publication_failure(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [OSError, ValueError])
+async def test_final_verification_publication_failure_is_not_swallowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: type[Exception]
+) -> None:
+    import agentinstruct.episode as recording
+
+    original = recording.write_json
+
+    def broken(path: Path, value: Any) -> None:
+        if path.parent.name == "verification":
+            raise failure("sidecar unavailable")
+        original(path, value)
+
+    monkeypatch.setattr(recording, "write_json", broken)
+    task = Task(agents={"assistant": Reply()}, verifier=Judge(check=lambda m: True))
+    with pytest.raises(failure, match="sidecar unavailable"):
+        await Runner([task], output_dir=tmp_path).run()
+    assert task.episode.sealed and not task.episode.verification
+
+
+@pytest.mark.asyncio
 async def test_actual_commit_fsync_failure_prevents_capability_execution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -363,18 +331,22 @@ async def test_actual_commit_fsync_failure_prevents_capability_execution(
 
     task = Task(agents={"assistant": Calling(tools=[Tool(effect)])})
     destination = tmp_path / task.episode.id
-    task.episode.open(destination)
-    inode = (destination / "conversation.jsonl").stat().st_ino
+    conversation = destination / "conversation.jsonl"
     original = os.fsync
 
     def broken(descriptor: int) -> None:
-        if os.fstat(descriptor).st_ino == inode:
+        stat = os.fstat(descriptor)
+        if (
+            conversation.exists()
+            and stat.st_size > 0
+            and stat.st_ino == conversation.stat().st_ino
+        ):
             raise OSError("fsync unavailable")
         original(descriptor)
 
     monkeypatch.setattr(os, "fsync", broken)
     with pytest.raises(PersistenceError):
-        await Environment(task).run()
+        await Runner([task], output_dir=tmp_path).run()
     assert not effects and not task.episode.messages and task.episode.status == "failed"
 
 

@@ -8,7 +8,7 @@ from typing import Any, cast
 
 from agentinstruct.agent import Agent
 from agentinstruct.episode import Episode, freeze
-from agentinstruct.judge import Judge
+from agentinstruct.judge import Evaluator, evaluation_settings
 
 
 @dataclass(frozen=True)
@@ -16,7 +16,7 @@ class Task:
     agents: Mapping[str, Agent]
     input: Mapping[str, Any] = field(default_factory=dict)
     segments: Sequence[Mapping[str, Any]] = ()
-    verifier: Judge | Mapping[str, Any] | None = None
+    verifier: Evaluator | None = None
     max_rounds: int = 10
     max_turns: int = 100
     initiator: str = "user"
@@ -36,12 +36,29 @@ class Task:
         object.__setattr__(self, "segments", segments)
         object.__setattr__(self, "provenance", freeze(self.provenance))
         _limits(self)
-        if self.verifier is not None and not isinstance(
-            self.verifier, (Judge, Mapping)
-        ):
-            raise ValueError("Task verifier must be a Judge or ordinary Judge settings")
-        if isinstance(self.verifier, Mapping):
-            object.__setattr__(self, "verifier", freeze(self.verifier))
+        if self.verifier is not None and not isinstance(self.verifier, Evaluator):
+            raise ValueError("Task verifier must implement evaluate(messages)")
+
+    def declaration(self) -> dict[str, Any]:
+        return {
+            **dict(self.provenance),
+            "variables": self.input,
+            "agents": {
+                role: {**agent.declaration(), "target": role == "assistant"}
+                for role, agent in self.agents.items()
+            },
+            "verifier": evaluation_settings(self.verifier),
+            "segments": self.segments,
+            "timeout_seconds": self.timeout_seconds,
+        }
+
+    @property
+    def roles(self) -> tuple[str, ...]:
+        if "user" not in self.agents:
+            return ("assistant",)
+        return (
+            ("user", "assistant") if self.initiator == "user" else ("assistant", "user")
+        )
 
 
 def _segment(

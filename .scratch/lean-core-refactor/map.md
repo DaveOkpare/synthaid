@@ -1,5 +1,7 @@
 # Lean core refactor work index
 
+> Historical checkpoint: the later [domain-protocol report](../deep-modules/implementation.md) and [ADR-0026](../../docs/adr/0026-use-domain-protocols-and-runner-owned-task-lifecycle.md) supersede execution API guidance below. Original measurements are preserved.
+
 Status: resolved
 Type: effort
 

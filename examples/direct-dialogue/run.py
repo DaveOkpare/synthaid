@@ -10,7 +10,7 @@ from agentinstruct import Agent, Judge, Runner, Task
 from agentinstruct.episode import Message
 
 
-class RetailAgent(Agent):
+class RetailGenerator:
     async def generate(
         self,
         history: Sequence[Message],
@@ -37,10 +37,13 @@ async def main(output: str) -> None:
     judge = Judge(
         check=lambda messages: bool(messages and messages[-1].content.strip())
     )
-    assistant = RetailAgent(
-        instruction="Apply the fictional 30-day return policy.", reviewer=judge
+    generator = RetailGenerator()
+    assistant = Agent(
+        instruction="Apply the fictional 30-day return policy.",
+        generator=generator,
+        reviewer=judge,
     )
-    user = RetailAgent(instruction="Ask about the supplied purchase.")
+    user = Agent(instruction="Ask about the supplied purchase.", generator=generator)
     tasks = [
         Task(
             agents={"assistant": assistant, "user": user},

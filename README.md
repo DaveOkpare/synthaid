@@ -4,9 +4,9 @@ Generate reviewed synthetic data directly in Python through seven imports:
 `Task`, `Runner`, `Environment`, `Agent`, `Episode`, `Tool`, and `Judge`.
 
 A Task immediately owns a fresh Episode and UUID. Runner opens recording at
-`output_dir / episode.id`, constructs Environment(task), and executes its ordered
-segments. Each Agent owns its Tools and optional reviewer. Environment seals
-accepted history and invokes the Task's optional final verifier once.
+`output_dir / episode.id`, invokes its Environment, seals generation, and applies
+the optional final verifier. The default UserSimEnv executes ordered segments.
+Each Agent owns its Tools and optional reviewer.
 
 Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/).
 
@@ -98,12 +98,22 @@ Pydantic model class, including nested aliases, enums, nullable fields, and date
 
 ## Customize generation and scheduling
 
-Subclass Agent and override `async generate(history, *, client=None,
-role="assistant", instruction=None)` to return a Message or ordered list of
-Messages. Import Message and Tool-call values from `agentinstruct.episode`.
-The supplied history includes public Task input and accepted visible messages.
-A revision adds the current rejected draft and private review feedback temporarily.
-Agent.turn still performs review, durable acceptance, and approved Tool execution.
+Generation, evaluation and execution have small structural protocols:
+
+| Seam | Interface | Domain adapter |
+| --- | --- | --- |
+| agent.Generator | async generate(history, *, client, role, instruction) | Supply a plain object as Agent(generator=...) |
+| judge.Evaluator | async evaluate(messages) -> Judgment | Supply it as Agent.reviewer or Task.verifier |
+| Environment | async run(task, *, client) -> None | Supply an instance to Runner(environment=...) |
+
+A domain adapter implements these methods without inheriting framework classes.
+Generator returns one Message or a nonempty sequence. Agent still performs review,
+revision, durable acceptance and approved Tool execution around that result.
+Reviewer feedback and the current rejected draft reach the generator privately.
+The retail example uses a plain generator; tests also demonstrate arithmetic
+generation/evaluation and a custom Environment. Existing Agent.generate subclass
+overrides remain usable. Supporting Message/Tool-call values live in episode.py,
+and Judgment lives in judge.py.
 
 Task.agents requires `assistant`; an optional `user` uses the same Agent class.
 Only assistant may return `Message(..., control="complete")`. An assistant-only
@@ -119,17 +129,29 @@ can serve both review and verification when its criteria suit both uses.
 `max_revisions` counts replacement attempts after the initial draft. An opted-in
 exhaustion fallback accepts only ordinary text, with recorded evidence.
 
-Standalone execution opens the existing Episode explicitly:
+Use Runner for complete recorded execution. An Environment supplies domain
+behavior; Runner supplies the Task deadline, begins recording, seals generation,
+and invokes final verification. The default UserSimEnv owns no external resources.
+Application entry points own clients and other contexts around the batch.
+
+Inside your async entry point, a custom Environment can use the same Agent rules:
 
 ```python
-task.episode.open("runs/one-sample")
-await Environment(task, client=client).run()  # returns None
+class CustomDomain:
+    async def run(self, task: Task, *, client=None) -> None:
+        await task.agents["assistant"].turn(task.episode, client=client)
+
+
+environment: Environment = CustomDomain()
+episodes = await Runner(
+    tasks, output_dir="runs", client=client, environment=environment
+).run()
 ```
 
-Custom structural Environments accept `(task, *, client=None)` and implement
-`async run()`. Runner constructs one per Task. Explicit execution-owned async
-context managers can be supplied as `Environment(..., resources=[...])`; preparation
-shares the Task deadline and cleanup is bounded and cancellation-safe.
+Task.verifier receives a constructed Judge or an Evaluator, and Agent.reviewer
+accepts either. Task data and domain adapters carry no hidden client binding or
+resource manager. Custom adapters honor cancellation and keep invocation state
+local; their own external dependencies have application-defined lifetimes.
 
 ## Optional task files and CLI
 
@@ -189,6 +211,6 @@ context manager yielding the ready API URL. It owns and stops its server process
 and restores signals. Initialize your separate inference client using that URL.
 Core imports and task validation do not start servers or import the vLLM SDK.
 
-See [migration notes](docs/migration-seven-modules.md) for retired imports and
-[the implementation report](.scratch/library-design-audit/implementation.md) for
+See [migration notes](docs/migration-seven-modules.md) for interface changes and
+[the current simplification report](.scratch/deep-modules/implementation.md) for
 measured changes and verification.

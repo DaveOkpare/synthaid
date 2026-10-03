@@ -44,7 +44,7 @@ async def test_callable_judgment_evidence_survives_review_and_verification(
         rubric is None,
         "Reviewed",
         {"ok": True} if rubric else {},
-        score=-1.0,
+        score=0.0,
         evidence=evidence,
     )
     evidence["labels"] = ["changed"]
@@ -281,24 +281,32 @@ async def test_tools_are_agent_local_and_intent_is_durable(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_custom_structural_environment_and_constructor_failure(
+async def test_custom_structural_environment_uses_common_recording_and_failures(
     tmp_path: Path,
 ) -> None:
     class Custom:
-        def __init__(self, task: Task, *, client: Any) -> None:
-            self.episode = task.episode
+        async def run(self, task: Task, *, client: Any = None) -> None:
+            task.episode.append(Message("assistant", "custom", actor_id="assistant"))
 
-        async def run(self) -> None:
-            self.episode.append(Message("assistant", "custom", actor_id="assistant"))
-            self.episode.seal()
+    class Unusable:
+        async def run(self, task: Task, *, client: Any = None) -> None:
+            raise ValueError("Domain execution failed")
 
-    task = Task(agents={"assistant": Reply()})
-    await Runner([task], output_dir=tmp_path, environment=Custom).run()
+    task = Task(agents={"assistant": Reply()}, verifier=Judge(check=lambda m: True))
+    await Runner([task], output_dir=tmp_path, environment=Custom()).run()
     assert task.episode.messages[0].content == "custom"
-    missing = Task(agents={"assistant": Agent("model")})
-    with pytest.raises(ValueError):
-        await Runner([missing], output_dir=tmp_path).run()
+    assert task.episode.sealed and task.episode.status == "accepted"
+    missing = Task(agents={"assistant": Reply()})
+    await Runner([missing], output_dir=tmp_path, environment=Unusable()).run()
     assert missing.episode.sealed and missing.episode.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_missing_model_dependency_is_recorded_by_agent(tmp_path: Path) -> None:
+    task = Task(agents={"assistant": Agent("model")})
+    await Runner([task], output_dir=tmp_path).run()
+    assert task.episode.sealed and task.episode.status == "failed"
+    assert any(event["kind"] == "agent_generate_error" for event in task.episode.events)
 
 
 @pytest.mark.asyncio
@@ -511,6 +519,25 @@ async def test_invalid_tool_inputs_and_execution_error_contracts() -> None:
     result = await Tool(capability, execution_errors="result").call({})
     assert result == {"error": {"exception": "ValueError", "kind": "execution"}}
     assert "unsafe" not in str(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments",
+    [{"x": float("nan")}, {"x": float("inf")}, {"x": object()}, {1: "x"}, []],
+)
+async def test_non_json_tool_arguments_never_reach_capability(arguments: Any) -> None:
+    from agentinstruct.tools import ToolError
+
+    calls: list[str] = []
+
+    async def capability(arguments: Mapping[str, Any]) -> Any:
+        calls.append("called")
+        return {}
+
+    with pytest.raises(ToolError, match="arguments"):
+        await Tool(capability, execution_errors="result").call(arguments)
+    assert not calls
 
 
 def test_overflowing_rubric_and_non_mapping_task_inputs_are_rejected() -> None:

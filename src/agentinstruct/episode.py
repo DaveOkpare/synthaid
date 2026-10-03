@@ -10,10 +10,15 @@ from dataclasses import dataclass, field, is_dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
 from pydantic import JsonValue, TypeAdapter
+
+if TYPE_CHECKING:
+    from agentinstruct.judge import Evaluator
+
+_JSON_VALUE: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
 
 
 class PersistenceError(OSError):
@@ -31,7 +36,7 @@ def json_data(value: object) -> Any:
         return [json_data(item) for item in value]
     if isinstance(value, float) and not math.isfinite(value):
         raise ValueError("JSON numbers must be finite")
-    return TypeAdapter(JsonValue).validate_python(value, strict=True)
+    return _JSON_VALUE.validate_python(value, strict=True)
 
 
 def canonical_json(value: object) -> str:
@@ -49,21 +54,25 @@ def parse_json(text: str) -> Any:
             result[key] = value
         return result
 
-    def invalid(value: str) -> Any:
-        raise ValueError("JSON numbers must be finite")
+    def number(token: str) -> float:
+        return cast(float, json_data(float(token)))
 
-    value = json.loads(text, object_pairs_hook=pairs, parse_constant=invalid)
-    canonical_json(value)
-    return value
+    return json.loads(
+        text, object_pairs_hook=pairs, parse_constant=number, parse_float=number
+    )
 
 
 def freeze(value: object) -> Any:
-    data = json_data(value)
-    if isinstance(data, dict):
-        return MappingProxyType({key: freeze(item) for key, item in data.items()})
-    if isinstance(data, list):
-        return tuple(freeze(item) for item in data)
-    return data
+    def immutable(data: Any) -> Any:
+        if isinstance(data, dict):
+            return MappingProxyType(
+                {key: immutable(item) for key, item in data.items()}
+            )
+        if isinstance(data, list):
+            return tuple(immutable(item) for item in data)
+        return data
+
+    return immutable(json_data(value))
 
 
 def timestamp() -> str:
@@ -395,12 +404,17 @@ class Episode:
             raise PersistenceError("Episode publication failed") from exc
         self._sealed = True
 
-    async def verify(self, judge: Any) -> Mapping[str, Any]:
+    async def verify(self, judge: "Evaluator") -> Mapping[str, Any]:
+        from agentinstruct.judge import Judge, Judgment
+
         if not self._sealed:
             raise RuntimeError("Verification requires sealed generation")
-        self.add_secrets(judge.client)
+        if isinstance(judge, Judge):
+            self.add_secrets(judge.client)
         try:
             result = await judge.evaluate(self.messages)
+            if not isinstance(result, Judgment):
+                raise ValueError("Evaluator must return a Judgment")
         except BaseException as exc:
             self._verification_failure(exc)
             raise

@@ -1,72 +1,44 @@
-# Seven-module implementation checkpoint
+# Domain protocols and simpler generation modules
 
 Date: 2026-10-03
-Status: complete; all five authorized slices implemented
+Status: complete
 
-The user requested execution of the [library design specification](../.scratch/library-design-audit/spec.md).
-The [final implementation report](../.scratch/library-design-audit/implementation.md)
-and [migration guide](../docs/migration-seven-modules.md) record current APIs,
-verification and exact source accounting. Earlier lean-core checkpoints remain
-in their [work index](../.scratch/lean-core-refactor/map.md).
+The user requested a correctness review, a checkpoint commit, then deeper Python
+modules with reusable protocols and less Environment machinery. The seven-module
+checkpoint and its review fixes were committed as `6de2613`; the subsequent pass
+is recorded in the [implementation report](../.scratch/deep-modules/implementation.md)
+and [resolved work map](../.scratch/deep-modules/map.md).
 
 ```text
-application: prepare ordinary inputs and own endpoint clients for the batch
-  -> Task(agents, input, segments, verifier): create Episode and UUID immediately
-  -> Runner(tasks, output_dir, client): open each existing Episode; construct Environment
-     -> Environment(task, client).run(): prepare owned resources; activate segments
-        -> Agent.generate -> own Judge/revise -> durable acceptance -> own Tools
-     -> bounded cleanup -> seal generation once -> optional final Judge
+application: prepare Tasks/evaluators; own clients/resources around the batch
+  -> Task(agents, input, segments, verifier): creates Episode and UUID immediately
+  -> Runner(tasks, output_dir, client, environment=domain_instance): opens that Episode
+     -> begin recording; apply Task deadline
+     -> Environment.run(task, client): domain work; default UserSimEnv schedules segments
+        -> Agent.generate / supplied Generator -> Evaluator review/revision
+        -> durable acceptance -> approved Agent Tools
+     -> record outcome; seal generation once; optional final Evaluator
   -> collect Task.episode; inspect/export or append independent verification
 ```
 
-Task, Agent and Judge construction validates locally and acquires no resources.
-The application initializes and closes SDK clients; execution borrows them without
-premature closure. Agent/Task inputs are stable. Episode and invocation locals
-isolate accepted history, private Tool exchanges, drafts and revision counters.
-Each new sample constructs a fresh Task while reusing configured Agents/Judges.
+[ADR-0026](../docs/adr/0026-use-domain-protocols-and-runner-owned-task-lifecycle.md)
+amends constructor-bound Environment and thin Runner ownership. Environment,
+Generator and Evaluator each have one structural operation. Task/Episode remain
+concrete data owners; approval/effects remain in Agent. No generic resource manager,
+registry or alternate runtime owner is introduced. Application contexts own external
+resources; SDK clients remain borrowed. [Migration guidance](../docs/migration-seven-modules.md)
+describes the deliberate Python API changes; historical JSON remains readable.
 
-[ADR-0025](../docs/adr/0025-implement-constructor-bound-environments-and-borrowed-sdk-clients.md)
-implements the constructor/run boundary, one-Task-per-execution policy and pinned
-SDK after parity. This replaces earlier public setup/context ownership and
-Provider/Run-store APIs. There are seven primary root imports and no obsolete
-Python aliases. Task requires assistant and optionally user; Tools/reviewers are
-Agent-local, and the final verifier is Task-local.
+Environment shrank from 196 to 45 lines. Environment + Runner + Task shrank from
+334 to 257 lines. Total source is 4,271 lines (22 fewer than the checkpoint) across
+17 files, with seven root exports, three protocols and nine fewer private definitions.
+Every shipped function remains below 20 physical lines, including signatures/blanks
+and excluding decorators. Exact per-file/owner counts are in the report.
 
-## Completed work
+All 222 offline tests, Ruff, strict mypy, function bounds, locked dependency checks,
+wheel/sdist/package verification, seven examples and the mixed accepted/failed
+CLI/export/reverification/TUI workflow pass. No live inference was required.
 
-1. Task, Environment and Runner: stable construction-to-output identity, structural
-   custom Environments, ordered segments, private history and explicit client/resource ownership.
-2. Judge and Tool: reusable callable/model evaluation, exact weighted verdicts,
-   per-Agent assignments and strict input/result/error contracts.
-3. Agent and SDK: private actionable revision feedback, independent message budgets,
-   concurrent reuse, both HTTP APIs, stateless requests and strict local wire/schema checks.
-4. Episode: one representation, durable intent/results, output confinement,
-   immutable generation, append-only verification and historical records.
-5. Optional interfaces: inert source compilation, one Task across phases, CLI/TUI/
-   inspection/vLLM migration, deletion, documentation and the offline release gate.
-
-The [slice tickets](../.scratch/library-design-audit/map.md) and rebased lean-core
-08–10 are resolved. Historical instructions naming deleted modules are superseded.
-
-The subsequent [correctness review](../.scratch/library-design-audit/issues/06-final-review-invariants.md#answer)
-rejects nonfinite JSON at Task construction and preserves custom Judgment evidence
-through review/final recording. It adds eight regression cases and no owners/helpers.
-
-## Final verification
-
-204 deterministic tests pass with live network blocked. Ruff lint/format and
-strict mypy pass. Locked offline sync/check and wheel/sdist builds pass. The wheel
-contains the current source bytes, imports without eagerly loading the SDK and
-executes an offline Task independently of the checkout. Historical fixture bytes
-are unchanged. Direct examples, the mixed accepted/failed CLI release workflow,
-accepted-only exports, immutable reverification and read-only TUI navigation pass.
-The existing 23 vLLM startup tests retain process/readiness/signal behavior.
-No live inference or paid domain run was required.
-
-Every shipped function/method is fewer than 20 inclusive physical lines, including
-signatures and blanks, excluding decorators. Final source is 4,293 lines across
-17 files, 26 classes and seven root exports. Core: eight files / 2,367 lines;
-optional: nine files / 1,926 lines. Net deletion from the captured working-tree
-baseline is 3,108 lines (42.0%). Function definitions rose from 287 to 295 and
-private non-dunder definitions from 109 to 214; the report makes that extraction
-cost and external SDK dependency explicit. No commit or publication was requested.
+The [original implementation report](../.scratch/library-design-audit/implementation.md)
+and [earlier work index](../.scratch/lean-core-refactor/map.md) retain their historical
+checkpoint measurements; the current report supersedes their execution API guidance.

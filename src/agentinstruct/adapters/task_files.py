@@ -474,7 +474,7 @@ def _client(
 
 
 @dataclass(frozen=True)
-class _Scripted(Agent):
+class _Scripted:
     responses: Sequence[Any] = ()
 
     async def generate(
@@ -525,7 +525,7 @@ def _agent(
     options["client"] = _client(settings["model"], config, client, clients)
     kind = settings.get("type", "model")
     if kind == "scripted":
-        options["responses"] = tuple(settings.get("responses", ()))
+        options["generator"] = _Scripted(tuple(settings.get("responses", ())))
     return _agent_class(kind)(**options)
 
 
@@ -858,7 +858,7 @@ def _judge_model(
 
 
 def _agent_class(kind: str) -> type[Agent]:
-    cls = {"model": Agent, "scripted": _Scripted}.get(kind) or _reference(kind)
+    cls = {"model": Agent, "scripted": Agent}.get(kind) or _reference(kind)
     if not isinstance(cls, type) or not issubclass(cls, Agent):
         raise TaskValidationError(
             "Custom generation must subclass Agent and use its constructor"

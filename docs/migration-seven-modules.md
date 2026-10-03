@@ -5,10 +5,10 @@ Historical saved Trace JSON remains readable through Episode.load and Inspector.
 
 | Former API or ownership | Replacement |
 | --- | --- |
-| Runner(environment, task dictionaries) | Runner(list[Task], output_dir=..., client=..., environment=Environment) |
-| Environment.setup(task), run(task), conversation(episode), async context ownership | Environment(task, client=...).run(); custom structural classes implement that constructor and run |
-| Environment allocates/returns Episode; environment.output_dir | Task creates episode immediately; Runner opens output_dir / episode.id; run returns None |
-| Separate Agent definition/runtime or AgentObservation | Construct Agent directly; override generate(history, *, client=None, role="assistant", instruction=None) |
+| Runner(environment, task dictionaries) | Runner(list[Task], output_dir=..., client=..., environment=domain_instance) |
+| Environment.setup(task), run(task), conversation(episode), async context ownership | Environment is a protocol: async run(task, *, client=None); Runner wraps an implementation instance with recording/deadline/finalization |
+| Environment allocates/returns Episode; environment.output_dir | Task creates episode immediately; Runner opens output_dir / episode.id; domain run returns None; Runner seals and verifies afterward |
+| Separate Agent definition/runtime or AgentObservation | Construct Agent directly; supply generator=domain_object or override generate(history, *, client=None, role="assistant", instruction=None) |
 | Arbitrary participant names, Agent.id/target, separate assistant/user fields | Task.agents with required assistant and optional user; role is invocation-local |
 | Task-level tools or global Tool lookup | Agent.tools: explicit sequence of Tool objects, default empty |
 | FunctionTool and Tool subclasses with contexts | Tool(async_function, id=..., input_schema=..., output_schema=...); custom factories return Tool |
@@ -60,3 +60,24 @@ The optional CLI manifest indexes Episode directories directly under its output
 root. Historical manifests/indexes remain readable. CLI reverification requires an
 explicit task package policy; direct callers can provide a constructed Judge.
 The TUI and vLLM launcher remain in their optional namespaces.
+
+## Domain protocol refinement (ADR-0026)
+
+Environment is now a structural protocol, with a stateless UserSimEnv implementation
+in agentinstruct.environment. Pass an implementation instance to Runner; it must
+implement async run(task, *, client=None) and perform domain work into the supplied
+Episode. Runner begins recording, applies deadlines, seals and verifies. Replace
+Environment(task).run() with Runner([task], ...).run() for complete execution.
+Custom Environments no longer take a Task in their constructor or seal/verify it.
+
+The speculative resources= API and runtime verifier-dictionary assembly are
+removed. Applications own async contexts around their batch. Task.verifier takes
+a constructed Judge or an Evaluator implementing evaluate(messages) -> Judgment.
+Agent.reviewer accepts the same protocol. Domain evaluators need no client/model
+attributes; supply validated Judgment values. Built-in SDK clients remain borrowed.
+
+Agent(generator=...) accepts a plain Generator implementing generate(history,
+*, client, role, instruction). Approval, revisions, strict results and effects remain
+inside Agent. Existing Agent.generate overrides continue to work. Task-file custom
+references keep their existing documented authoring contract; scripted records now
+use a plain generator internally. Task/Episode remain concrete data owners.

@@ -9,7 +9,7 @@ from jsonschema.protocols import Validator
 from jsonschema.validators import validator_for
 from referencing import Registry
 
-from agentinstruct.episode import canonical_json, freeze, json_data
+from agentinstruct.episode import freeze, json_data
 
 
 class ToolError(RuntimeError):
@@ -60,7 +60,6 @@ class Tool:
         try:
             if not isinstance(arguments, Mapping):
                 raise ValueError("Tool arguments must be an object")
-            canonical_json(arguments)
             schema_validator(self.input_schema).validate(json_data(arguments))
         except Exception as exc:
             raise ToolError("arguments") from exc
@@ -78,7 +77,6 @@ class Tool:
     def validate_result(self, value: Any) -> Any:
         try:
             data = json_data(value)
-            canonical_json(data)
             if self.output_schema is not None:
                 schema_validator(self.output_schema).validate(data)
             return data

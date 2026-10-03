@@ -10,14 +10,12 @@ specifies revision from reviewer guidance;
 uses Agent directly and removes the separate definition/runtime representation.
 [ADR-0024](docs/adr/0024-use-required-assistant-and-optional-user-task-roles.md)
 keeps Task.agents with a required assistant target and optional user Agent.
-The seven-module implementation is complete. [ADR-0025](docs/adr/0025-implement-constructor-bound-environments-and-borrowed-sdk-clients.md)
-resolves constructor-bound Environment(task).run(), one Task per execution,
-and adoption of the pinned SDK with application-owned clients.
+The current implementation follows [ADR-0026](docs/adr/0026-use-domain-protocols-and-runner-owned-task-lifecycle.md): structural domain interfaces, Runner-owned Task lifecycle, and application-owned resources. [ADR-0025](docs/adr/0025-implement-constructor-bound-environments-and-borrowed-sdk-clients.md) retains the SDK and one-Task-per-execution decisions; its constructor/resource design is superseded.
 
 ## Generation
 
 **Task**:
-An inert execution definition containing public input, configured Agent instances (each with its own Tools and optional reviewer), ordered segments, an optional verifier and execution limits. Task.agents holds the definitions directly: assistant is required and always the target; user is optional and may be omitted. Those are the only permitted keys, and declared values must be Agent instances. There are no separate Task.assistant/Task.user fields or configurable target flag. Task has no tools field or shared Tool pool. Construction automatically creates its own empty Episode with a unique ID; task.episode and task.episode.id are immediately available. The first execution uses that same Episode/ID, shared across all segments. Episode is not a required configuration argument. Construction performs no file writes, model/Tool calls or live resource acquisition. Task has no separate message_judge or episode_judge field. Applications prepare Tasks; Environment validates and uses their Agents, declared Tools/reviewers and optional verifier. Only public input and active instructions are available to Agents; grading-only data and future segment instructions remain private.
+An inert execution definition containing public input, configured Agent instances (each with its own Tools and optional reviewer), ordered segments, an optional verifier and execution limits. Task.agents holds the definitions directly: assistant is required and always the target; user is optional and may be omitted. Those are the only permitted keys, and declared values must be Agent instances. There are no separate Task.assistant/Task.user fields or configurable target flag. Task has no tools field or shared Tool pool. Construction automatically creates its own empty Episode with a unique ID; task.episode and task.episode.id are immediately available. The first execution uses that same Episode/ID, shared across all segments. Episode is not a required configuration argument. Construction performs no file writes, model/Tool calls or live resource acquisition. Task has no separate message_judge or episode_judge field. Applications prepare Tasks; Task validates its declarations locally; UserSimEnv uses its Agents, and Runner invokes its final verifier. Only public input and active instructions are available to Agents; grading-only data and future segment instructions remain private.
 _Avoid_: Benchmark, evaluation
 
 **Taskset**:
@@ -51,19 +49,27 @@ _Avoid_: Run collection
 ## Participants and execution
 
 **Runner**:
-Owns output_dir and uses output_dir / task.episode.id to open recording for the Episode already created with Task. It does not replace that Episode or its ID before execution. It accepts Tasks, an injected client and an optional Environment class, constructs Environment(task) once per Task and collects Task.episode after run. Applications or the optional authoring adapter prepare Tasks; participant assembly, segment/conversation execution and invocation of Task.verifier belong to Environment; recording at the selected path belongs to Episode.
+Owns output_dir and opens the Episode already created with Task at output_dir / episode.id. It begins recording, applies the Task deadline, invokes Environment.run(task, client=...), seals generation and performs optional final verification. It accepts a structural Environment instance; the default is a stateless UserSimEnv. Applications and the optional loader prepare Tasks/evaluators and own clients/resources. Runner retains the existing Episode/ID and returns collected Episodes.
 _Avoid_: Workflow engine, orchestrator
 
 **Model Client**:
-The application-owned asynchronous client for an inference endpoint, holding network/credential settings. The application initializes it in its async entry point and closes it after the intended batch. Runner.client passes this same borrowed dependency through Environment to Agents and Judges translated from ordinary settings. Explicit Judge instances retain their declared client. Each call supplies its model and messages; client sharing does not share Conversation or verdict state. Callable-only generation/evaluation can use client=None; model-backed evaluation needs an explicit client. Different endpoints require explicit separate clients. Runtime owners do not close a borrowed client between Tasks. OpenAI SDK 2.30.0 is pinned after offline Agent/Judge parity; Runner.client is implemented.
+The application-owned asynchronous client for an inference endpoint, holding network/credential settings. The application initializes it in its async entry point and closes it after the intended batch. Runner.client passes this same borrowed dependency through Environment to Agents. The optional loader constructs model-backed Judges with explicit borrowed clients before execution. Explicit Judge instances retain their declared client. Each call supplies its model and messages; client sharing does not share Conversation or verdict state. Callable-only generation/evaluation can use client=None; model-backed evaluation needs an explicit client. Different endpoints require explicit separate clients. Runtime owners do not close a borrowed client between Tasks. OpenAI SDK 2.30.0 is pinned after offline Agent/Judge parity; Runner.client is implemented.
 _Avoid_: Client manager, model instance, Episode
 
 **Agent**:
-A directly constructed participant: Agent(model, instruction, tools=(), reviewer=None), with revision settings such as max_revisions=1. Task.agents holds these objects and Environment uses them directly. Only that Agent's declared Tools are advertised or callable; shared capability references must be explicitly declared on each Agent. turn(episode) calls generate(history), applies its reviewer/revision policy, records accepted output and executes approved private Tools. For revision, generate receives temporary private history containing the rejected draft and reviewer guidance, and Agent authors a replacement for another review. generate is the customization seam; it does not authorize effects or accept output. Agent keeps stable settings; Episode owns accepted/private history and continuation state, while drafts/feedback/counters stay local to each turn. The same built-in Agent can serve separate Episodes concurrently without state leakage. Environment passes client, participant identity and active instructions per invocation rather than rebinding Agent. Custom Agents obey the same state rule or callers provide separate instances for mutable dependencies. Construction is inert and snapshots Tool collections.
+A directly constructed participant: Agent(model, instruction, tools=(), reviewer=None), with revision settings such as max_revisions=1. Task.agents holds these objects and Environment uses them directly. Only that Agent's declared Tools are advertised or callable; shared capability references must be explicitly declared on each Agent. turn(episode) obtains proposals through generate(history), using an injected Generator when supplied. It applies its reviewer/revision policy, records accepted output and executes approved private Tools. For revision, generate receives temporary private history containing the rejected draft and reviewer guidance, and Agent authors a replacement for another review. generate is the customization seam; it does not authorize effects or accept output. Agent keeps stable settings; Episode owns accepted/private history and continuation state, while drafts/feedback/counters stay local to each turn. The same built-in Agent can serve separate Episodes concurrently without state leakage. UserSimEnv passes client, participant identity and active instructions per invocation rather than rebinding Agent. Custom Agents obey the same state rule or callers provide separate instances for mutable dependencies. Construction is inert and snapshots Tool collections.
 _Avoid_: Role, policy
 
+**Generator**:
+A structural protocol supplying async generate(history, *, client, role, instruction). Agent accepts a Generator object and retains ownership of proposal validation, review, acceptance and effects. The generator returns Message values without committing or executing Agent Tools; custom invocation state stays local.
+_Avoid_: Agent runtime, Provider hierarchy
+
+**Evaluator**:
+A structural protocol supplying async evaluate(messages) -> Judgment. Domain implementations need no SDK attributes, Judge inheritance or resource fields. Reviewers and verifiers share this interface, while their invoking owners choose the messages and timing. Results obey Judgment's local Boolean/score/JSON contracts.
+_Avoid_: Evaluation factory, lifecycle owner
+
 **Provider**:
-The model-client dependency used for inference through its selected Responses or Chat Completions API. The core has no public Provider request/response hierarchy. Agent uses an injected client or a custom generate override; Judge uses an injected client or a callable check. SDK/transport types stay implementation details.
+The model-client dependency used for inference through its selected Responses or Chat Completions API. The core has no public Provider request/response hierarchy. Agent uses an injected client, Generator or custom generate override; Judge uses an injected client or a callable check. SDK/transport types stay implementation details.
 _Avoid_: Agent, model, runtime
 
 **Provider API Surface**:
@@ -99,8 +105,12 @@ The historical task-file term for a segment. The optional adapter keeps authored
 _Avoid_: Turn, environment step
 
 **Environment**:
-A usable implementation taking Task and injected execution dependencies. The implemented interface is Environment(task, client=...) plus async run() -> None, replacing the earlier public setup call. Its constructor performs local validation/participant assembly; any async preparation belongs inside run's cleanup scope. run executes all segments into the Task's existing Episode, seals task-wide generation once and supplies accepted history to the verifier. It does not allocate or return an Episode. Environment has no output_dir constructor argument and releases execution resources on success, failure or cancellation. Shared infrastructure can be injected; participant definitions and verifier settings come from Task. Concurrent executions use separate Task and Environment instances. There are no reset or step methods.
+A structural protocol with one method: async run(task, *, client=None) -> None. An implementation supplies domain execution into the Task's opened Episode; Runner begins recording, applies the deadline, seals generation and verifies afterward. The default UserSimEnv activates ordered segments and schedules assistant/user Agents. It owns no clients or generic resources. Custom implementations need no framework inheritance, factories, setup, reset or step methods; invocation state stays local and cancellation is cooperative.
 _Avoid_: Runtime, sandbox, orchestrator
+
+**UserSimEnv**:
+The stateless default Environment implementation. It activates ordered segments and schedules the configured assistant/user Agents through Agent.turn. Runner owns recording, deadlines, outcomes and final verification around this execution. It keeps no Task binding or external resource lifetime.
+_Avoid_: Lifecycle manager, simulator Agent
 
 **Runtime**:
 The place where framework code, agents, and tools execute; local execution is the only v1 runtime.
@@ -111,7 +121,7 @@ The model-visible OpenAI-style message history projected for one agent, includin
 _Avoid_: Context, state
 
 **Action**:
-One OpenAI-style message or ordered list of messages proposed by an agent during its interaction turn.
+One OpenAI-style message or nonempty ordered sequence of messages proposed by an agent during its interaction turn.
 _Avoid_: Turn, response
 
 **Episode**:
@@ -137,11 +147,11 @@ _Avoid_: Environment action
 ## Quality
 
 **Judge**:
-The directly usable evaluator with one constructor for both message review and final Episode evaluation. Model evaluation uses client/model/prompt and an optional Rubric; callable evaluation uses check and an optional Rubric. Agent.reviewer and Task.verifier accept the same Judge class, and an instance can serve both roles when its criteria fit. evaluate(messages) returns a validated judgment with verdict/criteria and text feedback. Message review receives the invoking Agent's accepted visible context plus its unaccepted proposal; final verification receives sealed accepted Episode history. Judge keeps no mutable conversation, Episode binding, revision counters or accumulated verdicts. Per-call state is local; Agent owns revisions/acceptance, and Episode records invocation evidence/results. Borrowed clients remain application-owned. Ordinary authored settings translate into this same class without role subclasses or binding wrappers.
+The directly usable evaluator with one constructor for both message review and final Episode evaluation. Its model evaluation uses client/model/prompt and an optional Rubric; callable evaluation uses check and an optional Rubric. Agent.reviewer and Task.verifier accept any Evaluator implementing evaluate(messages) -> Judgment; Judge is the built-in callable/model implementation. An instance can serve both roles when its criteria fit. evaluate(messages) returns a validated judgment with verdict/criteria and text feedback. Message review receives the invoking Agent's accepted visible context plus its unaccepted proposal; final verification receives sealed accepted Episode history. Judge keeps no mutable conversation, Episode binding, revision counters or accumulated verdicts. Per-call state is local; Agent owns revisions/acceptance, and Episode records invocation evidence/results. Borrowed clients remain application-owned. Ordinary authored settings translate into this same class without role subclasses or binding wrappers.
 _Avoid_: Quality-call layer, judge factory
 
 **Reviewer**:
-The optional Judge supplied as reviewer on an Agent definition. It evaluates that Agent's proposals, including Tool calls, before acceptance/effects. A rejection provides actionable guidance or suggested edits; Agent uses the review and rejected draft to generate a replacement and reviews it again before acceptance. Reviewer does not rewrite accepted output. Different Agents can use different Judge configurations or None; appropriately configured instances can be shared without revision-state leakage. Revision limits belong to Agent. Drafts/review guidance remain private Events, excluded from peer history/default export. Reviewer is an invocation role of Judge, without a task-wide message_judge or separate required module/constructor.
+The optional Evaluator supplied as reviewer on an Agent definition. It evaluates that Agent's proposals, including Tool calls, before acceptance/effects. A rejection provides actionable guidance or suggested edits; Agent uses the review and rejected draft to generate a replacement and reviews it again before acceptance. Reviewer does not rewrite accepted output. Different Agents can use different Judge configurations or None; appropriately configured instances can be shared without revision-state leakage. Revision limits belong to Agent. Drafts/review guidance remain private Events, excluded from peer history/default export. Reviewer is an invocation role of an Evaluator, without a task-wide message_judge or separate required module/constructor.
 _Avoid_: Final verification
 
 **Rubric**:
@@ -149,7 +159,7 @@ The named weighted Boolean criteria and threshold configured with an Agent's Rev
 _Avoid_: Reward, score
 
 **Verifier**:
-The optional Judge supplied as verifier on Task, specifying final judgment of its Episode's sealed accepted history across all executed segments. Environment invokes it once after task-wide generation ends, before run returns. Rejected drafts are excluded. It uses the same constructor/evaluate interface as a Reviewer, with separate invocation timing and results; reverification appends decisions without changing generation. It replaces the proposed episode_judge name.
+The optional Evaluator supplied as verifier on Task, specifying final judgment of its Episode's sealed accepted history across all executed segments. Runner invokes it once after task-wide generation seals, before run returns. Rejected drafts are excluded. It uses the same constructor/evaluate interface as a Reviewer, with separate invocation timing and results; reverification appends decisions without changing generation. It replaces the proposed episode_judge name.
 _Avoid_: Message approval
 
 **Criterion**:
@@ -157,3 +167,5 @@ A uniquely identified Boolean quality condition with a weight used to derive a n
 _Avoid_: Metric, reward
 
 Ownership and API retirement: [ADR-0011](docs/adr/0011-remove-plans-and-use-ordinary-task-records.md), [ADR-0012](docs/adr/0012-keep-runner-as-an-environment-task-loop.md), and the implemented [ADR-0014](docs/adr/0014-use-task-lists-and-task-owned-run-settings.md)/[ADR-0015](docs/adr/0015-separate-environment-setup-and-run.md)/[ADR-0016](docs/adr/0016-build-seven-directly-usable-generation-modules.md)/[ADR-0017](docs/adr/0017-use-agent-reviewers-task-verifiers-and-independent-episodes.md)/[ADR-0018](docs/adr/0018-runner-owns-the-output-directory.md)/[ADR-0019](docs/adr/0019-task-owned-episodes-span-segments.md)/[ADR-0020](docs/adr/0020-create-an-identified-episode-with-each-task.md)/[ADR-0021](docs/adr/0021-declare-tools-on-each-agent.md)/[ADR-0022](docs/adr/0022-construct-agent-definitions-and-revise-from-review.md)/[ADR-0023](docs/adr/0023-use-agent-directly-and-keep-execution-state-local.md)/[ADR-0024](docs/adr/0024-use-required-assistant-and-optional-user-task-roles.md). ADR-0013's active Taskset design is superseded. Saved run_plan fields are ordinary historical JSON metadata, not runtime Plans.
+
+Current execution/protocol ownership is defined by [ADR-0026](docs/adr/0026-use-domain-protocols-and-runner-owned-task-lifecycle.md), which amends ADR-0012/0015/0016/0025. Runner now owns the common recorded Task lifecycle; Environment implementations provide domain execution.
