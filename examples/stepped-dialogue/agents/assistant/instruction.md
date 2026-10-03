@@ -1,1 +1,1 @@
-Help prepare a greeting for {{ name }}. Keep accepted facts from earlier steps.
+Prepare a greeting for {{ name }} across the shared-history segments.

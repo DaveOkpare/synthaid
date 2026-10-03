@@ -24,6 +24,8 @@ type = "local"
 type = "single"
 
 [tools.uppercase]
+type = "function"
+function = "function_tool_components:uppercase"
 description = "Return the supplied text in uppercase."
 
 [tools.uppercase.input_schema]
@@ -34,11 +36,12 @@ additionalProperties = false
 
 [tools.uppercase.output_schema]
 type = "object"
-properties = { text = { type = "string" }, actor = { type = "string" } }
-required = ["text", "actor"]
+properties = { text = { type = "string" } }
+required = ["text"]
 additionalProperties = false
 
 [agents.assistant]
+type = "function_tool_components:GreetingAgent"
 target = true
 tools = ["uppercase"]
 

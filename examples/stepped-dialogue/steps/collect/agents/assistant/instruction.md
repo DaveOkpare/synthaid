@@ -1,1 +1,1 @@
-Use lookup to collect the greeting for {{ name }}. Advance to conclude when ready.
+Use lookup to collect the greeting for {{ name }}, then reply.

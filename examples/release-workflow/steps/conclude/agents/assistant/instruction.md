@@ -1,1 +1,1 @@
-conclude for {{ name }}.
+conclude

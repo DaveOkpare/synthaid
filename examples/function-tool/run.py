@@ -1,56 +1,19 @@
-"""Run a reviewed local function Tool without a Provider or credentials."""
+"""Prepare ordinary Tasks with the optional file loader and run offline."""
 
 import argparse
 import asyncio
-import json
-from collections.abc import Mapping
 from pathlib import Path
 
-from agentinstruct import (
-    FunctionCall,
-    FunctionTool,
-    Message,
-    Observation,
-    Runner,
-    TaskPackage,
-    ToolCall,
-    ToolContext,
-)
-from agentinstruct.plans import FrozenJsonValue, JsonValue
-
-
-class GreetingAgent:
-    async def generate(self, observation: Observation) -> Message:
-        if not observation.messages:
-            return Message(
-                "assistant",
-                "Capitalize the greeting.",
-                tool_calls=(
-                    ToolCall(
-                        "greeting-1",
-                        FunctionCall(
-                            "uppercase", {"text": observation.instruction.strip()}
-                        ),
-                    ),
-                ),
-            )
-        result = json.loads(observation.messages[-1].content)
-        return Message("assistant", str(result["text"]))
-
-
-async def uppercase(
-    args: Mapping[str, FrozenJsonValue], context: ToolContext
-) -> JsonValue:
-    return {"text": str(args["text"]).upper(), "actor": context.actor_id}
+from agentinstruct import Runner
+from agentinstruct.adapters.task_files import load_tasks
 
 
 async def main(output: Path) -> None:
-    result = await Runner(
-        output_dir=output,
-        agent_factory=lambda _: GreetingAgent(),
-        tool_factory=lambda plan: FunctionTool(plan, uppercase),
-    ).run(TaskPackage.load(Path(__file__).parent))
-    print(json.dumps(result.to_dict(), indent=2))
+    tasks = load_tasks(Path(__file__).parent)
+    for episode in await Runner(tasks, output_dir=output).run():
+        print(episode.status, episode.path)
+        for message in episode.messages:
+            print(message.segment, message.actor_id, message.content)
 
 
 if __name__ == "__main__":

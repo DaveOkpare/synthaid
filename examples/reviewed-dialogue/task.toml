@@ -46,4 +46,4 @@ responses = [{ content = "Welcome, Ada.", control = "complete" }]
 type = "deterministic"
 
 [verifier.checks]
-completed = "generation_terminated"
+assistant_reply = "assistant_present"

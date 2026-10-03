@@ -1,37 +1,27 @@
-"""Run iterable Seeds offline: uv run python examples/seed-sources/run.py."""
+"""Prepare ordinary Tasks with the optional file loader and run offline."""
 
-import json
+import argparse
+import asyncio
 from pathlib import Path
 
-from agentinstruct import (
-    Message,
-    Observation,
-    Runner,
-    Seed,
-    SeedOrigin,
-    TaskPackage,
-    generate_sync,
-)
+from agentinstruct import Runner
+from agentinstruct.adapters.task_files import load_tasks
 
 
-class GreetingAgent:
-    async def generate(self, observation: Observation) -> Message:
-        return Message("assistant", observation.instruction)
+async def main(output: Path) -> None:
+    root = Path(__file__).parent
+    prepared = (
+        {"id": f"python-{i}", "name": name}
+        for i, name in enumerate(("Ada", "Grace"), 1)
+    )
+    tasks = [*load_tasks(root), *load_tasks(root, seeds=prepared)]
+    for episode in await Runner(tasks, output_dir=output).run():
+        print(episode.status, episode.path)
+        for message in episode.messages:
+            print(message.segment, message.actor_id, message.content)
 
 
 if __name__ == "__main__":
-    package = TaskPackage.load(Path(__file__).parent)
-    result = generate_sync(
-        package,
-        runner=Runner(agent_factory=lambda _: GreetingAgent()),
-        seeds=[
-            {"id": "python-a", "name": "Ada"},
-            Seed(
-                "logical-b",
-                {"id": "python-b", "name": "Lin"},
-                SeedOrigin("memory:curated-people", 2),
-                "",  # The compiler computes the canonical content digest.
-            ),
-        ],
-    )
-    print(json.dumps(result.to_dict(), indent=2))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, default=Path("runs"))
+    asyncio.run(main(parser.parse_args().output))

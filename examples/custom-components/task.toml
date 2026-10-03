@@ -1,6 +1,6 @@
 schema_version = "1"
 [task]
-id = "custom-round-table"
+id = "custom-dialogue"
 version = "1"
 [seed]
 path = "seed.json"
@@ -12,21 +12,19 @@ name = "unused"
 [runtime]
 type = "local"
 [environment]
-type = "round_table_components:RoundTable"
-[agents.first]
+type = "dialogue"
+[agents.user]
 type = "round_table_components:Participant"
 target = false
-[agents.second]
-type = "round_table_components:Participant"
-target = false
-[agents.target]
+[agents.assistant]
 type = "round_table_components:Participant"
 target = true
 tools = ["lookup"]
-[agents.target.reviewer]
-type = "round_table_components:Reviewer"
+[agents.assistant.reviewer]
+type = "round_table_components:review"
 [tools.lookup]
-type = "round_table_components:Lookup"
+type = "function"
+function = "round_table_components:lookup"
 description = "Return a safe label"
 [tools.lookup.input_schema]
 type = "object"
@@ -34,4 +32,4 @@ properties = {label = {type = "string"}}
 required = ["label"]
 additionalProperties = false
 [verifier]
-type = "round_table_components:Verifier"
+type = "round_table_components:verify"

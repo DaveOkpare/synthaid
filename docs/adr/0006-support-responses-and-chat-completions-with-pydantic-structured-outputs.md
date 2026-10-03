@@ -7,6 +7,8 @@ amends:
 
 # Support Responses and Chat Completions with Pydantic structured outputs
 
+> Amended by [ADR-0008](./0008-use-shared-http-transports-and-optional-vllm-startup.md): compatible endpoints use the shared HTTP transports; mandatory certification gates and conformance-only entry points are retired.
+
 ADR-0005 chose an OpenAI-shaped Provider protocol but made non-streaming Chat Completions the only V1 transport and deferred the Responses API. It also described structured output only as JSON Schema on the normalized request. That is too narrow for the built-in OpenAI Provider and unnecessarily awkward for a Python-first library.
 
 The OpenAI Responses API and Chat Completions API express related capabilities with different wire models. Chat Completions sends `messages` and places structured-output configuration in `response_format`; Responses sends `input` items and places it in `text.format`. Responses also returns an ordered output-item stream rather than a single choice Message. The framework must support both without allowing either vendor representation to become its domain model.

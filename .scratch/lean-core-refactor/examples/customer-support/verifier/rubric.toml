@@ -1,0 +1,13 @@
+threshold = 1.0
+
+[[criteria]]
+id = "policy_followed"
+description = "The support agent gives the eligibility decision required by the seeded fictional retailer policy."
+
+[[criteria]]
+id = "decision_explained"
+description = "The customer receives a clear policy explanation and, when eligible, instructions for requesting a return label."
+
+[[criteria]]
+id = "task_completed"
+description = "Generation terminates through legitimate task completion rather than a limit or failure."

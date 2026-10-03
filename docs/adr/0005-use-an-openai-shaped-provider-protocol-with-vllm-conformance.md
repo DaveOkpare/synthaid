@@ -8,6 +8,8 @@ amends:
 
 # Use an OpenAI-shaped Provider protocol with vLLM conformance
 
+> Amended by [ADR-0008](./0008-use-shared-http-transports-and-optional-vllm-startup.md): compatible endpoints use the shared HTTP transports; mandatory certification gates and conformance-only entry points are retired.
+
 > Amended by [ADR-0006](./0006-support-responses-and-chat-completions-with-pydantic-structured-outputs.md), which promotes the OpenAI Responses API to a supported Provider surface, makes it the default for the OpenAI adapter, and adds `Pydantic.BaseModel` structured-output schemas.
 
 The existing architecture assigns models and provider defaults in `task.toml`, but it does not define the boundary between an Agent and the service that performs inference. Allowing Agents to call a vendor SDK directly would couple observation construction, tool handling, review, tracing, and error behavior to that SDK. Treating every OpenAI-compatible endpoint as identical would also hide material differences in structured outputs, reasoning extraction, tool parsing, and server configuration.

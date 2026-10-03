@@ -6,6 +6,6 @@ description = "The Conversation contains an accepted reply."
 weight = 3.0
 
 [[criteria]]
-id = "completed"
-description = "Generation terminated normally."
+id = "assistant_reply"
+description = "The Conversation contains an accepted assistant reply."
 weight = 1.0

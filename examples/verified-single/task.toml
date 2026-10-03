@@ -35,4 +35,4 @@ timeout_seconds = 10.0
 
 [verifier.checks]
 has_reply = "nonempty_conversation"
-completed = "generation_terminated"
+assistant_reply = "assistant_present"

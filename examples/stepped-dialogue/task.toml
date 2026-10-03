@@ -26,9 +26,11 @@ type = "dialogue"
 max_rounds = 4
 
 [agents.user]
+type = "stepped_components:DemoAgent"
 target = false
 
 [agents.assistant]
+type = "stepped_components:DemoAgent"
 target = true
 tools = ["lookup"]
 
@@ -38,6 +40,8 @@ max_revisions = 0
 checks = { nonempty = "nonempty_content", collect_explanation = "nonempty_content", conclude_explanation = "nonempty_content" }
 
 [tools.lookup]
+type = "function"
+function = "stepped_components:lookup"
 description = "Return the Seed's greeting privately."
-input_schema = { type = "object", additionalProperties = false }
+input_schema = { type = "object", properties = { name = { type = "string" } }, required = ["name"], additionalProperties = false }
 output_schema = { type = "object", properties = { greeting = { type = "string" } }, required = ["greeting"], additionalProperties = false }

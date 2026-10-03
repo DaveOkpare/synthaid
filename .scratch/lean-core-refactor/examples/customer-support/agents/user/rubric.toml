@@ -1,0 +1,5 @@
+threshold = 1.0
+
+[[criteria]]
+id = "scenario_consistent"
+description = "The customer stays consistent with the seeded delivery/opened facts and does not invent transaction facts."

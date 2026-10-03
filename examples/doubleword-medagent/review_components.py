@@ -1,58 +1,31 @@
-"""Explicit scripted fault injection, distinct from the live model participants."""
+"""Stateless scripted negative controls for review and Tool effects."""
 
-import json
+from collections.abc import Sequence
+from typing import Any
 
-from agentinstruct import FunctionCall, Message, Observation, ToolCall
-from agentinstruct.plans import AgentPlan
-
-
-class ProbeAssistant:
-    """Reject a Tool proposal, then a reply, or deliberately exhaust revisions."""
-
-    def __init__(self, plan: AgentPlan) -> None:
-        self.exhaust = plan.base_instruction.strip() == "exhaust"
-        self.proposals = 0
-
-    async def generate(self, observation: Observation) -> Message:
-        self.proposals += 1
-        if self.exhaust or self.proposals == 1:
-            return Message(
-                "assistant",
-                "BLOCK_THIS_CALL",
-                tool_calls=(
-                    ToolCall(
-                        f"blocked-{self.proposals}", FunctionCall("read_scenario", {})
-                    ),
-                ),
-            )
-        if self.proposals == 2:
-            return Message(
-                "assistant",
-                tool_calls=(
-                    ToolCall("allowed-call", FunctionCall("read_scenario", {})),
-                ),
-            )
-        if self.proposals == 3:
-            return Message("assistant", "REJECT_THIS_REPLY")
-        # The saved Tool result must still be visible after the reply was rejected.
-        result = next(m for m in observation.messages if m.role == "tool")
-        return Message("assistant", "Accepted scenario: " + result.content)
+from agentinstruct import Agent
+from agentinstruct.episode import FunctionCall, Message, ToolCall
 
 
-class ProbeUser:
-    def __init__(self, plan: AgentPlan) -> None:
-        pass
-
-    async def generate(self, observation: Observation) -> Message:
+class ProbeAssistant(Agent):
+    async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
+        feedback = history[-1].content.startswith("Private review feedback:")
+        if any(message.role == "tool" for message in history):
+            return Message("assistant", "Accepted scenario", control="complete")
+        blocked = self.instruction.strip() == "exhaust" or not feedback
         return Message(
             "assistant",
-            json.dumps(
-                {
-                    "seen": [m.content for m in observation.messages],
-                    "private_tools_visible": any(
-                        m.role == "tool" or m.tool_calls for m in observation.messages
-                    ),
-                    "review_feedback": observation.review_feedback,
-                }
+            "BLOCK_THIS_CALL" if blocked else "",
+            tool_calls=(
+                ToolCall(
+                    "blocked" if blocked else "allowed", FunctionCall("read_scenario")
+                ),
             ),
         )
+
+
+class ProbeUser(Agent):
+    async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
+        if any(message.role == "tool" or message.tool_calls for message in history):
+            raise ValueError("Private Tools reached peer")
+        return Message("user", "Please summarize the supplied scenario")

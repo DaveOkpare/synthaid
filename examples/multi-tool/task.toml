@@ -24,7 +24,9 @@ type = "local"
 type = "single"
 
 [tools.summarize]
-description = "Ask an isolated subordinate Agent to summarize a label."
+type = "function"
+function = "multi_tool_components:summarize"
+description = "Summarize a label in uppercase."
 execution_errors = "result"
 
 [tools.summarize.input_schema]
@@ -40,6 +42,7 @@ required = ["summary"]
 additionalProperties = false
 
 [agents.assistant]
+type = "multi_tool_components:LabelAgent"
 target = true
 tools = ["summarize"]
 

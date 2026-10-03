@@ -1,0 +1,9 @@
+threshold = 1.0
+
+[[criteria]]
+id = "follows_policy"
+description = "The proposed reply follows the seeded return policy, or a completion proposal follows an adequately explained policy decision."
+
+[[criteria]]
+id = "no_invented_actions"
+description = "The proposal does not invent a refund, return label, exception, or an action already performed."

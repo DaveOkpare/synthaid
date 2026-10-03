@@ -1,1 +1,1 @@
-collect for {{ name }}.
+collect

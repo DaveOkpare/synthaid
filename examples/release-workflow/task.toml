@@ -28,18 +28,19 @@ type = "release_components:Participant"
 target = true
 tools = ["lookup"]
 [agents.user.reviewer]
-type = "release_components:Reviewer"
+type = "release_components:review"
 max_revisions = 1
 [agents.assistant.reviewer]
-type = "release_components:Reviewer"
+type = "release_components:review"
 max_revisions = 1
 [tools.lookup]
-type = "release_components:Lookup"
+type = "function"
+function = "release_components:lookup"
 description = "Return a reviewed label and this Trace's invocation count."
 [tools.lookup.input_schema]
 type = "object"
-properties = { label = { type = "string" } }
-required = ["label"]
+properties = { label = { type = "string" }, seed = { type = "string" } }
+required = ["label", "seed"]
 additionalProperties = false
 [tools.lookup.output_schema]
 type = "object"
@@ -47,4 +48,4 @@ properties = { label = { type = "string" }, invocation = { const = 1 }, seed = {
 required = ["label", "invocation", "seed"]
 additionalProperties = false
 [verifier]
-type = "release_components:Verifier"
+type = "release_components:verify"

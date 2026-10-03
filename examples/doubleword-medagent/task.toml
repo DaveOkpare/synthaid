@@ -31,7 +31,7 @@ reasoning = { effort = "none" }
 type = "local"
 
 [environment]
-type = "smoke_components:SmokeDialogue"
+type = "dialogue"
 max_rounds = 2
 timeout_seconds = 120.0
 
@@ -43,8 +43,7 @@ target = true
 tools = ["read_scenario"]
 
 [tools.read_scenario]
-type = "function"
-function = "smoke_components:read_scenario"
+type = "smoke_components:read_scenario"
 description = "Read the non-personal synthetic scenario brief for this test. Read once before answering the first user question."
 input_schema = { type = "object", properties = {}, additionalProperties = false }
 output_schema = { type = "object", properties = { topic = { type = "string" }, discussion_type = { type = "string" }, language = { type = "string" } }, required = ["topic", "discussion_type", "language"], additionalProperties = false }
