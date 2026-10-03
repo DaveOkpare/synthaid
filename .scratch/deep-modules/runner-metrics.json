@@ -1,0 +1,416 @@
+{
+  "date": "2026-10-03",
+  "baseline_commit": "5367d23",
+  "method": "All shipped src/agentinstruct/**/*.py. Physical lines include blanks. AST includes nested definitions. Function bounds include signature and body, excluding decorators. Private means leading underscore except dunder; helper identities are qualified by containing class/function.",
+  "before": [
+    {
+      "file": "__init__.py",
+      "lines": 11,
+      "classes": 0,
+      "functions": 0,
+      "private": 0,
+      "at_least20": 0,
+      "longest": 0
+    },
+    {
+      "file": "adapters/__init__.py",
+      "lines": 1,
+      "classes": 0,
+      "functions": 0,
+      "private": 0,
+      "at_least20": 0,
+      "longest": 0
+    },
+    {
+      "file": "adapters/task_files.py",
+      "lines": 929,
+      "classes": 4,
+      "functions": 65,
+      "private": 59,
+      "at_least20": 0,
+      "longest": 19
+    },
+    {
+      "file": "agent.py",
+      "lines": 983,
+      "classes": 4,
+      "functions": 60,
+      "private": 54,
+      "at_least20": 0,
+      "longest": 19
+    },
+    {
+      "file": "cli.py",
+      "lines": 385,
+      "classes": 0,
+      "functions": 26,
+      "private": 24,
+      "at_least20": 0,
+      "longest": 19
+    },
+    {
+      "file": "environment.py",
+      "lines": 45,
+      "classes": 3,
+      "functions": 3,
+      "private": 1,
+      "at_least20": 0,
+      "longest": 18
+    },
+    {
+      "file": "episode.py",
+      "lines": 753,
+      "classes": 5,
+      "functions": 58,
+      "private": 20,
+      "at_least20": 0,
+      "longest": 19
+    },
+    {
+      "file": "inspection.py",
+      "lines": 287,
+      "classes": 1,
+      "functions": 19,
+      "private": 14,
+      "at_least20": 0,
+      "longest": 17
+    },
+    {
+      "file": "integrations/__init__.py",
+      "lines": 1,
+      "classes": 0,
+      "functions": 0,
+      "private": 0,
+      "at_least20": 0,
+      "longest": 0
+    },
+    {
+      "file": "integrations/vllm/__init__.py",
+      "lines": 1,
+      "classes": 0,
+      "functions": 0,
+      "private": 0,
+      "at_least20": 0,
+      "longest": 0
+    },
+    {
+      "file": "integrations/vllm/serve.py",
+      "lines": 199,
+      "classes": 1,
+      "functions": 15,
+      "private": 12,
+      "at_least20": 0,
+      "longest": 18
+    },
+    {
+      "file": "judge.py",
+      "lines": 248,
+      "classes": 6,
+      "functions": 17,
+      "private": 8,
+      "at_least20": 0,
+      "longest": 19
+    },
+    {
+      "file": "runner.py",
+      "lines": 104,
+      "classes": 1,
+      "functions": 7,
+      "private": 5,
+      "at_least20": 0,
+      "longest": 15
+    },
+    {
+      "file": "task.py",
+      "lines": 108,
+      "classes": 1,
+      "functions": 6,
+      "private": 3,
+      "at_least20": 0,
+      "longest": 17
+    },
+    {
+      "file": "tools.py",
+      "lines": 93,
+      "classes": 2,
+      "functions": 7,
+      "private": 0,
+      "at_least20": 0,
+      "longest": 18
+    },
+    {
+      "file": "ui/__init__.py",
+      "lines": 1,
+      "classes": 0,
+      "functions": 0,
+      "private": 0,
+      "at_least20": 0,
+      "longest": 0
+    },
+    {
+      "file": "ui/terminal.py",
+      "lines": 122,
+      "classes": 1,
+      "functions": 9,
+      "private": 5,
+      "at_least20": 0,
+      "longest": 19
+    }
+  ],
+  "after": [
+    {
+      "file": "__init__.py",
+      "lines": 11,
+      "classes": 0,
+      "functions": 0,
+      "private": 0,
+      "at_least20": 0,
+      "longest": 0
+    },
+    {
+      "file": "adapters/__init__.py",
+      "lines": 1,
+      "classes": 0,
+      "functions": 0,
+      "private": 0,
+      "at_least20": 0,
+      "longest": 0
+    },
+    {
+      "file": "adapters/task_files.py",
+      "lines": 929,
+      "classes": 4,
+      "functions": 65,
+      "private": 59,
+      "at_least20": 0,
+      "longest": 19
+    },
+    {
+      "file": "agent.py",
+      "lines": 983,
+      "classes": 4,
+      "functions": 60,
+      "private": 54,
+      "at_least20": 0,
+      "longest": 19
+    },
+    {
+      "file": "cli.py",
+      "lines": 385,
+      "classes": 0,
+      "functions": 26,
+      "private": 24,
+      "at_least20": 0,
+      "longest": 19
+    },
+    {
+      "file": "environment.py",
+      "lines": 116,
+      "classes": 3,
+      "functions": 8,
+      "private": 6,
+      "at_least20": 0,
+      "longest": 18
+    },
+    {
+      "file": "episode.py",
+      "lines": 753,
+      "classes": 5,
+      "functions": 58,
+      "private": 20,
+      "at_least20": 0,
+      "longest": 19
+    },
+    {
+      "file": "inspection.py",
+      "lines": 287,
+      "classes": 1,
+      "functions": 19,
+      "private": 14,
+      "at_least20": 0,
+      "longest": 17
+    },
+    {
+      "file": "integrations/__init__.py",
+      "lines": 1,
+      "classes": 0,
+      "functions": 0,
+      "private": 0,
+      "at_least20": 0,
+      "longest": 0
+    },
+    {
+      "file": "integrations/vllm/__init__.py",
+      "lines": 1,
+      "classes": 0,
+      "functions": 0,
+      "private": 0,
+      "at_least20": 0,
+      "longest": 0
+    },
+    {
+      "file": "integrations/vllm/serve.py",
+      "lines": 199,
+      "classes": 1,
+      "functions": 15,
+      "private": 12,
+      "at_least20": 0,
+      "longest": 18
+    },
+    {
+      "file": "judge.py",
+      "lines": 248,
+      "classes": 6,
+      "functions": 17,
+      "private": 8,
+      "at_least20": 0,
+      "longest": 19
+    },
+    {
+      "file": "runner.py",
+      "lines": 31,
+      "classes": 1,
+      "functions": 2,
+      "private": 0,
+      "at_least20": 0,
+      "longest": 11
+    },
+    {
+      "file": "task.py",
+      "lines": 108,
+      "classes": 1,
+      "functions": 6,
+      "private": 3,
+      "at_least20": 0,
+      "longest": 17
+    },
+    {
+      "file": "tools.py",
+      "lines": 93,
+      "classes": 2,
+      "functions": 7,
+      "private": 0,
+      "at_least20": 0,
+      "longest": 18
+    },
+    {
+      "file": "ui/__init__.py",
+      "lines": 1,
+      "classes": 0,
+      "functions": 0,
+      "private": 0,
+      "at_least20": 0,
+      "longest": 0
+    },
+    {
+      "file": "ui/terminal.py",
+      "lines": 122,
+      "classes": 1,
+      "functions": 9,
+      "private": 5,
+      "at_least20": 0,
+      "longest": 19
+    }
+  ],
+  "totals": {
+    "before": {
+      "files": 17,
+      "lines": 4271,
+      "classes": 29,
+      "functions": 292,
+      "private": 205,
+      "at_least20": 0,
+      "longest": 19
+    },
+    "after": {
+      "files": 17,
+      "lines": 4269,
+      "classes": 29,
+      "functions": 292,
+      "private": 205,
+      "at_least20": 0,
+      "longest": 19
+    },
+    "core_before": {
+      "files": 8,
+      "lines": 2345,
+      "classes": 22,
+      "functions": 158,
+      "private": 91,
+      "at_least20": 0,
+      "longest": 19
+    },
+    "core_after": {
+      "files": 8,
+      "lines": 2343,
+      "classes": 22,
+      "functions": 158,
+      "private": 91,
+      "at_least20": 0,
+      "longest": 19
+    },
+    "optional_before": {
+      "files": 9,
+      "lines": 1926,
+      "classes": 7,
+      "functions": 134,
+      "private": 114,
+      "at_least20": 0,
+      "longest": 19
+    },
+    "optional_after": {
+      "files": 9,
+      "lines": 1926,
+      "classes": 7,
+      "functions": 134,
+      "private": 114,
+      "at_least20": 0,
+      "longest": 19
+    },
+    "original_working_tree": {
+      "files": 28,
+      "lines": 7401,
+      "classes": 94,
+      "functions": 287,
+      "private": 109,
+      "over20": 57,
+      "at_least20": 68,
+      "longest": 178
+    }
+  },
+  "protocols": {
+    "before": [
+      "agent.py:Generator",
+      "environment.py:Environment",
+      "judge.py:Evaluator"
+    ],
+    "after": [
+      "agent.py:Generator",
+      "environment.py:Environment",
+      "judge.py:Evaluator"
+    ]
+  },
+  "private_added": [
+    "environment.py:UserSimEnv._generate",
+    "environment.py:_begin",
+    "environment.py:_finish",
+    "environment.py:_outcome",
+    "environment.py:_verify"
+  ],
+  "private_removed": [
+    "runner.py:_begin",
+    "runner.py:_execute",
+    "runner.py:_finish",
+    "runner.py:_outcome",
+    "runner.py:_verify"
+  ],
+  "root_exports": [
+    "Task",
+    "Runner",
+    "Environment",
+    "Agent",
+    "Episode",
+    "Tool",
+    "Judge"
+  ]
+}

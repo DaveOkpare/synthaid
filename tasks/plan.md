@@ -1,44 +1,36 @@
-# Domain protocols and simpler generation modules
+# Restore Runner to the specification's Task loop
 
 Date: 2026-10-03
 Status: complete
 
-The user requested a correctness review, a checkpoint commit, then deeper Python
-modules with reusable protocols and less Environment machinery. The seven-module
-checkpoint and its review fixes were committed as `6de2613`; the subsequent pass
-is recorded in the [implementation report](../.scratch/deep-modules/implementation.md)
-and [resolved work map](../.scratch/deep-modules/map.md).
+The user rejected the Runner-owned lifecycle in commit 5367d23 and reaffirmed
+the [original specification](../.scratch/library-design-audit/spec.md). Restore
+Runner to opening each existing Episode, invoking Environment and collecting it.
+The [correction report](../.scratch/deep-modules/runner-correction.md) and
+[ticket 05](../.scratch/deep-modules/issues/05-restore-runner-loop.md) record this work.
 
 ```text
 application: prepare Tasks/evaluators; own clients/resources around the batch
-  -> Task(agents, input, segments, verifier): creates Episode and UUID immediately
-  -> Runner(tasks, output_dir, client, environment=domain_instance): opens that Episode
-     -> begin recording; apply Task deadline
-     -> Environment.run(task, client): domain work; default UserSimEnv schedules segments
-        -> Agent.generate / supplied Generator -> Evaluator review/revision
-        -> durable acceptance -> approved Agent Tools
-     -> record outcome; seal generation once; optional final Evaluator
-  -> collect Task.episode; inspect/export or append independent verification
+  -> Task: owns Episode and UUID immediately
+  -> Runner: for each Task, open Episode at output_dir / episode.id
+     -> Environment.run(task, client): own execution/deadline/finalization
+        -> default UserSimEnv: begin; execute segments via Agent; seal; final evaluator
+           -> Agent: generate; review/revise; durable acceptance; approved Tools
+     -> Runner: collect that same Episode
+  -> application: inspect/export or append independent verification
 ```
 
-[ADR-0026](../docs/adr/0026-use-domain-protocols-and-runner-owned-task-lifecycle.md)
-amends constructor-bound Environment and thin Runner ownership. Environment,
-Generator and Evaluator each have one structural operation. Task/Episode remain
-concrete data owners; approval/effects remain in Agent. No generic resource manager,
-registry or alternate runtime owner is introduced. Application contexts own external
-resources; SDK clients remain borrowed. [Migration guidance](../docs/migration-seven-modules.md)
-describes the deliberate Python API changes; historical JSON remains readable.
+[ADR-0027](../docs/adr/0027-restore-runner-to-the-task-loop.md) restores the intended
+Runner/Environment responsibilities. Structural protocols, application-owned
+resources and ready evaluators remain. Custom Environments own their execution
+policy and errors propagate through Runner unchanged. No lifecycle wrapper,
+registry or runtime owner is added.
 
-Environment shrank from 196 to 45 lines. Environment + Runner + Task shrank from
-334 to 257 lines. Total source is 4,271 lines (22 fewer than the checkpoint) across
-17 files, with seven root exports, three protocols and nine fewer private definitions.
-Every shipped function remains below 20 physical lines, including signatures/blanks
-and excluding decorators. Exact per-file/owner counts are in the report.
+Runner is 31 lines, down from 104, and contains only __init__ and run. Environment
+is 116 lines including the required execution safeguards; combined source drops
+from 149 to 147 lines. Total shipped source is 4,269 lines across 17 files. All
+shipped functions stay below 20 physical lines. Exact counts are in the report.
 
-All 222 offline tests, Ruff, strict mypy, function bounds, locked dependency checks,
-wheel/sdist/package verification, seven examples and the mixed accepted/failed
-CLI/export/reverification/TUI workflow pass. No live inference was required.
-
-The [original implementation report](../.scratch/library-design-audit/implementation.md)
-and [earlier work index](../.scratch/lean-core-refactor/map.md) retain their historical
-checkpoint measurements; the current report supersedes their execution API guidance.
+225 offline tests, Ruff, strict mypy and the package/workflow release checks pass.
+Earlier reports preserve measurements at 6de2613 and 5367d23; the correction report
+and migration guide describe current execution ownership.

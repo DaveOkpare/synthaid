@@ -11,6 +11,8 @@ amends:
 
 # Use domain protocols and a common recorded Task lifecycle
 
+The user rejected the Runner-lifecycle decision below. [ADR-0027](0027-restore-runner-to-the-task-loop.md) restores the specification's Runner/Environment responsibilities. The protocol and application-owned resource decisions remain.
+
 The user requested a verified checkpoint commit, followed by a deeper, simpler
 Python design using protocols across domains. They identified Environment's
 resource/configuration machinery as unnecessary. Checkpoint 6de2613 preserves

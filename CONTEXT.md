@@ -10,12 +10,12 @@ specifies revision from reviewer guidance;
 uses Agent directly and removes the separate definition/runtime representation.
 [ADR-0024](docs/adr/0024-use-required-assistant-and-optional-user-task-roles.md)
 keeps Task.agents with a required assistant target and optional user Agent.
-The current implementation follows [ADR-0026](docs/adr/0026-use-domain-protocols-and-runner-owned-task-lifecycle.md): structural domain interfaces, Runner-owned Task lifecycle, and application-owned resources. [ADR-0025](docs/adr/0025-implement-constructor-bound-environments-and-borrowed-sdk-clients.md) retains the SDK and one-Task-per-execution decisions; its constructor/resource design is superseded.
+The current implementation follows [ADR-0027](docs/adr/0027-restore-runner-to-the-task-loop.md): Runner opens Episodes and calls Environment; Environment owns execution/finalization. Structural domain protocols and application-owned resources from ADR-0026 remain. [ADR-0025](docs/adr/0025-implement-constructor-bound-environments-and-borrowed-sdk-clients.md) retains the SDK and one-Task-per-execution decisions; its constructor/resource design is superseded.
 
 ## Generation
 
 **Task**:
-An inert execution definition containing public input, configured Agent instances (each with its own Tools and optional reviewer), ordered segments, an optional verifier and execution limits. Task.agents holds the definitions directly: assistant is required and always the target; user is optional and may be omitted. Those are the only permitted keys, and declared values must be Agent instances. There are no separate Task.assistant/Task.user fields or configurable target flag. Task has no tools field or shared Tool pool. Construction automatically creates its own empty Episode with a unique ID; task.episode and task.episode.id are immediately available. The first execution uses that same Episode/ID, shared across all segments. Episode is not a required configuration argument. Construction performs no file writes, model/Tool calls or live resource acquisition. Task has no separate message_judge or episode_judge field. Applications prepare Tasks; Task validates its declarations locally; UserSimEnv uses its Agents, and Runner invokes its final verifier. Only public input and active instructions are available to Agents; grading-only data and future segment instructions remain private.
+An inert execution definition containing public input, configured Agent instances (each with its own Tools and optional reviewer), ordered segments, an optional verifier and execution limits. Task.agents holds the definitions directly: assistant is required and always the target; user is optional and may be omitted. Those are the only permitted keys, and declared values must be Agent instances. There are no separate Task.assistant/Task.user fields or configurable target flag. Task has no tools field or shared Tool pool. Construction automatically creates its own empty Episode with a unique ID; task.episode and task.episode.id are immediately available. The first execution uses that same Episode/ID, shared across all segments. Episode is not a required configuration argument. Construction performs no file writes, model/Tool calls or live resource acquisition. Task has no separate message_judge or episode_judge field. Applications prepare Tasks; Task validates its declarations locally; UserSimEnv uses its Agents and invokes its final verifier. Only public input and active instructions are available to Agents; grading-only data and future segment instructions remain private.
 _Avoid_: Benchmark, evaluation
 
 **Taskset**:
@@ -49,7 +49,7 @@ _Avoid_: Run collection
 ## Participants and execution
 
 **Runner**:
-Owns output_dir and opens the Episode already created with Task at output_dir / episode.id. It begins recording, applies the Task deadline, invokes Environment.run(task, client=...), seals generation and performs optional final verification. It accepts a structural Environment instance; the default is a stateless UserSimEnv. Applications and the optional loader prepare Tasks/evaluators and own clients/resources. Runner retains the existing Episode/ID and returns collected Episodes.
+Owns output_dir and loops over prepared Tasks. It opens each existing Episode at output_dir / episode.id, invokes Environment.run(task, client=...) and collects that Episode. It accepts a structural Environment instance; the default is a stateless UserSimEnv. It adds no deadline, failure handling, sealing, judgment, preparation or resource-management policy. Environment owns execution/finalization; Episode owns recording invariants. Applications and the optional loader prepare Tasks/evaluators and own clients/resources.
 _Avoid_: Workflow engine, orchestrator
 
 **Model Client**:
@@ -105,11 +105,11 @@ The historical task-file term for a segment. The optional adapter keeps authored
 _Avoid_: Turn, environment step
 
 **Environment**:
-A structural protocol with one method: async run(task, *, client=None) -> None. An implementation supplies domain execution into the Task's opened Episode; Runner begins recording, applies the deadline, seals generation and verifies afterward. The default UserSimEnv activates ordered segments and schedules assistant/user Agents. It owns no clients or generic resources. Custom implementations need no framework inheritance, factories, setup, reset or step methods; invocation state stays local and cancellation is cooperative.
+A structural protocol with one method: async run(task, *, client=None) -> None. An implementation owns the Task execution into its opened Episode, including beginning recording, deadline/failure policy, sealing generation and final verification. Runner opens the Episode and invokes this method directly. The default UserSimEnv activates ordered segments and schedules assistant/user Agents. It owns no clients or generic resources. Custom implementations need no framework inheritance, factories, setup, reset or step methods; invocation state stays local and cancellation is cooperative.
 _Avoid_: Runtime, sandbox, orchestrator
 
 **UserSimEnv**:
-The stateless default Environment implementation. It activates ordered segments and schedules the configured assistant/user Agents through Agent.turn. Runner owns recording, deadlines, outcomes and final verification around this execution. It keeps no Task binding or external resource lifetime.
+The stateless default Environment implementation. It activates ordered segments and schedules the configured assistant/user Agents through Agent.turn. Its run method begins recording, applies the Task deadline, records outcomes, seals generation and invokes final verification; its state stays local to each invocation. It keeps no Task binding or external resource lifetime.
 _Avoid_: Lifecycle manager, simulator Agent
 
 **Runtime**:
@@ -159,7 +159,7 @@ The named weighted Boolean criteria and threshold configured with an Agent's Rev
 _Avoid_: Reward, score
 
 **Verifier**:
-The optional Evaluator supplied as verifier on Task, specifying final judgment of its Episode's sealed accepted history across all executed segments. Runner invokes it once after task-wide generation seals, before run returns. Rejected drafts are excluded. It uses the same constructor/evaluate interface as a Reviewer, with separate invocation timing and results; reverification appends decisions without changing generation. It replaces the proposed episode_judge name.
+The optional Evaluator supplied as verifier on Task, specifying final judgment of its Episode's sealed accepted history across all executed segments. Environment invokes it once after task-wide generation seals, before run returns. Rejected drafts are excluded. It uses the same constructor/evaluate interface as a Reviewer, with separate invocation timing and results; reverification appends decisions without changing generation. It replaces the proposed episode_judge name.
 _Avoid_: Message approval
 
 **Criterion**:
@@ -168,4 +168,4 @@ _Avoid_: Metric, reward
 
 Ownership and API retirement: [ADR-0011](docs/adr/0011-remove-plans-and-use-ordinary-task-records.md), [ADR-0012](docs/adr/0012-keep-runner-as-an-environment-task-loop.md), and the implemented [ADR-0014](docs/adr/0014-use-task-lists-and-task-owned-run-settings.md)/[ADR-0015](docs/adr/0015-separate-environment-setup-and-run.md)/[ADR-0016](docs/adr/0016-build-seven-directly-usable-generation-modules.md)/[ADR-0017](docs/adr/0017-use-agent-reviewers-task-verifiers-and-independent-episodes.md)/[ADR-0018](docs/adr/0018-runner-owns-the-output-directory.md)/[ADR-0019](docs/adr/0019-task-owned-episodes-span-segments.md)/[ADR-0020](docs/adr/0020-create-an-identified-episode-with-each-task.md)/[ADR-0021](docs/adr/0021-declare-tools-on-each-agent.md)/[ADR-0022](docs/adr/0022-construct-agent-definitions-and-revise-from-review.md)/[ADR-0023](docs/adr/0023-use-agent-directly-and-keep-execution-state-local.md)/[ADR-0024](docs/adr/0024-use-required-assistant-and-optional-user-task-roles.md). ADR-0013's active Taskset design is superseded. Saved run_plan fields are ordinary historical JSON metadata, not runtime Plans.
 
-Current execution/protocol ownership is defined by [ADR-0026](docs/adr/0026-use-domain-protocols-and-runner-owned-task-lifecycle.md), which amends ADR-0012/0015/0016/0025. Runner now owns the common recorded Task lifecycle; Environment implementations provide domain execution.
+Current execution ownership is defined by [ADR-0027](docs/adr/0027-restore-runner-to-the-task-loop.md), restoring the Runner/Environment responsibility split from ADR-0012 and the library specification. ADR-0026's structural protocols remain; its Runner-owned lifecycle is superseded.

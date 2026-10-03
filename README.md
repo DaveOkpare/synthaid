@@ -4,8 +4,9 @@ Generate reviewed synthetic data directly in Python through seven imports:
 `Task`, `Runner`, `Environment`, `Agent`, `Episode`, `Tool`, and `Judge`.
 
 A Task immediately owns a fresh Episode and UUID. Runner opens recording at
-`output_dir / episode.id`, invokes its Environment, seals generation, and applies
-the optional final verifier. The default UserSimEnv executes ordered segments.
+`output_dir / episode.id`, invokes its Environment and collects the Episodes.
+Environment owns execution and finalization. The default UserSimEnv executes
+ordered segments, seals generation and applies the optional final verifier.
 Each Agent owns its Tools and optional reviewer.
 
 Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/).
@@ -129,17 +130,27 @@ can serve both review and verification when its criteria suit both uses.
 `max_revisions` counts replacement attempts after the initial draft. An opted-in
 exhaustion fallback accepts only ordinary text, with recorded evidence.
 
-Use Runner for complete recorded execution. An Environment supplies domain
-behavior; Runner supplies the Task deadline, begins recording, seals generation,
-and invokes final verification. The default UserSimEnv owns no external resources.
-Application entry points own clients and other contexts around the batch.
+Runner opens each existing Episode and calls Environment.run(task, client=...).
+The Environment owns beginning execution, deadlines, outcomes, sealing and final
+verification. The default UserSimEnv implements these safeguards; it also works
+standalone after you open task.episode. Application entry points own clients and
+other contexts around the batch.
 
-Inside your async entry point, a custom Environment can use the same Agent rules:
+Different domains can usually supply a Generator and Evaluator to the default
+UserSimEnv. A custom Environment defines its own execution policy. Runner forwards
+its errors and leaves finalization to that implementation. For example, inside
+your async entry point:
 
 ```python
 class CustomDomain:
     async def run(self, task: Task, *, client=None) -> None:
-        await task.agents["assistant"].turn(task.episode, client=client)
+        task.episode.add_secrets(client)
+        task.episode.begin(task.declaration())
+        async with asyncio.timeout(task.timeout_seconds):
+            await task.agents["assistant"].turn(task.episode, client=client)
+        task.episode.seal()
+        if task.verifier is not None:
+            await task.episode.verify(task.verifier)
 
 
 environment: Environment = CustomDomain()
@@ -147,6 +158,10 @@ episodes = await Runner(
     tasks, output_dir="runs", client=client, environment=environment
 ).run()
 ```
+
+This minimal custom example propagates execution errors; a domain implementation
+can record its own failure outcomes. UserSimEnv records failures/cancellation and
+preserves partial evidence. Runner adds no lifecycle wrapper.
 
 Task.verifier receives a constructed Judge or an Evaluator, and Agent.reviewer
 accepts either. Task data and domain adapters carry no hidden client binding or
@@ -212,5 +227,5 @@ and restores signals. Initialize your separate inference client using that URL.
 Core imports and task validation do not start servers or import the vLLM SDK.
 
 See [migration notes](docs/migration-seven-modules.md) for interface changes and
-[the current simplification report](.scratch/deep-modules/implementation.md) for
+[the Runner correction report](.scratch/deep-modules/runner-correction.md) for
 measured changes and verification.

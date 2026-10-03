@@ -11,6 +11,7 @@ import pytest
 
 from agentinstruct import Agent, Environment, Episode, Runner, Task, Tool
 from agentinstruct.agent import Generator
+from agentinstruct.environment import UserSimEnv
 from agentinstruct.episode import FunctionCall, Message, ToolCall
 from agentinstruct.judge import Evaluator, Judgment
 
@@ -58,28 +59,26 @@ async def test_plain_domain_generator_and_evaluator_are_reusable(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["success", "failure", "timeout"])
-async def test_domain_environment_uses_shared_recording_and_deadline(
+async def test_standalone_environment_owns_recording_and_deadline(
     tmp_path: Path, mode: str
 ) -> None:
-    class Domain:
-        async def run(self, task: Task, *, client: Any = None) -> None:
-            assert (
-                task.episode.path and task.episode.metadata["variables"] == task.input
-            )
-            if task.input["mode"] == "failure":
+    class DomainGenerator:
+        async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
+            if mode == "failure":
                 raise ValueError("Domain failure")
-            if task.input["mode"] == "timeout":
+            if mode == "timeout":
                 await asyncio.Event().wait()
-            await task.agents["assistant"].turn(task.episode, client=client)
+            return (await Arithmetic().generate(history))[0]
 
-    environment: Environment = Domain()
+    environment: Environment = UserSimEnv()
     task = Task(
-        agents={"assistant": Agent(generator=Arithmetic())},
+        agents={"assistant": Agent(generator=DomainGenerator())},
         input={"mode": mode, "operands": [2, 3]},
         timeout_seconds=0.01,
         verifier=ArithmeticCheck(),
     )
-    await Runner([task], output_dir=tmp_path, environment=environment).run()
+    task.episode.open(tmp_path / task.episode.id)
+    await environment.run(task)
     assert task.episode.sealed
     assert (
         task.episode.status
@@ -93,6 +92,51 @@ async def test_domain_environment_uses_shared_recording_and_deadline(
         # The verifier cannot score an empty conversation; it records an error.
         assert task.episode.generation == {"state": "truncated", "reason": "timeout"}
         assert task.episode.status == "unverified"
+
+
+@pytest.mark.asyncio
+async def test_runner_only_opens_invokes_and_collects_episodes(tmp_path: Path) -> None:
+    calls: list[tuple[Task, Any]] = []
+    client = object()
+
+    class Custom:
+        async def run(self, task: Task, *, client: Any = None) -> None:
+            assert task.episode.path == tmp_path / task.episode.id
+            assert not task.episode.metadata and not task.episode.events
+            calls.append((task, client))
+            await asyncio.sleep(0.02)
+
+    task = Task(
+        agents={"assistant": Agent()},
+        timeout_seconds=0.001,
+        verifier=ArithmeticCheck(),
+    )
+    other = Task(agents={"assistant": Agent()})
+    results = await Runner(
+        [task, other], output_dir=tmp_path, client=client, environment=Custom()
+    ).run()
+    assert calls == [(task, client), (other, client)]
+    assert results[0] is task.episode and results[1] is other.episode
+    assert not task.episode.sealed and not task.episode.verification
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [ValueError, asyncio.CancelledError])
+async def test_runner_propagates_environment_errors_without_finalizing(
+    tmp_path: Path, failure: type[BaseException]
+) -> None:
+    error = failure("Domain failure")
+
+    class Custom:
+        async def run(self, task: Task, *, client: Any = None) -> None:
+            raise error
+
+    task, other = (Task(agents={"assistant": Agent()}) for _ in range(2))
+    with pytest.raises(failure) as raised:
+        await Runner([task, other], output_dir=tmp_path, environment=Custom()).run()
+    assert raised.value is error
+    assert not task.episode.sealed and not task.episode.events
+    assert other.episode.path is None
 
 
 @pytest.mark.asyncio

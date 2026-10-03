@@ -1,6 +1,6 @@
 # Seven deep modules for synthetic data generation
 
-> Historical checkpoint: the later [domain-protocol report](../deep-modules/implementation.md) and [ADR-0026](../../docs/adr/0026-use-domain-protocols-and-runner-owned-task-lifecycle.md) supersede execution API guidance below. Original measurements are preserved.
+> The Runner/Environment responsibility split in this spec remains authoritative. [ADR-0027](../../docs/adr/0027-restore-runner-to-the-task-loop.md) restores it after the rejected Runner expansion in ADR-0026. Current protocol interfaces and verification are in the [correction report](../deep-modules/runner-correction.md); original measurements below are preserved.
 
 Type: specification
 Status: resolved

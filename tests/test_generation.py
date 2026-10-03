@@ -281,24 +281,21 @@ async def test_tools_are_agent_local_and_intent_is_durable(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_custom_structural_environment_uses_common_recording_and_failures(
+async def test_custom_structural_environment_owns_its_execution(
     tmp_path: Path,
 ) -> None:
     class Custom:
         async def run(self, task: Task, *, client: Any = None) -> None:
+            task.episode.begin(task.declaration())
             task.episode.append(Message("assistant", "custom", actor_id="assistant"))
-
-    class Unusable:
-        async def run(self, task: Task, *, client: Any = None) -> None:
-            raise ValueError("Domain execution failed")
+            task.episode.seal()
+            if task.verifier is not None:
+                await task.episode.verify(task.verifier)
 
     task = Task(agents={"assistant": Reply()}, verifier=Judge(check=lambda m: True))
     await Runner([task], output_dir=tmp_path, environment=Custom()).run()
     assert task.episode.messages[0].content == "custom"
     assert task.episode.sealed and task.episode.status == "accepted"
-    missing = Task(agents={"assistant": Reply()})
-    await Runner([missing], output_dir=tmp_path, environment=Unusable()).run()
-    assert missing.episode.sealed and missing.episode.status == "failed"
 
 
 @pytest.mark.asyncio

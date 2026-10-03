@@ -37,3 +37,9 @@ Retain the fewer-than-20-line function contract without compressed code.
 ## Answer
 
 All four slices are implemented and verified after the requested checkpoint commit. See the [implementation report](implementation.md), [metrics](metrics.json) and [resolved work map](map.md).
+
+## Runner scope correction
+
+The user rejected Runner-owned lifecycle after commit 5367d23. Restore the original library specification: Runner only opens, invokes Environment and collects Episodes; Environment owns execution/finalization. Keep the structural protocols and application-owned resources. Track this correction in [ticket 05](issues/05-restore-runner-loop.md).
+
+The Runner correction is implemented and verified. [runner-correction.md](runner-correction.md) and ADR-0027 describe current ownership; prior report measurements remain historical.

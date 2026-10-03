@@ -6,8 +6,8 @@ Historical saved Trace JSON remains readable through Episode.load and Inspector.
 | Former API or ownership | Replacement |
 | --- | --- |
 | Runner(environment, task dictionaries) | Runner(list[Task], output_dir=..., client=..., environment=domain_instance) |
-| Environment.setup(task), run(task), conversation(episode), async context ownership | Environment is a protocol: async run(task, *, client=None); Runner wraps an implementation instance with recording/deadline/finalization |
-| Environment allocates/returns Episode; environment.output_dir | Task creates episode immediately; Runner opens output_dir / episode.id; domain run returns None; Runner seals and verifies afterward |
+| Environment.setup(task), run(task), conversation(episode), async context ownership | Environment is a protocol: async run(task, *, client=None); Runner opens the Episode and invokes an implementation instance; Environment owns execution/deadline/finalization |
+| Environment allocates/returns Episode; environment.output_dir | Task creates episode immediately; Runner opens output_dir / episode.id; Environment.run returns None after its execution/finalization; Runner collects the Episode |
 | Separate Agent definition/runtime or AgentObservation | Construct Agent directly; supply generator=domain_object or override generate(history, *, client=None, role="assistant", instruction=None) |
 | Arbitrary participant names, Agent.id/target, separate assistant/user fields | Task.agents with required assistant and optional user; role is invocation-local |
 | Task-level tools or global Tool lookup | Agent.tools: explicit sequence of Tool objects, default empty |
@@ -61,14 +61,20 @@ root. Historical manifests/indexes remain readable. CLI reverification requires 
 explicit task package policy; direct callers can provide a constructed Judge.
 The TUI and vLLM launcher remain in their optional namespaces.
 
-## Domain protocol refinement (ADR-0026)
+## Domain protocols and restored Runner scope (ADR-0026 / ADR-0027)
 
 Environment is now a structural protocol, with a stateless UserSimEnv implementation
 in agentinstruct.environment. Pass an implementation instance to Runner; it must
 implement async run(task, *, client=None) and perform domain work into the supplied
-Episode. Runner begins recording, applies deadlines, seals and verifies. Replace
-Environment(task).run() with Runner([task], ...).run() for complete execution.
-Custom Environments no longer take a Task in their constructor or seal/verify it.
+Episode. Its run method owns beginning execution, deadlines/failures, sealing and
+optional verification. Runner only opens, invokes and collects. Custom Environment
+errors propagate directly. Replace Environment(task).run() with a supplied instance
+or the default UserSimEnv; open task.episode before standalone execution.
+
+ADR-0027 restores the library specification's Runner scope. Code written against
+ADR-0026 that relied on Runner to apply lifecycle policy must implement that policy
+in its Environment. Direct Generator/Evaluator adapters can keep UserSimEnv's
+built-in safeguards while varying domain generation/evaluation.
 
 The speculative resources= API and runtime verifier-dictionary assembly are
 removed. Applications own async contexts around their batch. Task.verifier takes

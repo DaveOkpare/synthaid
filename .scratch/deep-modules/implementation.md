@@ -1,5 +1,7 @@
 # Domain protocols and simpler execution
 
+> Historical commit 5367d23. The user rejected its Runner-owned lifecycle; the [Runner correction](runner-correction.md) restores the original specification's responsibilities. Measurements below describe that checkpoint.
+
 Type: implementation report
 Status: resolved
 Date: 2026-10-03
