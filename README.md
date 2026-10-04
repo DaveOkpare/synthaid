@@ -3,11 +3,11 @@
 Generate reviewed synthetic data directly in Python through seven imports:
 `Task`, `Runner`, `Environment`, `Agent`, `Episode`, `Tool`, and `Judge`.
 
-A Task immediately owns a fresh Episode and UUID. Runner opens recording at
-`output_dir / episode.id`, invokes its Environment and collects the Episodes.
-Environment owns execution and finalization. The default UserSimEnv executes
-ordered segments, seals generation and applies the optional final verifier.
-Each Agent owns its Tools and optional reviewer.
+A Task immediately owns a fresh Episode and UUID. Runner chooses
+`output_dir / episode.id / trace.json`, invokes its Environment and collects Episodes.
+Environment defines one method, `run()`. The default `UserSimEnv(Environment)`
+lets Agents speak in turn, records their messages, then applies an optional final
+verifier. Each Agent handles its own optional review and revisions.
 
 Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/).
 
@@ -19,7 +19,7 @@ uv run python examples/direct-dialogue/run.py --output /tmp/agentinstruct-retail
 The retail example runs offline and reuses Agent and Judge definitions across
 independent Tasks. Its checks test structure; they do not establish semantic quality.
 
-## Use a model, Tool, and reusable Judge
+## Use Agents and a reusable Judge
 
 Your application owns the inference client around the entire batch. The core
 borrows it and never closes it between Tasks, reviews, or verification calls.
@@ -29,12 +29,8 @@ Set `MODEL_BASE_URL`, `MODEL_API_KEY`, `MODEL_NAME`, and `JUDGE_MODEL` for your 
 import asyncio
 import os
 from openai import AsyncOpenAI
-from agentinstruct import Agent, Environment, Episode, Judge, Runner, Task, Tool
+from agentinstruct import Agent, Judge, Runner, Task
 from agentinstruct.judge import Criterion, Rubric
-
-
-async def lookup(arguments):
-    return {"topic": arguments["topic"], "denominator": "equal parts of a whole"}
 
 
 async def main():
@@ -51,35 +47,23 @@ async def main():
         )
         assistant = Agent(
             os.environ["MODEL_NAME"],
-            "Write a worked teaching example. Use lookup when helpful.",
-            tools=[Tool(lookup)],
+            "Explain the topic with a worked teaching example.",
             reviewer=correctness,
             max_revisions=2,
         )
+        user = Agent(os.environ["MODEL_NAME"], "Ask questions about the supplied topic.")
         tasks = [
             Task(
-                agents={"assistant": assistant},
+                agents={"assistant": assistant, "user": user},
                 input={"topic": topic},
-                segments=[
-                    {
-                        "name": "draft",
-                        "instructions": {"assistant": "Draft an example."},
-                    },
-                    {
-                        "name": "revise",
-                        "instructions": {"assistant": "Check the earlier example."},
-                    },
-                ],
+                max_rounds=3,
                 verifier=correctness,
-                timeout_seconds=120,
             )
             for topic in ("fractions", "decimals")
         ]
-        identity = tasks[0].episode.id
         episodes = await Runner(tasks, output_dir="runs", client=client).run()
-        episode: Episode = episodes[0]
-        assert episode is tasks[0].episode and episode.id == identity
-        print(episode.status, episode.messages)
+        for episode in episodes:
+            print(episode.verification, episode.messages)
 
 
 asyncio.run(main())
@@ -87,14 +71,12 @@ asyncio.run(main())
 
 Agent uses Chat Completions. OpenAI SDK 2.30.0 is pinned; generation uses accepted
 history and disabled retries. Judge also supports `api="responses"`.
-Configure different
-endpoints with separate application-owned clients, supplied explicitly to Agent
+Configure different endpoints with separate application-owned clients, supplied to Agent
 or Judge. An Agent's explicit client takes precedence over Runner.client.
 
-Tool functions receive one immutable arguments mapping. `input_schema` and
-`output_schema` validate JSON locally. Execution failures fail by default;
-`execution_errors="result"` returns a safe error record. Invalid arguments and
-results always fail.
+Agents can declare Tools for direct generation, but UserSimEnv only supports
+conversation messages. It rejects Tool calls, segments and Task deadlines.
+Tool execution and other execution policies require a custom Environment.
 
 ## Customize generation and scheduling
 
@@ -109,37 +91,42 @@ Generation, evaluation and execution have small structural protocols:
 A domain adapter implements these methods without inheriting framework classes.
 Generator returns one unreviewed Message. Agent has one public operation:
 `generate()` samples, reviews and revises until approved or its revision limit is
-exhausted. Its private `_review()` invokes the optional reviewer. UserSimEnv commits
-the returned Message and invokes approved Tools, then generates again after Tool results.
+exhausted. Its private `_review()` invokes the optional reviewer. UserSimEnv records
+the returned Message and passes accepted history to the next Agent.
 Reviewer feedback and the current rejected draft reach the generator privately.
 The retail example uses a plain generator; tests also demonstrate arithmetic
 generation/evaluation and a custom Environment. Supply custom sampling through
-`generator=` so it participates in the same review loop. Supporting Message/Tool-call values live in episode.py,
-and Judgment lives in judge.py.
+`generator=` so it participates in the same review loop. Supporting Message/Tool-call
+values live in episode.py, and Judgment lives in judge.py.
 
 Task.agents requires `assistant`; an optional `user` uses the same Agent class.
 Only assistant may return `Message(..., control="complete")`. An assistant-only
-segment finishes after its turn; dialogue uses completion or configured limits.
-Segment instruction additions replace the previous additions while retaining the
-base instruction and accepted/private history. Construct another Task for another
-sample; completed Tasks cannot be reset or rerun.
+Task finishes after one response. Dialogue alternates roles, starting with `user`
+by default, until completion, `max_rounds` or `max_turns`. Task input is included in
+each Agent's context. Construct another Task for another sample; completed Tasks
+cannot be reset or rerun.
 
 A callable Judge uses `Judge(check=...)`. Its check receives immutable Messages
 and returns a Boolean, Judgment, or ordinary verdict/feedback mapping. Rubrics
 require exact Boolean criterion IDs and compute weighted scores locally. A Judge
 can serve both review and verification when its criteria suit both uses.
 `max_revisions` counts replacement attempts after the initial draft. A rejected
-final sample ends generation with `review_exhausted` and is never accepted.
+final sample raises `ReviewExhausted` and is never accepted.
 
-Runner opens each existing Episode and calls Environment.run(task, client=...).
-The Environment owns beginning execution, deadlines, outcomes, sealing and final
-verification. The default UserSimEnv implements these safeguards; it also works
-standalone after you open task.episode. Application entry points own clients and
-other contexts around the batch.
+Runner assigns each Episode a recording path and calls Environment.run(task, client=...).
+UserSimEnv appends each accepted message, then evaluates the optional verifier and
+stores its result in memory. Runner saves once per Task, including collected messages
+when execution raises or is cancelled, then propagates the error. Earlier Tasks in
+the batch are already saved.
+Applications own clients, deadlines (for example, `asyncio.timeout`) and any retry policy.
+
+Standalone UserSimEnv runs entirely in memory. Use Runner to persist its traces.
+Episode has five ordinary fields: `id`, `messages`, `metadata`, `verification` and
+`path`; it has no methods.
 
 Different domains can usually supply a Generator and Evaluator to the default
-UserSimEnv. A custom Environment defines its own execution policy. Runner forwards
-its errors and leaves finalization to that implementation.
+UserSimEnv. A custom Environment defines its own execution policy and updates the
+supplied Episode. Runner owns writing that data to disk.
 
 Generation can also be used directly without a Task or Episode:
 
@@ -153,8 +140,7 @@ reply = await agent.generate([Message("user", "Explain fractions.")], client=cli
 Use this inside the application's async client scope. `generate()` uses the Agent's
 instruction unless history starts with an explicit system instruction. It returns
 a reviewed proposal without committing it or executing Tools. Drafts and review
-feedback stay local to that call. UserSimEnv records accepted messages and
-failures/cancellation.
+feedback stay local to that call. UserSimEnv records accepted messages.
 
 Task.verifier receives a constructed Judge or an Evaluator, and Agent.reviewer
 accepts either. Task data and domain adapters carry no hidden client binding or
@@ -177,7 +163,9 @@ tasks = load_tasks(
 output files. `load_tasks` constructs the same core objects; model-backed settings
 need supplied `client` or named `clients`. JSON, JSONL, CSV, directories, and Python
 iterables retain record origins. Invalid records and source-enumeration failures
-are distinct. Authored steps become segments of one Task and Episode per input.
+are distinct. Authored steps still load as Task segments for custom Environments;
+UserSimEnv rejects them. The older Tool and stepped examples require a custom
+Environment. See [examples](examples/README.md) for the supported conversations.
 
 ```sh
 uv run agentinstruct validate examples/verified-single --json
@@ -185,7 +173,6 @@ uv run agentinstruct run examples/verified-single --output runs/demo --json
 uv run agentinstruct inspect runs/demo
 uv run agentinstruct inspect runs/demo --tui
 uv run agentinstruct export runs/demo --output /tmp/dataset.jsonl
-uv run agentinstruct reverify runs/demo/<episode-id> --package examples/verified-single
 ```
 
 CLI run creates an optional manifest alongside Episode directories. Choose a fresh
@@ -194,18 +181,25 @@ environment variable, defaulting to `OPENAI_API_KEY`.
 
 ## Read, inspect, and export
 
-`episode.messages` is the read-only accepted conversation. Agent does not persist
-drafts or reviews; execution errors are recorded separately. Tool exchanges
-are private to their calling Agent; peers and default training exports exclude
-them. Exports select assistant as the training target and preserve accepted user
-context. CLI exports select accepted Episodes by default; use `--status unverified`
-when appropriate, or `--verification ID` to select an immutable judgment.
+`episode.messages` is an ordinary list of accepted Messages. `episode.verification`
+is a Judgment or None. Episode does no judging, history filtering, sealing, loading,
+or exporting. Rejected drafts and reviewer feedback remain private to Agent.generate.
 
-`Episode.load(path)` reads current and historical Trace JSON without importing
-original components. `await episode.verify(judge)` appends a sidecar after sealing
-and leaves generation bytes unchanged. Failed or invalid generation cannot become
-accepted. Without a verifier, status remains unverified. Limits and deadlines are
-recorded in `episode.generation`; failed final judging records an unverified attempt.
+Runner writes one JSON snapshot containing `id`, `messages`, `metadata` and
+`verification`. It writes and flushes a temporary file beside the destination, then
+atomically publishes the trace. Write errors propagate; traces from earlier Tasks
+remain intact. An abrupt process termination can lose the current Task's unsaved
+messages. The record contains trace data, not live clients.
+Message and feedback text are recorded as supplied; there is no automatic redaction.
+
+Read a trace with `json.loads(path.read_text())`. The optional Inspector and CLI
+read the same JSON, and CLI export produces message datasets. Exports select passed
+verification by default; use `--status unverified` for traces without a verifier.
+An absent verification result alone does not distinguish an unfinished run from a
+completed run without a verifier.
+
+The former trace format, event ledgers, verification sidecars and `reverify` command
+are retired. There is no automatic migration or historical loader.
 
 ## Optional vLLM startup
 

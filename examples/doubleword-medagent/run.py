@@ -101,7 +101,11 @@ async def run(source: Path, output: Path) -> dict[str, Any]:
             Path(__file__).parent, seeds=seeds, clients={"doubleword": client}
         )
         episodes = await Runner(tasks, output_dir=output / "runs", client=client).run()
-    accepted = [episode for episode in episodes if episode.status == "accepted"]
+    accepted = [
+        episode
+        for episode in episodes
+        if episode.verification is not None and episode.verification.passed
+    ]
     artifacts(output, seeds, accepted)
     report = {
         "requests": budget.calls,
@@ -115,16 +119,19 @@ async def run(source: Path, output: Path) -> dict[str, Any]:
 
 
 def artifacts(output: Path, seeds: list[dict[str, Any]], episodes: list[Any]) -> None:
-    from agentinstruct.episode import canonical_json
-
     values = {
         "seeds.jsonl": seeds,
-        "native.jsonl": [e.to_dict() for e in episodes],
-        "openai.jsonl": [{"messages": e.training_messages()} for e in episodes],
+        "native.jsonl": [
+            json.loads(e.path.read_text()) for e in episodes if e.path is not None
+        ],
+        "openai.jsonl": [
+            {"messages": [{"role": m.role, "content": m.content} for m in e.messages]}
+            for e in episodes
+        ],
     }
     for name, rows in values.items():
         with (output / name).open("x", encoding="utf-8") as stream:
-            stream.writelines(canonical_json(row) + "\n" for row in rows)
+            stream.writelines(json.dumps(row, allow_nan=False) + "\n" for row in rows)
 
 
 def main() -> None:

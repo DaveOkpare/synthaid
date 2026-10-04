@@ -1,17 +1,11 @@
 """Generate a sample and optionally revise it from reviewer feedback."""
 
+import json
 from collections.abc import Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Protocol
 
-from agentinstruct.episode import (
-    FunctionCall,
-    Message,
-    ToolCall,
-    canonical_json,
-    json_data,
-    parse_json,
-)
+from agentinstruct.episode import FunctionCall, Message, ToolCall
 from agentinstruct.judge import Evaluator, Judgment
 from agentinstruct.tools import Tool
 
@@ -100,7 +94,7 @@ def _model_tool(tool: Tool) -> dict[str, Any]:
     function = dict(
         name=tool.id,
         description=tool.description,
-        parameters=json_data(tool.input_schema),
+        parameters=tool.input_schema,
     )
     return {"type": "function", "function": function}
 
@@ -111,10 +105,10 @@ def _chat_message(message: Message, role: str) -> dict[str, Any]:
         wire_role = "assistant" if message.actor_id == role else "user"
     data: dict[str, Any] = {"role": wire_role, "content": message.content}
     if message.tool_calls:
-        data["tool_calls"] = json_data(message.tool_calls)
+        data["tool_calls"] = [asdict(call) for call in message.tool_calls]
         for call in data["tool_calls"]:
             function = call["function"]
-            function["arguments"] = canonical_json(function["arguments"])
+            function["arguments"] = json.dumps(function["arguments"], allow_nan=False)
     if message.tool_call_id:
         data["tool_call_id"] = message.tool_call_id
     return data
@@ -130,7 +124,7 @@ def _chat_response(response: Any) -> Message:
         tool_calls=tuple(
             ToolCall(
                 call.id,
-                FunctionCall(call.function.name, parse_json(call.function.arguments)),
+                FunctionCall(call.function.name, json.loads(call.function.arguments)),
             )
             for call in choice.message.tool_calls or ()
         ),

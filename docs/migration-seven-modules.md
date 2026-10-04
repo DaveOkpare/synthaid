@@ -1,15 +1,15 @@
 # Migrate to the seven generation modules
 
 This is a deliberate Python API change. Removed interfaces have no aliases.
-Historical saved Trace JSON remains readable through Episode.load and Inspector.
+Runner writes the lean Episode as plain JSON. Historical trace loading is retired.
 
 | Former API or ownership | Replacement |
 | --- | --- |
 | Runner(environment, task dictionaries) | Runner(list[Task], output_dir=..., client=..., environment=domain_instance) |
-| Environment.setup(task), run(task), conversation(episode), async context ownership | Environment is a protocol: async run(task, *, client=None); Runner opens the Episode and invokes an implementation instance; Environment owns execution/deadline/finalization |
-| Environment allocates/returns Episode; environment.output_dir | Task creates episode immediately; Runner opens output_dir / episode.id; Environment.run returns None after its execution/finalization; Runner collects the Episode |
+| Environment.setup(task), run(task), conversation(episode), async context ownership | Environment is a protocol: async run(task, *, client=None); Runner assigns its trace path and invokes an implementation instance; UserSimEnv records messages and optionally verifies |
+| Environment allocates/returns Episode; environment.output_dir | Task creates episode immediately; Runner assigns output_dir / episode.id / trace.json; Environment.run returns None; Runner saves and collects the Episode |
 | Separate Agent definition/runtime or AgentObservation | Construct Agent directly; supply custom sampling with generator=domain_object |
-| Agent.turn(episode) and single-sample Agent.generate | Agent.generate(history, *, client=None, role="assistant") returns a reviewed proposal; Environment records acceptance and executes Tools |
+| Agent.turn(episode) and single-sample Agent.generate | Agent.generate(history, *, client=None, role="assistant") returns a reviewed proposal; UserSimEnv records accepted conversation messages |
 | Arbitrary participant names, Agent.id/target, separate assistant/user fields | Task.agents with required assistant and optional user; role is invocation-local |
 | Task-level tools or global Tool lookup | Agent.tools: explicit sequence of Tool objects, default empty |
 | FunctionTool and Tool subclasses with contexts | Tool(async_function, id=..., input_schema=..., output_schema=...); custom factories return Tool |
@@ -18,17 +18,18 @@ Historical saved Trace JSON remains readable through Episode.load and Inspector.
 | Taskset or global message_judge / episode_judge | list[Task]; Agent.reviewer and Task.verifier |
 | Root Criterion/Rubric/ReviewResult exports | Criterion, Rubric, Judgment from agentinstruct.judge |
 | Root Message/FunctionCall/ToolCall exports | Supporting values from agentinstruct.episode |
-| LocalRunStore, RecordedTrace, TraceSnapshot, load_trace | Episode, Episode.load, and optional Inspector |
+| LocalRunStore, RecordedTrace, TraceSnapshot, load_trace | Data-only Episode dataclass; Runner writes traces; plain JSON reads and optional Inspector |
 | TaskPackage, Seed, component registries, generate/generate_sync | adapters.task_files.compile_records/load_tasks; Runner.run or asyncio.run in the application |
-| Independent Episode per authored step | Ordered Task.segments sharing one Episode and private history |
-| Plans, lifecycle/control Tools, reset/step methods | Ordinary Task input/segments and Environment scheduling |
+| Built-in steps, Tool execution and Task deadlines | UserSimEnv rejects these; custom Environments define their own execution policy |
+| Plans, lifecycle/control Tools, reset/step methods | Ordinary Task input and one UserSimEnv.run conversation loop |
 | Structured-output subsystem | Tool input/output schemas and Judge Rubric checks |
 
 Agent construction is inert. A custom generator must keep execution
 state local or in the supplied Episode/history; externally mutable dependencies
 need explicit application ownership. The same configured Agent or Judge can serve
-independent concurrent Tasks. A completed Task is one recorded execution and cannot
-silently reset, append, or overwrite its output.
+independent concurrent Tasks. Runner creates each Task's output directory
+exclusively; reusing that output fails before generation. Episode itself is
+ordinary mutable trace data.
 
 Clients are borrowed through Runner/Environment/Agent and Judge. Explicit Agent and
 Judge clients retain their declared dependency. Initialize and close each endpoint's
@@ -46,34 +47,62 @@ Compilation validates these references syntactically without importing them.
 Deterministic task-file checks evaluate accepted Messages: nonempty_content,
 nonempty_conversation, assistant_present, and user_present. The former
 `generation_terminated` check depended on a Trace wrapper and is rejected explicitly.
-Generation outcome is now separately available on Episode.generation; an application
-can apply an outcome policy after execution. Shipped structural-check examples use
+Applications apply completion policies around execution; Episode no longer
+classifies generation outcomes. Shipped structural-check examples use
 assistant_present. This does not establish semantic correctness or full completion.
 
-Output files are exclusively created. Generation seals once; verification appends
-new sidecars and cannot promote failed/invalid generation. For standalone historical
-JSON files, sidecars use `<filename>.verification/`; Episode directories use
-`verification/`. Inspection retains historical participant identities and target
-metadata, even when those old identities cannot be used in a new Task.
+## Episode records data only
 
-The optional CLI manifest indexes Episode directories directly under its output
-root. Historical manifests/indexes remain readable. CLI reverification requires an
-explicit task package policy; direct callers can provide a constructed Judge.
-The TUI and vLLM launcher remain in their optional namespaces.
+Episode now has five public dataclass fields: id, messages, metadata, verification
+and path. It has no methods. Messages are an ordinary list and
+verification is a Judgment or None. No properties or lifecycle flags are required.
+
+UserSimEnv appends accepted messages, calls the optional verifier directly and
+stores its result in memory. Runner chooses the recording path and saves once per
+Task, including when execution raises or is cancelled. Standalone Environments
+work in memory; use Runner for disk persistence.
+
+Each save writes a temporary JSON file, flushes it and replaces the destination
+atomically. A failed write raises the underlying error and leaves traces from
+earlier Tasks intact. Abrupt process termination can lose the current Task's
+unsaved messages. Completed snapshots and partial snapshots have the same data shape;
+verification=None does not by itself signal completion.
+
+Remove calls to open, begin, append, history, seal, record, verify, load, export, save,
+to_dict and training_messages. Use messages.append, direct evaluator calls,
+Runner and ordinary JSON reads instead. Episode no longer stores events, status,
+generation classifications or verification histories. Live clients are not stored;
+message and feedback text are saved as supplied, without automatic redaction.
+Unused Message fields for evidence, reasoning, visibility, segments and timestamps
+are also removed.
+
+The saved JSON keys are id, messages, metadata and verification. Old trace formats,
+ledger files, sidecars, historical verification selection and CLI reverification
+are retired. The optional Inspector and CLI export read the current snapshot shape.
+
+The shared json_data, canonical_json, parse_json and freeze helpers are removed.
+Callers use standard json.dumps/json.loads and dataclasses.asdict. Nested input,
+argument and judgment data stays in ordinary dictionaries and lists; standard
+copies keep supplied data independent without making it recursively immutable.
+JSON parsing follows the standard library, including keeping the last value for
+duplicate keys. Serialization rejects non-finite numbers with allow_nan=False.
 
 ## Domain protocols and Runner scope
 
-Environment is now a structural protocol, with a stateless UserSimEnv implementation
-in agentinstruct.environment. Pass an implementation instance to Runner; it must
-implement async run(task, *, client=None) and perform domain work into the supplied
-Episode. Its run method owns beginning execution, deadlines/failures, sealing and
-optional verification. Runner only opens, invokes and collects. Custom Environment
-errors propagate directly. Replace Environment(task).run() with a supplied instance
-or the default UserSimEnv; open task.episode before standalone execution.
+Environment is a structural protocol with one `run()` method. `UserSimEnv(Environment)`
+in agentinstruct.environment implements the conversation loop. Pass an
+implementation instance to Runner; it must implement async run(task, *, client=None)
+and perform domain work into the supplied
+Episode. UserSimEnv alternates Agent turns, records them and optionally verifies.
+Runner assigns the output path, invokes, saves and collects. Errors propagate and
+stop the batch after saving the collected trace. Replace Environment(task).run()
+with a supplied instance or the default UserSimEnv.
 
-Code written against the earlier Runner-owned lifecycle must implement that policy
-in its Environment. Direct Generator/Evaluator adapters can keep UserSimEnv's
-built-in safeguards while varying domain generation/evaluation.
+UserSimEnv no longer schedules segments, executes Tools, enforces deadlines or
+recovers from failures. It explicitly rejects Task segments, Task.timeout_seconds
+and returned Tool calls. Task files can still load those declarations for custom
+Environments. Applications can wrap execution in asyncio.timeout when needed.
+Direct Generator/Evaluator adapters customize conversation generation/evaluation.
 
 The speculative resources= API and runtime verifier-dictionary assembly are
 removed. Applications own async contexts around their batch. Task.verifier takes
@@ -93,8 +122,8 @@ Agent has generate and private _review methods. Generate applies the optional
 reviewer; the revision loop allows one initial sample
 plus max_revisions replacements. Rejected drafts and feedback stay out of accepted
 history. Exhaustion raises ReviewExhausted; there is no acceptance fallback.
-UserSimEnv commits approved proposals before executing their declared Tools and
-calls generate again with Tool results. Each call has a fresh revision budget.
+UserSimEnv records approved conversation messages and passes accepted history to
+the next Agent. Each call to generate has a fresh revision budget.
 Agent has no Episode dependency or proposal/review recording. Drafts and feedback
 remain local to generate. A leading system Message overrides the Agent's base instruction for
 that call; otherwise generate prepends the base instruction.
@@ -106,4 +135,4 @@ needed. Model errors propagate from the SDK; Agent adds no error classification 
 model-call evidence layer. Task records the Agent settings directly.
 Agent's `api` selector and Responses translation are removed. Task files must
 select Chat Completions for Agents; the loader rejects a different API explicitly.
-Historical Episodes containing draft/review events remain readable.
+Draft/review events and their historical readers are retired.

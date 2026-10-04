@@ -44,7 +44,7 @@ async def main(output: Path) -> None:
     ) as client:
         tasks = load_tasks(Path(__file__).parent, clients={"judge": client})
         for episode in await Runner(tasks, output_dir=output, client=client).run():
-            print(episode.status, episode.path)
+            print(episode.verification, episode.path)
 
 
 if __name__ == "__main__":

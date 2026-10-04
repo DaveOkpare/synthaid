@@ -1,5 +1,9 @@
 # Doubleword with synthetic medagent scenario inputs
 
+This historical example depends on Tool execution, which the lean UserSimEnv no
+longer provides. Its run scripts require a custom Environment; the instructions
+below describe the earlier workflow. Task-file validation remains available; historical trace loading is retired.
+
 The opt-in live script projects two English scenario labels from an existing
 medagent data file. It creates assistant/user Tasks with a read-only scenario Tool
 and a model-backed final Judge. The application owns one AsyncOpenAI client around
@@ -29,13 +33,7 @@ Task-file compilation is inert and does not require the custom Tool module:
 uv run --locked agentinstruct validate examples/doubleword-medagent
 ```
 
-For paid reverification, initialize clients through the CLI's declared credential
-setting and keep the Tool factory importable:
-
-```sh
-PYTHONPATH=examples/doubleword-medagent uv run --locked agentinstruct reverify \
-  /path/to/episode --package examples/doubleword-medagent --json
-```
+The former CLI reverification command has been retired.
 
 The separate review_smoke.py now demonstrates rejection, feedback-driven revision,
 and private Tool visibility entirely offline through the direct API:

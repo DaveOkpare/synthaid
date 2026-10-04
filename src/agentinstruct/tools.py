@@ -1,6 +1,8 @@
 """Callable Tools validate arguments and results at their capability boundary."""
 
+import json
 from collections.abc import Awaitable, Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -8,8 +10,6 @@ from jsonschema import FormatChecker
 from jsonschema.protocols import Validator
 from jsonschema.validators import validator_for
 from referencing import Registry
-
-from agentinstruct.episode import freeze, json_data
 
 
 class ToolError(RuntimeError):
@@ -19,7 +19,8 @@ class ToolError(RuntimeError):
 
 
 def schema_validator(schema: Any) -> Validator:
-    data = json_data(schema)
+    data = deepcopy(schema)
+    json.dumps(data, allow_nan=False)
     if not isinstance(data, (dict, bool)):
         raise ValueError("Schema must be an object or Boolean")
     cls = validator_for(data)
@@ -51,23 +52,24 @@ class Tool:
             raise ValueError("Tool execution_errors must be fail or result")
         schema = {"type": "object"} if self.input_schema is None else self.input_schema
         schema_validator(schema)
-        object.__setattr__(self, "input_schema", freeze(schema))
+        object.__setattr__(self, "input_schema", deepcopy(schema))
         if self.output_schema is not None:
             schema_validator(self.output_schema)
-            object.__setattr__(self, "output_schema", freeze(self.output_schema))
+            object.__setattr__(self, "output_schema", deepcopy(self.output_schema))
 
     def validate(self, arguments: Mapping[str, Any]) -> None:
         try:
             if not isinstance(arguments, Mapping):
                 raise ValueError("Tool arguments must be an object")
-            schema_validator(self.input_schema).validate(json_data(arguments))
+            json.dumps(dict(arguments), allow_nan=False)
+            schema_validator(self.input_schema).validate(arguments)
         except Exception as exc:
             raise ToolError("arguments") from exc
 
     async def call(self, arguments: Mapping[str, Any]) -> Any:
         self.validate(arguments)
         try:
-            value = await self.function(freeze(arguments))
+            value = await self.function(deepcopy(dict(arguments)))
         except Exception as exc:
             if self.execution_errors == "result":
                 return {"error": {"exception": type(exc).__name__, "kind": "execution"}}
@@ -76,10 +78,10 @@ class Tool:
 
     def validate_result(self, value: Any) -> Any:
         try:
-            data = json_data(value)
+            json.dumps(value, allow_nan=False)
             if self.output_schema is not None:
-                schema_validator(self.output_schema).validate(data)
-            return data
+                schema_validator(self.output_schema).validate(value)
+            return value
         except Exception as exc:
             raise ToolError("result") from exc
 
@@ -87,7 +89,7 @@ class Tool:
         return {
             "id": self.id,
             "description": self.description,
-            "input_schema": json_data(self.input_schema),
-            "output_schema": json_data(self.output_schema),
+            "input_schema": deepcopy(self.input_schema),
+            "output_schema": deepcopy(self.output_schema),
             "execution_errors": self.execution_errors,
         }

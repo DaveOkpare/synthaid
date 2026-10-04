@@ -1,4 +1,4 @@
-"""Task authoring stays inert, records failures and retains shared segments."""
+"""Inert task authoring and execution through the conversation environment."""
 
 import shutil
 import sys
@@ -41,60 +41,46 @@ async def test_python_records_compile_to_the_direct_task_interface(
     tasks = load_tasks(root, seeds=[{"name": "Ada"}, {"name": "Grace"}])
     assert len(tasks) == 2 and tasks[0].episode.id != tasks[1].episode.id
     assert all(
-        task.episode.path is None and task.episode.messages == () for task in tasks
+        task.episode.path is None and not task.episode.messages for task in tasks
     )
     episodes = await Runner(tasks, output_dir=tmp_path / "runs").run()
-    assert all(episode.status == "accepted" for episode in episodes)
+    assert all(
+        episode.verification is not None and episode.verification.passed
+        for episode in episodes
+    )
 
 
-@pytest.mark.asyncio
-async def test_steps_compile_into_one_task_and_retain_private_history(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_steps_still_compile_as_task_data(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.syspath_prepend(str(EXAMPLES / "stepped-dialogue"))
     tasks = load_tasks(EXAMPLES / "stepped-dialogue")
     assert len(tasks) == 1 and [segment["name"] for segment in tasks[0].segments] == [
         "collect",
         "conclude",
     ]
-    episodes = await Runner(tasks, output_dir=tmp_path).run()
-    assert len(episodes) == 1
-    assert [message.segment for message in episodes[0].messages] == ["collect"] * 4 + [
-        "conclude"
-    ] * 2
-    assert (
-        len([message for message in episodes[0].messages if message.role == "tool"])
-        == 1
-    )
-    assert not any(message.role == "tool" for message in episodes[0].history("user"))
+    assert tasks[0].episode.path is None
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("name", "statuses"),
+    "name",
     [
-        ("custom-components", ["accepted", "accepted"]),
-        ("release-workflow", ["accepted", "failed"]),
+        "function-tool",
+        "multi-tool",
+        "stepped-dialogue",
+        "custom-components",
+        "release-workflow",
     ],
 )
-async def test_custom_generators_revise_from_feedback_before_tool_effects(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, statuses: list[str]
+@pytest.mark.asyncio
+async def test_legacy_execution_examples_require_a_custom_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
 ) -> None:
     monkeypatch.syspath_prepend(str(EXAMPLES / name))
-    tasks = load_tasks(
-        EXAMPLES / name,
-        seeds=[
-            {"id": "one", "name": "One", "outcome": "accepted"},
-            {"id": "two", "name": "Two", "outcome": "failed"},
-        ],
-    )
-    episodes = await Runner(tasks, output_dir=tmp_path).run()
-    assert [episode.status for episode in episodes] == statuses
-    for episode in episodes:
-        calls = [call for message in episode.messages for call in message.tool_calls]
-        assert calls and all(
-            call.function.arguments["label"] == "safe" for call in calls
-        )
+    tasks = load_tasks(EXAMPLES / name)
+    with pytest.raises(ValueError, match="UserSimEnv"):
+        await Runner(tasks, output_dir=tmp_path).run()
+    assert tasks[0].episode.verification is None
 
 
 @pytest.mark.parametrize(
@@ -110,9 +96,7 @@ def test_unsupported_roles_and_contradictory_targets_have_explicit_migration_err
         list(compile_records(root))
 
 
-@pytest.mark.parametrize(
-    "bad", ['{"name":"Ada","name":"Grace"}', '{"name":NaN}', "[]", '"string"']
-)
+@pytest.mark.parametrize("bad", ['{"name":"Ada",}', '{"name":NaN}', "[]", '"string"'])
 def test_bad_individual_jsonl_record_does_not_hide_later_records(
     tmp_path: Path, bad: str
 ) -> None:
@@ -228,12 +212,12 @@ def test_compile_does_not_import_or_construct_custom_components(tmp_path: Path) 
 @pytest.mark.parametrize(
     "name",
     [
-        "function-tool",
-        "multi-tool",
-        "stepped-dialogue",
+        "verified-single",
+        "scripted-single",
+        "scripted-dialogue",
+        "reviewed-dialogue",
         "seed-sources",
-        "custom-components",
-        "release-workflow",
+        "seed-collection",
     ],
 )
 @pytest.mark.asyncio
@@ -244,8 +228,9 @@ async def test_shipped_offline_packages_use_canonical_interfaces(
     tasks = load_tasks(EXAMPLES / name)
     episodes = await Runner(tasks, output_dir=tmp_path).run()
     assert episodes
-    if name != "release-workflow":
-        assert all(episode.status not in {"failed", "invalid"} for episode in episodes)
+    assert all(
+        episode.path is not None and episode.path.is_file() for episode in episodes
+    )
 
 
 @pytest.mark.parametrize(

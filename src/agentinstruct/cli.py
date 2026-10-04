@@ -2,15 +2,17 @@
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 from collections.abc import Sequence
 from contextlib import AsyncExitStack
+from dataclasses import asdict
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
-from agentinstruct.episode import Episode, canonical_json, output_path, write_json
+from agentinstruct.inspection import trace_status
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -64,10 +66,6 @@ def _recorded_commands(commands: Any) -> None:
     group.add_argument("--tui", action="store_true")
     group.add_argument("--json", action="store_true", dest="as_json")
     _export_command(commands)
-    parser = commands.add_parser("reverify")
-    parser.add_argument("traces", nargs="+")
-    parser.add_argument("--package", required=True)
-    parser.add_argument("--json", action="store_true", dest="as_json")
 
 
 def _export_command(commands: Any) -> None:
@@ -75,8 +73,7 @@ def _export_command(commands: Any) -> None:
     parser.add_argument("traces", nargs="+")
     parser.add_argument("--format", choices=["openai", "native"], default="openai")
     parser.add_argument("--output", required=True)
-    parser.add_argument("--verification")
-    for key in ("status", "run-id", "trace-id", "seed-id"):
+    for key in ("status", "trace-id"):
         parser.add_argument("--" + key, action="append")
     parser.add_argument("--json", action="store_true", dest="as_json")
 
@@ -118,51 +115,43 @@ def _run(args: argparse.Namespace) -> int:
 async def _run_tasks(
     args: argparse.Namespace, report: dict[str, Any]
 ) -> dict[str, Any]:
-    episodes: list[Episode] = []
+    traces = []
     async with AsyncExitStack() as stack:
         clients = await _clients(stack, report["records"])
         for record in report["records"]:
-            episode = await _execute_record(record, args.output, clients)
-            episodes.append(episode)
-            if args.fail_fast and episode.status in {"invalid", "failed"}:
+            trace = await _execute_record(record, args.output, clients)
+            traces.append(trace)
+            if args.fail_fast and trace["status"] == "invalid":
                 break
-    result = _run_report(args.output, episodes, report["source_error"])
-    destination = output_path(Path(args.output) / "manifest.json")
+    result = _run_report(args.output, traces, report["source_error"])
+    destination = Path(args.output) / "manifest.json"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    write_json(destination, result)
+    with destination.open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(result, allow_nan=False) + "\n")
     return result
 
 
 async def _execute_record(
     record: dict[str, Any], output: str, clients: dict[str, Any]
-) -> Episode:
+) -> dict[str, Any]:
     from agentinstruct import Runner
     from agentinstruct.adapters.task_files import task_from_record
 
     if record.get("error"):
-        return _invalid_record(record, output)
-    try:
-        task = task_from_record(record, clients=clients)
-    except Exception as exc:
-        origin = record["provenance"]["seed"]["origin"]
-        return _invalid_record({"error": type(exc).__name__, "origin": origin}, output)
-    try:
-        await Runner([task], output_dir=output).run()
-    except Exception:
-        if not task.episode.sealed:
-            raise
-    return task.episode
-
-
-def _invalid_record(record: dict[str, Any], output: str) -> Episode:
-    episode = Episode()
-    episode.open(Path(output) / episode.id)
-    episode.begin(
-        {"source": record.get("origin"), "preparation_error": record["error"]}
-    )
-    episode.record("preparation_error", error=record["error"])
-    episode.seal("invalid", "preparation")
-    return episode
+        return {
+            "status": "invalid",
+            "error": record["error"],
+            "origin": record.get("origin"),
+        }
+    task = task_from_record(record, clients=clients)
+    await Runner([task], output_dir=output).run()
+    judgment = task.episode.verification
+    verification = asdict(judgment) if judgment else None
+    return {
+        "trace_id": task.episode.id,
+        "status": trace_status({"verification": verification}),
+        "path": str(Path(task.episode.id) / "trace.json"),
+    }
 
 
 async def _clients(
@@ -217,62 +206,36 @@ def _inspect(args: argparse.Namespace) -> int:
 def _export(args: argparse.Namespace) -> int:
     from agentinstruct.inspection import Inspector
 
-    episodes = [e for path in args.traces for e in Inspector(path).traces]
-    selected = [e for e in episodes if _include(e, args)]
-    destination = output_path(args.output)
-    if any(e.path is not None and destination.is_relative_to(e.path) for e in episodes):
-        raise ValueError("Export cannot overwrite recorded evidence")
-    rows = [_export_row(e, args.format, args.verification) for e in selected]
-    with destination.open("x", encoding="utf-8") as stream:
-        for row in rows:
-            stream.write(canonical_json(row) + "\n")
-    _display({"count": len(rows), "path": str(destination)}, args.as_json)
+    traces = [t for path in args.traces for t in Inspector(path).traces]
+    selected = [t for t in traces if _include(t, args)]
+    with Path(args.output).open("x", encoding="utf-8") as stream:
+        for trace in selected:
+            row = (
+                trace
+                if args.format == "native"
+                else {
+                    "messages": [
+                        {"role": m["role"], "content": m["content"]}
+                        for m in trace["messages"]
+                    ]
+                }
+            )
+            stream.write(json.dumps(row, allow_nan=False) + "\n")
+    _display({"count": len(selected), "path": args.output}, args.as_json)
     return 0
 
 
-def _include(episode: Episode, args: argparse.Namespace) -> bool:
-    if _verification_status(episode, args.verification) not in (
-        args.status or ["accepted"]
-    ):
-        return False
-    identity = episode.to_dict()
-    return all(
-        values is None or identity[key] in values
-        for key, values in (
-            ("run_id", args.run_id),
-            ("trace_id", args.trace_id),
-            ("seed_id", args.seed_id),
-        )
+def _include(trace: dict[str, Any], args: argparse.Namespace) -> bool:
+    return trace_status(trace) in (args.status or ["accepted"]) and (
+        args.trace_id is None or trace["id"] in args.trace_id
     )
-
-
-def _reverify(args: argparse.Namespace) -> int:
-    from agentinstruct.adapters.task_files import load_tasks
-
-    async def apply() -> list[MappingResult]:
-        async with AsyncExitStack() as stack:
-            report = _prepare(argparse.Namespace(package=args.package, seed=None))
-            clients = await _clients(stack, report["records"])
-            judge = load_tasks(args.package, clients=clients)[0].verifier
-            if judge is None:
-                raise ValueError("Task files have no verifier policy")
-            return [
-                dict(await Episode.load(path).verify(judge)) for path in args.traces
-            ]
-
-    attempts = asyncio.run(apply())
-    _display({"attempts": attempts}, args.as_json)
-    return int(any(item["status"] == "unverified" for item in attempts))
-
-
-type MappingResult = dict[str, Any]
 
 
 def _display(value: dict[str, Any], as_json: bool) -> None:
     from agentinstruct.inspection import terminal_text
 
     print(
-        canonical_json(value)
+        json.dumps(value, allow_nan=False)
         if as_json
         else terminal_text(
             "\n".join(
@@ -288,7 +251,6 @@ def _command(args: argparse.Namespace) -> int:
         "run": _run,
         "inspect": _inspect,
         "export": _export,
-        "reverify": _reverify,
     }
     try:
         return handlers[args.command](args)
@@ -300,18 +262,14 @@ def _command(args: argparse.Namespace) -> int:
 
 
 def _run_report(
-    output: str, episodes: Sequence[Episode], source_error: str | None
+    output: str, traces: Sequence[dict[str, Any]], source_error: str | None
 ) -> dict[str, Any]:
     from collections import Counter
 
-    traces = [
-        {"trace_id": e.id, "status": e.status, "path": e.path.name if e.path else ""}
-        for e in episodes
-    ]
     return {
         "path": str(Path(output)),
         "status": "failed" if source_error else "finished",
-        "counts": dict(Counter(e.status for e in episodes)),
+        "counts": dict(Counter(t["status"] for t in traces)),
         "source_error": source_error,
         "traces": traces,
     }
@@ -353,33 +311,8 @@ def _inspect_output(
                 args.view, trace_index=index or 0, participant=args.participant
             )
         )
-        print(canonical_json(data))
+        print(json.dumps(data, allow_nan=False))
     else:
         print(
             inspector.render(args.view, trace_index=index, participant=args.participant)
         )
-
-
-def _verification_status(episode: Episode, identifier: str | None) -> str:
-    if identifier is None:
-        return episode.status
-    selected = next(
-        (attempt for attempt in episode.verification if attempt["id"] == identifier),
-        None,
-    )
-    if selected is None:
-        raise ValueError("Unknown Verification ID")
-    if episode.generation.get("state") in {"failed", "invalid"}:
-        return episode.status
-    return str(selected["status"])
-
-
-def _export_row(
-    episode: Episode, format: str, verification: str | None
-) -> dict[str, Any]:
-    if format == "openai":
-        return {"messages": episode.training_messages()}
-    data = episode.to_dict()
-    data["status"] = _verification_status(episode, verification)
-    data["selected_verification_id"] = verification
-    return data

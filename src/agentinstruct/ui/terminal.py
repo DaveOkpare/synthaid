@@ -8,8 +8,7 @@ from agentinstruct.inspection import VIEWS, Inspector, terminal_text
 class InspectionSession:
     HELP = (
         "Commands: run, trace N (1-based), next, previous, summary, conversation, "
-        "participant ID, tools, reviews, verification, provenance, failures, "
-        "artifacts, reasoning, page N, more, back, help, quit. "
+        "participant ID, verification, provenance, page N, more, back, help, quit. "
         "Views are operator-wide except participant ID."
     )
 

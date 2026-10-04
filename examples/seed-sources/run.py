@@ -16,9 +16,9 @@ async def main(output: Path) -> None:
     )
     tasks = [*load_tasks(root), *load_tasks(root, seeds=prepared)]
     for episode in await Runner(tasks, output_dir=output).run():
-        print(episode.status, episode.path)
+        print(episode.verification, episode.path)
         for message in episode.messages:
-            print(message.segment, message.actor_id, message.content)
+            print(message.actor_id, message.content)
 
 
 if __name__ == "__main__":

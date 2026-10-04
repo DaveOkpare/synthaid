@@ -1,13 +1,15 @@
 """Inert Task definitions automatically own one identified Episode."""
 
+import json
 import math
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, Literal
 
 from agentinstruct.agent import Agent
-from agentinstruct.episode import Episode, freeze
+from agentinstruct.episode import Episode
 from agentinstruct.judge import Evaluator, evaluation_settings
 
 
@@ -31,10 +33,11 @@ class Task:
             self.provenance, Mapping
         ):
             raise ValueError("Task input and provenance must be ordinary mappings")
-        object.__setattr__(self, "input", freeze(self.input))
+        object.__setattr__(self, "input", deepcopy(dict(self.input)))
         segments = tuple(_segment(item, self.agents) for item in self.segments)
         object.__setattr__(self, "segments", segments)
-        object.__setattr__(self, "provenance", freeze(self.provenance))
+        object.__setattr__(self, "provenance", deepcopy(dict(self.provenance)))
+        json.dumps((self.input, self.provenance), allow_nan=False)
         _limits(self)
         if self.verifier is not None and not isinstance(self.verifier, Evaluator):
             raise ValueError("Task verifier must implement evaluate(messages)")
@@ -60,7 +63,7 @@ class Task:
         }
 
     @property
-    def roles(self) -> tuple[str, ...]:
+    def roles(self) -> tuple[Literal["assistant", "user"], ...]:
         if "user" not in self.agents:
             return ("assistant",)
         return (
@@ -80,9 +83,7 @@ def _segment(
         raise ValueError("Segment instructions must address configured participants")
     if any(not isinstance(text, str) for text in instructions.values()):
         raise ValueError("Segment instructions must be text")
-    return cast(
-        Mapping[str, Any], freeze({"name": value["name"], "instructions": instructions})
-    )
+    return {"name": value["name"], "instructions": dict(instructions)}
 
 
 def _limits(task: Task) -> None:

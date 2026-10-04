@@ -31,7 +31,7 @@ async def test_stateless_requests_and_application_owned_client(tmp_path: Path) -
         assert body["store"] is False and body["stream"] is False
         assert body["messages"] == [
             {"role": "system", "content": "Greet"},
-            {"role": "user", "content": '{"name":"Ada"}'},
+            {"role": "user", "content": '{"name": "Ada"}'},
         ]
         assert task.episode.messages[0].content == "Hello"
 
@@ -46,11 +46,12 @@ async def test_refusal_and_incomplete_samples_fail_generation(
     )
     async with client(transport) as borrowed:
         tasks = [Task(agents={"assistant": Agent("model")}) for _ in range(2)]
-        await Runner(tasks, output_dir=tmp_path, client=borrowed).run()
+        with pytest.raises(RuntimeError, match="did not complete"):
+            await Runner(tasks, output_dir=tmp_path, client=borrowed).run()
         assert not borrowed.is_closed()
-    assert tasks[0].episode.status == "failed" and (not tasks[0].episode.messages)
-    assert tasks[1].episode.messages[0].content == "Hello"
-    assert tasks[0].episode.generation["state"] == "failed"
+    assert not tasks[0].episode.messages
+    assert tasks[1].episode.path is None
+    assert len(transport.requests) == 1
 
 
 @pytest.mark.asyncio
@@ -71,7 +72,9 @@ async def test_provider_errors_propagate_without_retries(status: int) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ordered_tool_effects_and_private_history(tmp_path: Path) -> None:
+async def test_usersim_rejects_model_tool_proposals_without_effects(
+    tmp_path: Path,
+) -> None:
     effects: list[str] = []
 
     async def lookup(arguments: Mapping[str, Any]) -> dict[str, Any]:
@@ -86,41 +89,33 @@ async def test_ordered_tool_effects_and_private_history(tmp_path: Path) -> None:
     transport = Transport(first, response("chat_completions", "Done"))
     async with client(transport) as borrowed:
         task = Task(agents={"assistant": Agent("model", tools=[Tool(lookup)])})
-        await Runner([task], output_dir=tmp_path, client=borrowed).run()
-    assert effects == ["one", "two"]
-    assert [m.role for m in task.episode.messages] == [
-        "assistant",
-        "tool",
-        "tool",
-        "assistant",
-    ]
-    assert [m.content for m in task.episode.history("user")] == ["Done"]
-    body = json.loads(transport.requests[1].content)
-    assert [
-        json.loads(call["function"]["arguments"])
-        for call in body["messages"][1]["tool_calls"]
-    ] == [{"value": "one"}, {"value": "two"}]
+        with pytest.raises(ValueError, match="rejects Tool calls"):
+            await Runner([task], output_dir=tmp_path, client=borrowed).run()
+    assert not effects and not task.episode.messages
+    assert len(transport.requests) == 1
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("api", ["responses", "chat_completions"])
-async def test_real_judge_client_call_and_redaction(api: str, tmp_path: Path) -> None:
+async def test_real_judge_client_call_does_not_serialize_client_credentials(
+    api: str, tmp_path: Path
+) -> None:
     secret = "credential-canary"
     transport = Transport(
-        response("chat_completions", secret),
-        response(api, '{"passed":true,"feedback":"' + secret + '"}'),
+        response("chat_completions", "Hello"),
+        response(api, '{"passed":true,"feedback":"Good"}'),
     )
     async with client(transport, api_key=secret) as borrowed:
         judge = Judge(client=borrowed, model="judge", prompt="Evaluate", api=api)
         task = Task(agents={"assistant": Agent("model")}, verifier=judge)
         await Runner([task], output_dir=tmp_path, client=borrowed).run()
         assert not borrowed.is_closed()
-    assert task.episode.status == "accepted"
+    assert task.episode.verification is not None and task.episode.verification.passed
     assert secret not in "".join(path.read_text() for path in tmp_path.rglob("*.json*"))
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("arguments", ['{"x":1,"x":2}', '{"x":NaN}', "[]"])
+@pytest.mark.parametrize("arguments", ['{"x":}', '{"x":NaN}', "[]"])
 async def test_malformed_tool_arguments_are_rejected_by_direct_generation(
     arguments: str,
 ) -> None:
@@ -134,27 +129,7 @@ async def test_malformed_tool_arguments_are_rejected_by_direct_generation(
 
 
 @pytest.mark.asyncio
-async def test_duplicate_call_ids_are_rejected_before_effects(tmp_path: Path) -> None:
-    calls = [
-        function("chat_completions", "same", "one"),
-        function("chat_completions", "same", "two"),
-    ]
-    transport = Transport(response("chat_completions", "", output=None, calls=calls))
-    async with client(transport) as borrowed:
-        effects = []
-
-        async def lookup(arguments: Mapping[str, Any]) -> Any:
-            effects.append(arguments)
-            return arguments
-
-        task = Task(agents={"assistant": Agent("model", tools=[Tool(lookup)])})
-        await Runner([task], output_dir=tmp_path, client=borrowed).run()
-    assert not effects and (not task.episode.messages)
-    assert task.episode.status == "failed"
-
-
-@pytest.mark.asyncio
-async def test_same_builtin_agent_uses_independent_clients_and_active_instructions(
+async def test_same_builtin_agent_uses_independent_clients_and_task_inputs(
     tmp_path: Path,
 ) -> None:
     import asyncio
@@ -163,7 +138,7 @@ async def test_same_builtin_agent_uses_independent_clients_and_active_instructio
     tasks = [
         Task(
             agents={"assistant": shared},
-            segments=[{"name": str(i), "instructions": {"assistant": str(i)}}],
+            input={"index": i},
         )
         for i in range(2)
     ]
@@ -178,12 +153,11 @@ async def test_same_builtin_agent_uses_independent_clients_and_active_instructio
         )
         assert not one.is_closed() and (not two.is_closed())
     assert [t.episode.messages[0].content for t in tasks] == ["first", "second"]
-    assert (
-        json.loads(first.requests[0].content)["messages"][0]["content"] == "Base\n\n0"
-    )
-    assert (
-        json.loads(second.requests[0].content)["messages"][0]["content"] == "Base\n\n1"
-    )
+    for i, transport in enumerate((first, second)):
+        assert json.loads(transport.requests[0].content)["messages"] == [
+            {"role": "system", "content": "Base"},
+            {"role": "user", "content": f'{{"index": {i}}}'},
+        ]
     assert shared.client is None and shared.instruction == "Base"
 
 

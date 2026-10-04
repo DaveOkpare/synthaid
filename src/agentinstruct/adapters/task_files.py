@@ -3,10 +3,12 @@
 import csv
 import hashlib
 import importlib
+import json
 import re
 import tomllib
 import unicodedata
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
@@ -16,7 +18,7 @@ from jinja2 import StrictUndefined, TemplateError, Undefined, meta
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from agentinstruct import Agent, Judge, Task, Tool
-from agentinstruct.episode import Message, canonical_json, json_data, parse_json
+from agentinstruct.episode import Message
 from agentinstruct.judge import Criterion, Rubric
 from agentinstruct.tools import schema_validator
 
@@ -83,7 +85,7 @@ def _layout(root: Path, relative: str, expected: set[str]) -> None:
 
 def _template_value(value: Any) -> Any:
     if not isinstance(value, Undefined):
-        canonical_json(value)
+        json.dumps(value, allow_nan=False)
     return value
 
 
@@ -114,7 +116,7 @@ def _render(text: str, variables: Mapping[str, Any]) -> str:
             raise TaskValidationError(
                 "Undeclared instruction variables: " + ", ".join(sorted(undeclared))
             )
-        return env.from_string(text).render(json_data(variables))
+        return env.from_string(text).render(dict(variables))
     except (TemplateError, TypeError, ValueError) as exc:
         raise TaskValidationError(
             f"Instruction rendering failed ({type(exc).__name__})"
@@ -173,7 +175,7 @@ def _files(root: Path, config: dict[str, Any], text: str) -> dict[str, str]:
     if config["seed"].get("schema"):
         label = config["seed"]["schema"]
         files[label] = _text(root, label)
-        schema_validator(parse_json(files[label]))
+        schema_validator(json.loads(files[label]))
     return files
 
 
@@ -641,12 +643,13 @@ def _input_data(
         raise TaskValidationError(source["error"])
     raw = source.get("raw")
     data = (
-        parse_json(raw) if isinstance(raw, str) else json_data(source.get("data", raw))
+        json.loads(raw) if isinstance(raw, str) else deepcopy(source.get("data", raw))
     )
     if not isinstance(data, dict):
         raise TaskValidationError("Input record must be a JSON object")
+    json.dumps(data, allow_nan=False)
     if config["seed"].get("schema"):
-        schema_validator(parse_json(files[config["seed"]["schema"]])).validate(data)
+        schema_validator(json.loads(files[config["seed"]["schema"]])).validate(data)
     return data
 
 
@@ -655,7 +658,11 @@ def _input_identity(
 ) -> str:
     identity = variables.get(
         config["seed"].get("id_variable"),
-        hashlib.sha256(canonical_json(data).encode()).hexdigest(),
+        hashlib.sha256(
+            json.dumps(
+                data, sort_keys=True, separators=(",", ":"), allow_nan=False
+            ).encode()
+        ).hexdigest(),
     )
     if (
         isinstance(identity, bool)
@@ -832,7 +839,11 @@ def _provenance(
     return {
         "task": task,
         "seed": {"id": identity, "data": data, "origin": origin},
-        "source_digest": hashlib.sha256(canonical_json(files).encode()).hexdigest(),
+        "source_digest": hashlib.sha256(
+            json.dumps(
+                files, sort_keys=True, separators=(",", ":"), allow_nan=False
+            ).encode()
+        ).hexdigest(),
     }
 
 

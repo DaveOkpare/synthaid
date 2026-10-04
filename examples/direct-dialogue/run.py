@@ -53,7 +53,7 @@ async def main(output: str) -> None:
         for item, days in (("headphones", 12), ("desk lamp", 45))
     ]
     for episode in await Runner(tasks, output_dir=output).run():
-        print(episode.status, episode.path)
+        print(episode.verification, episode.path)
         print(json.dumps([message.content for message in episode.messages], indent=2))
 
 

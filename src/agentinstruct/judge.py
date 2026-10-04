@@ -2,13 +2,15 @@
 
 import asyncio
 import inspect
+import json
 import math
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from copy import deepcopy
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Protocol, runtime_checkable
 
-from agentinstruct.episode import Message, freeze, parse_json
+from agentinstruct.episode import Message
 
 
 @dataclass(frozen=True)
@@ -67,13 +69,13 @@ class Judgment:
             for key, value in self.criteria.items()
         ):
             raise ValueError("Criterion verdicts must be actual Booleans")
-        object.__setattr__(self, "criteria", freeze(self.criteria))
-        object.__setattr__(self, "evidence", freeze(self.evidence))
+        object.__setattr__(self, "criteria", dict(self.criteria))
+        object.__setattr__(self, "evidence", deepcopy(dict(self.evidence)))
 
 
 class JudgeError(RuntimeError):
     def __init__(self, kind: str, evidence: Mapping[str, Any] | None = None) -> None:
-        self.kind, self.evidence = kind, freeze(evidence or {})
+        self.kind, self.evidence = kind, deepcopy(dict(evidence or {}))
         super().__init__(f"Judge {kind} failed")
 
 
@@ -137,11 +139,12 @@ class Judge:
             raise JudgeError(kind, getattr(exc, "evidence", {})) from exc
 
     async def _model_judgment(self, messages: tuple[Message, ...]) -> Judgment:
-        from agentinstruct.episode import canonical_json
-
         history = [
             {"role": "system", "content": self.prompt},
-            {"role": "user", "content": canonical_json(messages)},
+            {
+                "role": "user",
+                "content": json.dumps(messages, default=asdict, allow_nan=False),
+            },
         ]
         format_ = {
             "name": "Judgment",
@@ -170,7 +173,7 @@ class Judge:
             if choice.message.refusal or choice.finish_reason != "stop":
                 raise ValueError("Judge response did not complete")
             content = choice.message.content or ""
-        return _judgment(parse_json(content), self.rubric)
+        return _judgment(json.loads(content), self.rubric)
 
     def declaration(self) -> dict[str, Any]:
         return {

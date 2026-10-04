@@ -11,9 +11,9 @@ from agentinstruct.adapters.task_files import load_tasks
 async def main(output: Path) -> None:
     tasks = load_tasks(Path(__file__).parent)
     for episode in await Runner(tasks, output_dir=output).run():
-        print(episode.status, episode.path)
+        print(episode.verification, episode.path)
         for message in episode.messages:
-            print(message.segment, message.actor_id, message.content)
+            print(message.actor_id, message.content)
 
 
 if __name__ == "__main__":

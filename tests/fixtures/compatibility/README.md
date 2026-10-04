@@ -9,13 +9,16 @@ synthetic components in `tests.component_fixtures`. Those runtime imports and
 Runner factory/storage arguments have since been removed; the captured files
 remain independent of their original components.
 
-Read the baseline with the current API:
+The current Episode no longer loads this historical format. Inspect the captured
+JSON directly when researching the earlier design:
 
 ```python
-from agentinstruct import Episode
+import json
+from pathlib import Path
 
-trace = Episode.load("tests/fixtures/compatibility/v0.1.0-reviewed-trace")
-print(trace.status, len(trace.messages))  # accepted, 5
+source = Path("tests/fixtures/compatibility/v0.1.0-reviewed-trace/trace.json")
+trace = json.loads(source.read_text())
+print(trace["status"], len(trace["conversation"]))  # unverified, 5
 ```
 
 The disposable Task Package and Run were removed after capture. The two JSON
@@ -26,7 +29,5 @@ private target Tool calls/results, and a rejected proposal/revision in Events.
 The sidecar supplies the final accepted Verification; the sealed generation
 snapshot correctly remains `unverified`.
 
-Read tests must consume these fixed artifacts without rebuilding them or
-importing their original components. Future writers cannot prove historical
-compatibility by generating a fresh fixture; add a separately versioned capture
-when a new persisted-format baseline is needed.
+The files remain unchanged as historical evidence. The current reader test checks
+that this format is rejected explicitly, without importing its original components.

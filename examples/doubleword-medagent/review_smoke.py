@@ -36,7 +36,7 @@ async def main(output: Path) -> None:
     assistant = ProbeAssistant(tools=[reader], reviewer=judge, max_revisions=2)
     task = Task(agents={"assistant": assistant, "user": ProbeUser()}, verifier=judge)
     for episode in await Runner([task], output_dir=output).run():
-        print(episode.status, episode.path)
+        print(episode.verification, episode.path)
 
 
 if __name__ == "__main__":

@@ -61,7 +61,7 @@ def test_agent_and_task_construction_do_not_import_sdk(tmp_path: Path) -> None:
 from agentinstruct import Agent, Task
 agent = Agent("model")
 task = Task(agents={"assistant": agent})
-assert task.episode.messages == ()
+assert task.episode.messages == []
 assert "openai" not in sys.modules
 """
     )

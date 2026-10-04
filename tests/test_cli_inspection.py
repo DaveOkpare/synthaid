@@ -1,4 +1,4 @@
-"""CLI and TUI consume recorded Episodes without re-entering execution."""
+"""CLI and TUI read plain JSON traces without giving Episode execution behavior."""
 
 import io
 import json
@@ -13,7 +13,22 @@ from agentinstruct.ui.terminal import InspectionSession, run_terminal
 from tests.test_generation import Reply
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
-HISTORICAL = Path(__file__).parent / "fixtures/compatibility/v0.1.0-reviewed-trace"
+
+
+@pytest.fixture
+def saved_trace(tmp_path: Path) -> Path:
+    source = tmp_path / "trace.json"
+    source.write_text(
+        json.dumps(
+            {
+                "id": "recorded",
+                "messages": [{"role": "assistant", "content": "Hello"}],
+                "metadata": {},
+                "verification": {"passed": True},
+            }
+        )
+    )
+    return source
 
 
 def test_cli_help_and_validation_are_inert(
@@ -28,7 +43,7 @@ def test_cli_help_and_validation_are_inert(
     assert not list(tmp_path.iterdir())
 
 
-def test_cli_run_inspect_export_and_reverify_share_the_same_episode(
+def test_cli_run_inspect_and_export_read_saved_trace(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     output = tmp_path / "runs"
@@ -48,34 +63,19 @@ def test_cli_run_inspect_export_and_reverify_share_the_same_episode(
     assert result["counts"] == {"accepted": 1}
     inspector = Inspector(output)
     assert len(inspector.traces) == 1
-    source = inspector.traces[0].path
-    assert source is not None
-    before = (source / "trace.json").read_bytes()
+    source = inspector.paths[0]
+    before = source.read_bytes()
     assert main(["inspect", str(output), "--json"]) == 0
     capsys.readouterr()
-    assert (
-        main(
-            [
-                "reverify",
-                str(source),
-                "--package",
-                str(EXAMPLES / "verified-single"),
-                "--json",
-            ]
-        )
-        == 0
-    )
-    capsys.readouterr()
-    assert len(Inspector(source).traces[0].verification) == 2
-    assert (source / "trace.json").read_bytes() == before
     dataset = tmp_path / "training.jsonl"
     assert main(["export", str(output), "--output", str(dataset), "--json"]) == 0
     assert json.loads(dataset.read_text()) == {
         "messages": [{"role": "assistant", "content": "Hello, Ada."}]
     }
+    assert source.read_bytes() == before
 
 
-def test_invalid_records_and_source_failures_remain_distinct(
+def test_invalid_records_remain_in_report_without_fabricating_episodes(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     source = tmp_path / "inputs.jsonl"
@@ -97,117 +97,87 @@ def test_invalid_records_and_source_failures_remain_distinct(
     )
     report = json.loads(capsys.readouterr().out)
     assert report["counts"] == {"invalid": 1, "accepted": 1}
-    assert len(Inspector(output).traces) == 2
+    assert report["traces"][0]["error"]
+    assert len(Inspector(output).traces) == 1
 
 
 @pytest.mark.parametrize("view", VIEWS)
-def test_historical_recorded_views_are_readable_without_runtime(view: str) -> None:
-    inspector = Inspector(HISTORICAL)
-    participant = (
-        inspector.traces[0].messages[0].actor_id if view == "participant" else None
-    )
+def test_recorded_views_only_read_the_snapshot(view: str, saved_trace: Path) -> None:
+    before = saved_trace.read_bytes()
+    inspector = Inspector(saved_trace)
+    participant = "assistant" if view == "participant" else None
     assert inspector.view(view, participant=participant)
     assert inspector.render(view, participant=participant)
+    assert saved_trace.read_bytes() == before
 
 
-def test_tui_custom_stream_navigation_and_errors_are_read_only() -> None:
-    inspector = Inspector(HISTORICAL)
+def test_old_trace_format_is_explicitly_unsupported() -> None:
+    source = Path(__file__).parent / "fixtures/compatibility/v0.1.0-reviewed-trace"
+    with pytest.raises(ValueError, match="Unsupported trace format"):
+        Inspector(source)
+
+
+def test_tui_navigation_is_read_only(saved_trace: Path) -> None:
+    inspector = Inspector(saved_trace)
     session = InspectionSession(inspector, page_size=2)
     assert "Unknown" in session.execute("unsupported")
     assert "page" in session.execute("conversation")
     assert "Unknown participant" in session.execute("participant missing")
     output = io.StringIO()
     run_terminal(
-        inspector, io.StringIO("conversation\nreasoning\npage 2\nback\nquit\n"), output
+        inspector,
+        io.StringIO("conversation\nverification\npage 2\nback\nquit\n"),
+        output,
     )
     assert "Inspection closed" in output.getvalue()
     assert "\\u001b" in terminal_text("unsafe\x1b[31m")
 
 
 @pytest.mark.asyncio
-async def test_inspection_and_export_exclude_rejected_drafts_from_participant_view(
-    tmp_path: Path,
-) -> None:
+async def test_export_does_not_overwrite_a_trace(tmp_path: Path) -> None:
     task = Task(
         agents={"assistant": Agent(generator=Reply())},
         verifier=Judge(check=lambda messages: True),
     )
     await Runner([task], output_dir=tmp_path).run()
     assert task.episode.path is not None
-    inspector = Inspector(task.episode.path)
-    assert (
-        inspector.view("participant", participant="assistant")["messages"][0]["content"]
-        == "Hello"
-    )
-    before = (task.episode.path / "trace.json").read_bytes()
-    assert (
-        main(
-            [
-                "export",
-                str(task.episode.path),
-                "--output",
-                str(task.episode.path / "trace.json"),
-            ]
-        )
-        == 2
-    )
-    assert (task.episode.path / "trace.json").read_bytes() == before
-
-
-def test_run_discovery_rejects_escape_and_duplicate_index_entries(
-    tmp_path: Path,
-) -> None:
-    (tmp_path / "manifest.json").write_text(json.dumps({"run_id": "recorded"}))
-    (tmp_path / "traces.jsonl").write_text(
-        json.dumps({"path": "../trace.json", "trace_id": "x"})
-    )
-    with pytest.raises(ValueError):
-        Inspector(tmp_path)
+    source = task.episode.path
+    before = source.read_bytes()
+    assert main(["export", str(source), "--output", str(source)]) == 1
+    assert source.read_bytes() == before
 
 
 @pytest.mark.asyncio
-async def test_export_selects_an_immutable_verification_attempt(
+async def test_export_filters_verdicts_and_ids(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    task = Task(
+    accepted = Task(
         agents={"assistant": Agent(generator=Reply())},
         verifier=Judge(check=lambda messages: True),
     )
-    await Runner([task], output_dir=tmp_path / "runs").run()
-    accepted = task.episode.verification[0]["id"]
-    await task.episode.verify(Judge(check=lambda messages: False))
-    destination = tmp_path / "selected.jsonl"
+    rejected = Task(
+        agents={"assistant": Agent(generator=Reply())},
+        verifier=Judge(check=lambda messages: False),
+    )
+    await Runner([accepted, rejected], output_dir=tmp_path / "runs").run()
+    output = tmp_path / "selected.jsonl"
     assert (
         main(
             [
                 "export",
-                str(task.episode.path),
-                "--verification",
-                accepted,
+                str(tmp_path / "runs"),
+                "--status",
+                "rejected",
+                "--trace-id",
+                rejected.episode.id,
                 "--format",
                 "native",
                 "--output",
-                str(destination),
+                str(output),
             ]
         )
         == 0
     )
-    data = json.loads(destination.read_text())
-    assert data["status"] == "accepted" and data["selected_verification_id"] == accepted
-    assert task.episode.status == "rejected"
-    missing = tmp_path / "missing.jsonl"
-    assert (
-        main(
-            [
-                "export",
-                str(task.episode.path),
-                "--verification",
-                "missing",
-                "--output",
-                str(missing),
-            ]
-        )
-        == 2
-    )
-    assert not missing.exists()
+    trace = json.loads(output.read_text())
+    assert trace["id"] == rejected.episode.id and not trace["verification"]["passed"]
     capsys.readouterr()

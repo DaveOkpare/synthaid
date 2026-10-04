@@ -25,7 +25,6 @@ type = "local"
 type = "dialogue"
 initiator = "user"
 max_rounds = 3
-timeout_seconds = 30.0
 
 [agents.user]
 target = false
