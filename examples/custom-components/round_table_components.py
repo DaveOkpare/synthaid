@@ -1,13 +1,12 @@
-"""Construct custom Agents directly, with callable checks and Tools."""
+"""Supply custom sampling, with callable checks and Tools."""
 
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from agentinstruct import Agent
 from agentinstruct.episode import FunctionCall, Message, ToolCall
 
 
-class Participant(Agent):
+class Participant:
     async def generate(
         self, history: Sequence[Message], *, role: str = "assistant", **kwargs: Any
     ) -> Message:
@@ -15,11 +14,7 @@ class Participant(Agent):
             return Message("user", "Please return a safe label.")
         if history[-1].role == "tool":
             return Message("assistant", history[-1].content, control="complete")
-        label = (
-            "safe"
-            if history[-1].content.startswith("Private review feedback:")
-            else "reject"
-        )
+        label = "safe" if history[-1].content == "Use a safe label." else "reject"
         return Message(
             "assistant",
             "Look up label",

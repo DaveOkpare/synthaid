@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agentinstruct import Judge, Runner, Task
+from agentinstruct import Agent, Judge, Runner, Task
 from agentinstruct.cli import main
 from agentinstruct.inspection import VIEWS, Inspector, terminal_text
 from agentinstruct.ui.terminal import InspectionSession, run_terminal
@@ -129,7 +129,8 @@ async def test_inspection_and_export_exclude_rejected_drafts_from_participant_vi
     tmp_path: Path,
 ) -> None:
     task = Task(
-        agents={"assistant": Reply()}, verifier=Judge(check=lambda messages: True)
+        agents={"assistant": Agent(generator=Reply())},
+        verifier=Judge(check=lambda messages: True),
     )
     await Runner([task], output_dir=tmp_path).run()
     assert task.episode.path is not None
@@ -169,7 +170,8 @@ async def test_export_selects_an_immutable_verification_attempt(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     task = Task(
-        agents={"assistant": Reply()}, verifier=Judge(check=lambda messages: True)
+        agents={"assistant": Agent(generator=Reply())},
+        verifier=Judge(check=lambda messages: True),
     )
     await Runner([task], output_dir=tmp_path / "runs").run()
     accepted = task.episode.verification[0]["id"]

@@ -44,7 +44,14 @@ class Task:
             **dict(self.provenance),
             "variables": self.input,
             "agents": {
-                role: {**agent.declaration(), "target": role == "assistant"}
+                role: {
+                    "model": agent.model,
+                    "base_instruction": agent.instruction,
+                    "tools": [tool.declaration() for tool in agent.tools],
+                    "max_revisions": agent.max_revisions,
+                    "reviewer": evaluation_settings(agent.reviewer),
+                    "target": role == "assistant",
+                }
                 for role, agent in self.agents.items()
             },
             "verifier": evaluation_settings(self.verifier),

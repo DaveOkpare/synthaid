@@ -85,17 +85,16 @@ async def main():
 asyncio.run(main())
 ```
 
-Use `api="responses"` on Agent/Judge for the Responses API; the default is Chat
-Completions. OpenAI SDK 2.30.0 is pinned. Both surfaces use stateless accepted
-history, disabled retries, and local strict JSON/schema checks. Configure different
+Agent uses Chat Completions. OpenAI SDK 2.30.0 is pinned; generation uses accepted
+history and disabled retries. Judge also supports `api="responses"`.
+Configure different
 endpoints with separate application-owned clients, supplied explicitly to Agent
 or Judge. An Agent's explicit client takes precedence over Runner.client.
 
 Tool functions receive one immutable arguments mapping. `input_schema` and
 `output_schema` validate JSON locally. Execution failures fail by default;
 `execution_errors="result"` returns a safe error record. Invalid arguments and
-results always fail. `output_schema` on Agent accepts a strict JSON Schema or a
-Pydantic model class, including nested aliases, enums, nullable fields, and dates.
+results always fail.
 
 ## Customize generation and scheduling
 
@@ -108,12 +107,14 @@ Generation, evaluation and execution have small structural protocols:
 | Environment | async run(task, *, client) -> None | Supply an instance to Runner(environment=...) |
 
 A domain adapter implements these methods without inheriting framework classes.
-Generator returns one Message or a nonempty sequence. Agent still performs review,
-revision, durable acceptance and approved Tool execution around that result.
+Generator returns one unreviewed Message. Agent has one public operation:
+`generate()` samples, reviews and revises until approved or its revision limit is
+exhausted. Its private `_review()` invokes the optional reviewer. UserSimEnv commits
+the returned Message and invokes approved Tools, then generates again after Tool results.
 Reviewer feedback and the current rejected draft reach the generator privately.
 The retail example uses a plain generator; tests also demonstrate arithmetic
-generation/evaluation and a custom Environment. Existing Agent.generate subclass
-overrides remain usable. Supporting Message/Tool-call values live in episode.py,
+generation/evaluation and a custom Environment. Supply custom sampling through
+`generator=` so it participates in the same review loop. Supporting Message/Tool-call values live in episode.py,
 and Judgment lives in judge.py.
 
 Task.agents requires `assistant`; an optional `user` uses the same Agent class.
@@ -127,8 +128,8 @@ A callable Judge uses `Judge(check=...)`. Its check receives immutable Messages
 and returns a Boolean, Judgment, or ordinary verdict/feedback mapping. Rubrics
 require exact Boolean criterion IDs and compute weighted scores locally. A Judge
 can serve both review and verification when its criteria suit both uses.
-`max_revisions` counts replacement attempts after the initial draft. An opted-in
-exhaustion fallback accepts only ordinary text, with recorded evidence.
+`max_revisions` counts replacement attempts after the initial draft. A rejected
+final sample ends generation with `review_exhausted` and is never accepted.
 
 Runner opens each existing Episode and calls Environment.run(task, client=...).
 The Environment owns beginning execution, deadlines, outcomes, sealing and final
@@ -138,30 +139,22 @@ other contexts around the batch.
 
 Different domains can usually supply a Generator and Evaluator to the default
 UserSimEnv. A custom Environment defines its own execution policy. Runner forwards
-its errors and leaves finalization to that implementation. For example, inside
-your async entry point:
+its errors and leaves finalization to that implementation.
+
+Generation can also be used directly without a Task or Episode:
 
 ```python
-class CustomDomain:
-    async def run(self, task: Task, *, client=None) -> None:
-        task.episode.add_secrets(client)
-        task.episode.begin(task.declaration())
-        async with asyncio.timeout(task.timeout_seconds):
-            await task.agents["assistant"].turn(task.episode, client=client)
-        task.episode.seal()
-        if task.verifier is not None:
-            await task.episode.verify(task.verifier)
+from agentinstruct.episode import Message
 
-
-environment: Environment = CustomDomain()
-episodes = await Runner(
-    tasks, output_dir="runs", client=client, environment=environment
-).run()
+agent = Agent("model", "Write a worked example.", reviewer=correctness)
+reply = await agent.generate([Message("user", "Explain fractions.")], client=client)
 ```
 
-This minimal custom example propagates execution errors; a domain implementation
-can record its own failure outcomes. UserSimEnv records failures/cancellation and
-preserves partial evidence. Runner adds no lifecycle wrapper.
+Use this inside the application's async client scope. `generate()` uses the Agent's
+instruction unless history starts with an explicit system instruction. It returns
+a reviewed proposal without committing it or executing Tools. Drafts and review
+feedback stay local to that call. UserSimEnv records accepted messages and
+failures/cancellation.
 
 Task.verifier receives a constructed Judge or an Evaluator, and Agent.reviewer
 accepts either. Task data and domain adapters carry no hidden client binding or
@@ -201,8 +194,8 @@ environment variable, defaulting to `OPENAI_API_KEY`.
 
 ## Read, inspect, and export
 
-`episode.messages` is the read-only accepted conversation. Drafts, reviews,
-reasoning evidence, and execution errors are recorded separately. Tool exchanges
+`episode.messages` is the read-only accepted conversation. Agent does not persist
+drafts or reviews; execution errors are recorded separately. Tool exchanges
 are private to their calling Agent; peers and default training exports exclude
 them. Exports select assistant as the training target and preserve accepted user
 context. CLI exports select accepted Episodes by default; use `--status unverified`
@@ -226,6 +219,6 @@ context manager yielding the ready API URL. It owns and stops its server process
 and restores signals. Initialize your separate inference client using that URL.
 Core imports and task validation do not start servers or import the vLLM SDK.
 
-See [migration notes](docs/migration-seven-modules.md) for interface changes and
-[the Runner correction report](.scratch/deep-modules/runner-correction.md) for
-measured changes and verification.
+See [migration notes](docs/migration-seven-modules.md) for interface changes.
+The [library design audit](.scratch/library-design-audit/map.md) preserves historical
+measurements and completed refactor records.

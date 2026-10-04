@@ -1,14 +1,13 @@
-"""A configured custom Agent and ordinary callable Tool."""
+"""A custom Generator and ordinary callable Tool."""
 
 import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from agentinstruct import Agent
 from agentinstruct.episode import FunctionCall, Message, ToolCall
 
 
-class GreetingAgent(Agent):
+class GreetingAgent:
     async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
         if history[-1].role == "tool":
             return Message("assistant", json.loads(history[-1].content)["text"])

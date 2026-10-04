@@ -4,11 +4,10 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from agentinstruct import Agent
 from agentinstruct.episode import FunctionCall, Message, ToolCall
 
 
-class DemoAgent(Agent):
+class DemoAgent:
     async def generate(
         self, history: Sequence[Message], *, role: str = "assistant", **kwargs: Any
     ) -> Message:

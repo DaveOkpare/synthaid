@@ -4,11 +4,10 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from agentinstruct import Agent
 from agentinstruct.episode import FunctionCall, Message, ToolCall
 
 
-class LabelAgent(Agent):
+class LabelAgent:
     async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
         results = [
             json.loads(message.content) for message in history if message.role == "tool"

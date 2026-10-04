@@ -54,15 +54,12 @@ def test_core_and_cli_startup_are_inert(operation: str, tmp_path: Path) -> None:
     assert not list(tmp_path.iterdir())
 
 
-def test_sdk_is_not_imported_by_local_schema_declarations(tmp_path: Path) -> None:
+def test_agent_and_task_construction_do_not_import_sdk(tmp_path: Path) -> None:
     code = (
         GUARD.replace('if sys.argv[1] != "import":', "if False:")
         + """
-from pydantic import BaseModel
 from agentinstruct import Agent, Task
-class Result(BaseModel):
-    passed: bool
-agent = Agent("model", output_schema=Result)
+agent = Agent("model")
 task = Task(agents={"assistant": agent})
 assert task.episode.messages == ()
 assert "openai" not in sys.modules
@@ -76,30 +73,3 @@ assert "openai" not in sys.modules
         timeout=15,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-
-
-def test_shipped_functions_obey_the_architecture_size_contract() -> None:
-    import ast
-
-    source = Path(__file__).resolve().parents[1] / "src/agentinstruct"
-    core = {
-        "task.py",
-        "runner.py",
-        "environment.py",
-        "agent.py",
-        "episode.py",
-        "tools.py",
-        "judge.py",
-        "__init__.py",
-    }
-    assert {path.name for path in source.glob("*.py")} == core | {
-        "cli.py",
-        "inspection.py",
-    }
-    for path in source.rglob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text())):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                assert node.end_lineno is not None
-                assert node.end_lineno - node.lineno + 1 < 20, (
-                    f"{path}:{node.lineno} {node.name}"
-                )

@@ -4,16 +4,15 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from agentinstruct import Agent
 from agentinstruct.episode import FunctionCall, Message, ToolCall
 
 
-class Participant(Agent):
+class Participant:
     async def generate(
         self, history: Sequence[Message], *, role: str = "assistant", **kwargs: Any
     ) -> Message:
         variables = json.loads(history[1].content)
-        feedback = history[-1].content.startswith("Private review feedback:")
+        feedback = history[-1].content == "Use accepted wording and a safe label."
         if role == "user":
             if any(message.tool_calls or message.role == "tool" for message in history):
                 raise ValueError("Private Tool activity reached the user")

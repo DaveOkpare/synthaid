@@ -19,7 +19,6 @@ api_key_env = "OPENAI_API_KEY"
 provider = "default"
 # Replace with a Chat Completions model available to your account.
 name = "your-chat-model"
-max_tokens = 128
 
 [runtime]
 type = "local"

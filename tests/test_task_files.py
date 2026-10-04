@@ -69,6 +69,34 @@ async def test_steps_compile_into_one_task_and_retain_private_history(
     assert not any(message.role == "tool" for message in episodes[0].history("user"))
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "statuses"),
+    [
+        ("custom-components", ["accepted", "accepted"]),
+        ("release-workflow", ["accepted", "failed"]),
+    ],
+)
+async def test_custom_generators_revise_from_feedback_before_tool_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, statuses: list[str]
+) -> None:
+    monkeypatch.syspath_prepend(str(EXAMPLES / name))
+    tasks = load_tasks(
+        EXAMPLES / name,
+        seeds=[
+            {"id": "one", "name": "One", "outcome": "accepted"},
+            {"id": "two", "name": "Two", "outcome": "failed"},
+        ],
+    )
+    episodes = await Runner(tasks, output_dir=tmp_path).run()
+    assert [episode.status for episode in episodes] == statuses
+    for episode in episodes:
+        calls = [call for message in episode.messages for call in message.tool_calls]
+        assert calls and all(
+            call.function.arguments["label"] == "safe" for call in calls
+        )
+
+
 @pytest.mark.parametrize(
     "change", ["[agents.helper]\ntarget=false", "[agents.user]\ntarget=true"]
 )

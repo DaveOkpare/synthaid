@@ -13,12 +13,12 @@ from agentinstruct.episode import FunctionCall, Message, ToolCall
 from agentinstruct.judge import Criterion, Judgment, Rubric
 
 
-class Reply(Agent):
+class Reply:
     async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
         return Message("assistant", "Hello", control="complete")
 
 
-class Learner(Agent):
+class Learner:
     async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
         return Message("user", "Explain fractions")
 
@@ -30,13 +30,13 @@ def test_task_rejects_nested_nonfinite_json_before_recording(
 ) -> None:
     settings: dict[str, Any] = {field: {"nested": [{"value": value}]}}
     with pytest.raises(ValueError, match="JSON numbers must be finite"):
-        Task(agents={"assistant": Reply()}, **settings)
+        Task(agents={"assistant": Agent(generator=Reply())}, **settings)
     assert not list(tmp_path.iterdir())
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("rubric", [None, Rubric((Criterion("ok"),))])
-async def test_callable_judgment_evidence_survives_review_and_verification(
+async def test_callable_judgment_evidence_survives_verification(
     rubric: Rubric | None, tmp_path: Path
 ) -> None:
     evidence = {"source": "custom-check", "labels": ["stable"]}
@@ -53,10 +53,10 @@ async def test_callable_judgment_evidence_survives_review_and_verification(
     assert evaluated.passed and evaluated.score == 1.0
     assert evaluated.feedback == "Reviewed"
     assert evaluated.evidence == {"source": "custom-check", "labels": ("stable",)}
-    task = Task(agents={"assistant": Reply(reviewer=judge)}, verifier=judge)
+    task = Task(
+        agents={"assistant": Agent(generator=Reply(), reviewer=judge)}, verifier=judge
+    )
     await Runner([task], output_dir=tmp_path).run()
-    review = next(e for e in task.episode.events if e["kind"] == "review_result")
-    assert review["data"]["model_call"] == evaluated.evidence
     assert task.episode.verification[0]["events"] == evaluated.evidence
     assert task.episode.status == "accepted" and not task.episode.messages[0].evidence
     loaded = Episode.load(tmp_path / task.episode.id)
@@ -72,9 +72,9 @@ async def test_task_identity_segments_and_shared_judge(tmp_path: Path) -> None:
         return True
 
     judge = Judge(check=check)
-    assistant = Reply(instruction="Teach", reviewer=judge)
+    assistant = Agent(generator=Reply(), instruction="Teach", reviewer=judge)
     task = Task(
-        agents={"assistant": assistant, "user": Learner()},
+        agents={"assistant": assistant, "user": Agent(generator=Learner())},
         verifier=judge,
         segments=[
             {"name": "draft", "instructions": {"assistant": "Draft"}},
@@ -114,8 +114,8 @@ async def test_task_identity_segments_and_shared_judge(tmp_path: Path) -> None:
     [
         {},
         {"assistant": None},
-        {"user": Reply()},
-        {"assistant": Reply(), "other": Learner()},
+        {"user": Agent(generator=Reply())},
+        {"assistant": Agent(generator=Reply()), "other": Agent(generator=Learner())},
     ],
 )
 def test_invalid_participants_are_rejected(agents: Any) -> None:
@@ -126,7 +126,7 @@ def test_invalid_participants_are_rejected(agents: Any) -> None:
 def test_task_and_agent_configuration_is_inert_and_detached(tmp_path: Path) -> None:
     values: dict[str, Any] = {"topic": ["fractions"]}
     tools: list[Tool] = []
-    agent = Reply(tools=tools)
+    agent = Agent(generator=Reply(), tools=tools)
     one, two = (
         Task(agents={"assistant": agent}, input=values),
         Task(agents={"assistant": agent}),
@@ -154,13 +154,13 @@ async def test_same_agent_concurrent_tasks_keep_invocation_inputs_local(
 ) -> None:
     observed: list[tuple[str, Any, str]] = []
 
-    class Echo(Agent):
+    class Echo:
         async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
             await asyncio.sleep(0)
             observed.append((history[0].content, kwargs["client"], kwargs["role"]))
             return Message("assistant", history[0].content, control="complete")
 
-    shared = Echo(instruction="Base")
+    shared = Agent(generator=Echo(), instruction="Base")
     tasks = [
         Task(
             agents={"assistant": shared},
@@ -191,17 +191,19 @@ async def test_same_agent_concurrent_tasks_keep_invocation_inputs_local(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("max_revisions", [0, 1, 3])
 async def test_revisions_receive_draft_and_feedback_without_peer_visibility(
     tmp_path: Path,
+    max_revisions: int,
 ) -> None:
     seen: list[Sequence[Message]] = []
 
-    class Revising(Agent):
+    class Revising:
         async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
             seen.append(history)
             return Message(
                 "assistant",
-                "correct" if "Use correct" in history[-1].content else "wrong",
+                "correct" if len(seen) > max_revisions else f"wrong {len(seen)}",
                 control="complete",
             )
 
@@ -210,15 +212,24 @@ async def test_revisions_receive_draft_and_feedback_without_peer_visibility(
             messages[-1].content == "correct", "Use correct"
         )
     )
-    task = Task(agents={"assistant": Revising(reviewer=judge), "user": Learner()})
+    task = Task(
+        agents={
+            "assistant": Agent(
+                generator=Revising(), reviewer=judge, max_revisions=max_revisions
+            ),
+            "user": Agent(generator=Learner()),
+        }
+    )
     await Runner([task], output_dir=tmp_path).run()
     assert [m.content for m in task.episode.messages] == [
         "Explain fractions",
         "correct",
     ]
-    assert seen[1][-2].content == "wrong" and "Use correct" in seen[1][-1].content
-    assert len([e for e in task.episode.events if e["kind"] == "review_result"]) == 2
-    assert not any(m.content == "wrong" for m in task.episode.history("user"))
+    assert len(seen) == max_revisions + 1
+    for index in range(1, len(seen)):
+        assert seen[index][-2].content == f"wrong {index}"
+        assert seen[index][-1].content == "Use correct"
+    assert not any(m.content.startswith("wrong") for m in task.episode.history("user"))
     dataset = tmp_path / "dataset.jsonl"
     task.episode.export(dataset)
     assert (
@@ -236,7 +247,7 @@ async def test_rejected_tool_is_revised_before_any_effect(tmp_path: Path) -> Non
 
     tool = Tool(lookup)
 
-    class Using(Agent):
+    class Using:
         async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
             if history[-1].role == "tool":
                 return Message("assistant", "done", control="complete")
@@ -252,7 +263,9 @@ async def test_rejected_tool_is_revised_before_any_effect(tmp_path: Path) -> Non
             "Use safe",
         )
     )
-    task = Task(agents={"assistant": Using(tools=[tool], reviewer=judge)})
+    task = Task(
+        agents={"assistant": Agent(generator=Using(), tools=[tool], reviewer=judge)}
+    )
     await Runner([task], output_dir=tmp_path).run()
     assert effects == ["safe"]
     assert [m.role for m in task.episode.messages] == ["assistant", "tool", "assistant"]
@@ -269,13 +282,18 @@ async def test_tools_are_agent_local_and_intent_is_durable(tmp_path: Path) -> No
         assert '"tool_calls"' in (task.episode.path / "conversation.jsonl").read_text()
         return {"ok": True}
 
-    class UserTool(Agent):
+    class UserTool:
         async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
             return Message(
                 "assistant", tool_calls=(ToolCall("call", FunctionCall("effect")),)
             )
 
-    task = Task(agents={"assistant": Reply(tools=[Tool(effect)]), "user": UserTool()})
+    task = Task(
+        agents={
+            "assistant": Agent(generator=Reply(), tools=[Tool(effect)]),
+            "user": Agent(generator=UserTool()),
+        }
+    )
     await Runner([task], output_dir=tmp_path).run()
     assert task.episode.status == "failed" and task.episode.messages == ()
 
@@ -292,18 +310,21 @@ async def test_custom_structural_environment_owns_its_execution(
             if task.verifier is not None:
                 await task.episode.verify(task.verifier)
 
-    task = Task(agents={"assistant": Reply()}, verifier=Judge(check=lambda m: True))
+    task = Task(
+        agents={"assistant": Agent(generator=Reply())},
+        verifier=Judge(check=lambda m: True),
+    )
     await Runner([task], output_dir=tmp_path, environment=Custom()).run()
     assert task.episode.messages[0].content == "custom"
     assert task.episode.sealed and task.episode.status == "accepted"
 
 
 @pytest.mark.asyncio
-async def test_missing_model_dependency_is_recorded_by_agent(tmp_path: Path) -> None:
+async def test_missing_model_dependency_fails_generation(tmp_path: Path) -> None:
     task = Task(agents={"assistant": Agent("model")})
     await Runner([task], output_dir=tmp_path).run()
     assert task.episode.sealed and task.episode.status == "failed"
-    assert any(event["kind"] == "agent_generate_error" for event in task.episode.events)
+    assert any(event["kind"] == "error" for event in task.episode.events)
 
 
 @pytest.mark.asyncio
@@ -338,53 +359,69 @@ async def test_judge_weighted_validation_and_reuse() -> None:
 
 
 @pytest.mark.asyncio
-async def test_each_message_gets_its_own_revision_budget(tmp_path: Path) -> None:
+async def test_tool_continuation_gets_a_fresh_revision_budget(tmp_path: Path) -> None:
     observations: list[Sequence[Message]] = []
+    effects: list[str] = []
 
-    class Batch(Agent):
-        async def generate(self, history: Sequence[Message], **kwargs: Any) -> Any:
+    async def lookup(arguments: Mapping[str, Any]) -> dict[str, Any]:
+        effects.append(arguments["value"])
+        return {"value": arguments["value"]}
+
+    class Using:
+        async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
             observations.append(history)
-            if history[-1].content.startswith("Private review feedback:"):
-                return Message("assistant", history[-2].content.replace("bad", "good"))
-            return [
-                Message("assistant", "first bad"),
-                Message("assistant", "second bad"),
-            ]
+            value = "good" if history[-1].content == "Replace bad with good" else "bad"
+            if any(message.role == "tool" for message in history):
+                return Message("assistant", value, control="complete")
+            return Message(
+                "assistant",
+                tool_calls=(ToolCall(value, FunctionCall("lookup", {"value": value})),),
+            )
 
     judge = Judge(
         check=lambda messages: Judgment(
-            "good" in messages[-1].content, "Replace bad with good"
+            messages[-1].content == "good"
+            or any(call.id == "good" for call in messages[-1].tool_calls),
+            "Replace bad with good",
         )
     )
-    task = Task(agents={"assistant": Batch(reviewer=judge, max_revisions=1)})
+    task = Task(
+        agents={
+            "assistant": Agent(
+                generator=Using(),
+                tools=[Tool(lookup)],
+                reviewer=judge,
+                max_revisions=1,
+            )
+        }
+    )
     await Runner([task], output_dir=tmp_path).run()
-    assert [m.content for m in task.episode.messages] == ["first good", "second good"]
-    assert len(observations) == 3
-    assert observations[2][-3].content == "first good"
-    assert observations[2][-2].content == "second bad"
-    assert len([e for e in task.episode.events if e["kind"] == "revision"]) == 2
+    assert effects == ["good"]
+    assert [m.role for m in task.episode.messages] == ["assistant", "tool", "assistant"]
+    assert task.episode.messages[-1].content == "good"
+    assert len(observations) == 4
+    assert observations[3][-3].role == "tool"
+    assert observations[3][-2].content == "bad"
 
 
-@pytest.mark.parametrize(
-    "kind,fallback,accepted",
-    [
-        ("text", False, False),
-        ("text", True, True),
-        ("complete", True, False),
-        ("tool", True, False),
-    ],
-)
+@pytest.mark.parametrize("kind", ["text", "complete", "tool"])
+@pytest.mark.parametrize("max_revisions", [0, 1, 3])
 @pytest.mark.asyncio
-async def test_exhaustion_can_accept_only_ordinary_text(
-    kind: str, fallback: bool, accepted: bool, tmp_path: Path
+async def test_review_exhaustion_never_accepts_or_invokes_tools(
+    kind: str, max_revisions: int, tmp_path: Path
 ) -> None:
     effects: list[str] = []
+    reviews: list[Sequence[Message]] = []
+
+    def reject(messages: Sequence[Message]) -> bool:
+        reviews.append(messages)
+        return False
 
     async def effect(arguments: Mapping[str, Any]) -> Any:
         effects.append("effect")
         return {}
 
-    class Rejected(Agent):
+    class Rejected:
         async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
             if kind == "tool":
                 return Message(
@@ -394,20 +431,20 @@ async def test_exhaustion_can_accept_only_ordinary_text(
                 "assistant", "draft", control="complete" if kind == "complete" else None
             )
 
-    agent = Rejected(
+    agent = Agent(
+        generator=Rejected(),
         tools=[Tool(effect)],
-        reviewer=Judge(check=lambda messages: False),
-        max_revisions=0,
-        accept_on_revision_exhaustion=fallback,
+        reviewer=Judge(check=reject),
+        max_revisions=max_revisions,
     )
     task = Task(agents={"assistant": agent})
     await Runner([task], output_dir=tmp_path).run()
-    assert bool(task.episode.messages) is accepted and not effects
-    assert task.episode.generation["state"] == (
-        "terminated" if accepted else "truncated"
-    )
-    event = next(e for e in task.episode.events if e["kind"] == "review_exhausted")
-    assert event["data"]["accepted"] is accepted
+    assert not task.episode.messages and not effects
+    assert task.episode.generation == {
+        "state": "truncated",
+        "reason": "review_exhausted",
+    }
+    assert len(reviews) == max_revisions + 1
 
 
 @pytest.mark.asyncio
@@ -416,10 +453,14 @@ async def test_malformed_review_never_approves_and_user_cannot_complete(
 ) -> None:
     invalid = Task(
         agents={
-            "assistant": Reply(reviewer=Judge(check=lambda messages: {"passed": 1}))
+            "assistant": Agent(
+                generator=Reply(), reviewer=Judge(check=lambda messages: {"passed": 1})
+            )
         }
     )
-    user = Task(agents={"assistant": Reply(), "user": Reply()})
+    user = Task(
+        agents={"assistant": Agent(generator=Reply()), "user": Agent(generator=Reply())}
+    )
     episodes = await Runner([invalid, user], output_dir=tmp_path).run()
     assert all(e.status == "failed" and not e.messages for e in episodes)
 
@@ -434,7 +475,7 @@ async def test_explicit_shared_tool_has_separate_private_exchanges_for_both_role
         effects.append(arguments["role"])
         return arguments
 
-    class Caller(Agent):
+    class Caller:
         async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
             role = kwargs["role"]
             if any(m.role == "tool" for m in history):
@@ -450,7 +491,7 @@ async def test_explicit_shared_tool_has_separate_private_exchanges_for_both_role
                 ),
             )
 
-    shared = Caller(tools=[Tool(lookup)])
+    shared = Agent(generator=Caller(), tools=[Tool(lookup)])
     task = Task(agents={"assistant": shared, "user": shared})
     await Runner([task], output_dir=tmp_path).run()
     assert effects == ["user", "assistant"]
@@ -468,8 +509,6 @@ async def test_explicit_shared_tool_has_separate_private_exchanges_for_both_role
         {"role": "user", "content": "user done"},
         {"role": "assistant", "content": "assistant done"},
     ]
-    with pytest.raises(ValueError):
-        Caller(tools=[Tool(lookup), Tool(lookup)])
 
 
 @pytest.mark.parametrize(
@@ -541,4 +580,4 @@ def test_overflowing_rubric_and_non_mapping_task_inputs_are_rejected() -> None:
     with pytest.raises(ValueError):
         Rubric((Criterion("one", 1e308), Criterion("two", 1e308)))
     with pytest.raises(ValueError):
-        Task(agents={"assistant": Reply()}, input=[])  # type: ignore[arg-type]
+        Task(agents={"assistant": Agent(generator=Reply())}, input=[])  # type: ignore[arg-type]

@@ -137,24 +137,40 @@ class Judge:
             raise JudgeError(kind, getattr(exc, "evidence", {})) from exc
 
     async def _model_judgment(self, messages: tuple[Message, ...]) -> Judgment:
-        from agentinstruct.agent import Agent
         from agentinstruct.episode import canonical_json
 
-        options = {"client": self.client, "api": self.api}
-        agent = Agent(
-            self.model,
-            self.prompt,
-            output_schema=_judgment_schema(self.rubric),
-            **options,
-        )
-        history = (
-            Message("system", self.prompt),
-            Message("user", canonical_json(messages)),
-        )
-        proposal = await agent.generate(history)
-        assert isinstance(proposal, Message)
-        result = _judgment(parse_json(proposal.content), self.rubric)
-        return replace(result, evidence=proposal.evidence)
+        history = [
+            {"role": "system", "content": self.prompt},
+            {"role": "user", "content": canonical_json(messages)},
+        ]
+        format_ = {
+            "name": "Judgment",
+            "schema": _judgment_schema(self.rubric),
+            "strict": True,
+        }
+        client = self.client.with_options(max_retries=0)
+        if self.api == "responses":
+            response = await client.responses.create(
+                model=self.model,
+                input=history,
+                store=False,
+                text={"format": {"type": "json_schema", **format_}},
+            )
+            if response.status != "completed" or response.error:
+                raise ValueError("Judge response did not complete")
+            content = response.output_text
+        else:
+            response = await client.chat.completions.create(
+                model=self.model,
+                messages=history,
+                store=False,
+                response_format={"type": "json_schema", "json_schema": format_},
+            )
+            choice = response.choices[0]
+            if choice.message.refusal or choice.finish_reason != "stop":
+                raise ValueError("Judge response did not complete")
+            content = choice.message.content or ""
+        return _judgment(parse_json(content), self.rubric)
 
     def declaration(self) -> dict[str, Any]:
         return {

@@ -526,7 +526,9 @@ def _agent(
     kind = settings.get("type", "model")
     if kind == "scripted":
         options["generator"] = _Scripted(tuple(settings.get("responses", ())))
-    return _agent_class(kind)(**options)
+    elif kind != "model":
+        options["generator"] = _reference(kind)()
+    return Agent(**options)
 
 
 def task_from_record(
@@ -580,13 +582,6 @@ _CHECKS = {
     "assistant_present",
     "user_present",
 }
-_MODEL_OPTIONS = (
-    "temperature",
-    "max_tokens",
-    "reasoning",
-    "extra_body",
-    "output_schema",
-)
 
 
 def _exact_member(path: Path, part: str) -> None:
@@ -678,17 +673,13 @@ def _agent_options(
 ) -> dict[str, Any]:
     model, policy = settings["model"], settings.get("reviewer") or {}
     _model_declaration(model)
-    options = {key: model[key] for key in _MODEL_OPTIONS if key in model}
-    options.update(
+    if _api(model, config) != "chat_completions":
+        raise TaskValidationError("Agent supports only Chat Completions")
+    return dict(
         model=model.get("name"),
         instruction=settings.get("instruction", ""),
-        api=_api(model, config),
         max_revisions=policy.get("max_revisions", 1),
-        accept_on_revision_exhaustion=policy.get(
-            "accept_on_revision_exhaustion", False
-        ),
     )
-    return options
 
 
 def _execution_limits(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -857,15 +848,6 @@ def _judge_model(
     )
 
 
-def _agent_class(kind: str) -> type[Agent]:
-    cls = {"model": Agent, "scripted": Agent}.get(kind) or _reference(kind)
-    if not isinstance(cls, type) or not issubclass(cls, Agent):
-        raise TaskValidationError(
-            "Custom generation must subclass Agent and use its constructor"
-        )
-    return cls
-
-
 def _tool_declarations(catalog: Mapping[str, Any]) -> None:
     for name, settings in catalog.items():
         _name(name)
@@ -893,10 +875,8 @@ def _variables(data: Any, config: Mapping[str, Any], format: str) -> dict[str, A
 
 
 def _model_declaration(model: Mapping[str, Any]) -> None:
-    if set(model) - {"name", "provider", *_MODEL_OPTIONS}:
-        raise TaskValidationError(
-            "Unknown model settings; use extra_body for endpoint options"
-        )
+    if set(model) - {"name", "provider"}:
+        raise TaskValidationError("Unknown model settings; expected name and provider")
     if "name" in model and (
         not isinstance(model["name"], str) or not model["name"].strip()
     ):

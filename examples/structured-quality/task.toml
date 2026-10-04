@@ -13,7 +13,6 @@ base_url = "https://example.invalid/v1"
 [model]
 provider = "judge"
 name = "example-judge"
-temperature = 0.0
 [agents.assistant]
 target = true
 type = "scripted"

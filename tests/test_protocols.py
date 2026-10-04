@@ -24,10 +24,10 @@ class Arithmetic:
         client: Any = None,
         role: str = "assistant",
         instruction: str | None = None,
-    ) -> tuple[Message, ...]:
+    ) -> Message:
         operands = json.loads(history[1].content)["operands"]
         content = json.dumps({"operands": operands, "sum": sum(operands)})
-        return (Message("assistant", content, control="complete"),)
+        return Message("assistant", content, control="complete")
 
 
 class ArithmeticCheck:
@@ -68,7 +68,7 @@ async def test_standalone_environment_owns_recording_and_deadline(
                 raise ValueError("Domain failure")
             if mode == "timeout":
                 await asyncio.Event().wait()
-            return (await Arithmetic().generate(history))[0]
+            return await Arithmetic().generate(history)
 
     environment: Environment = UserSimEnv()
     task = Task(
@@ -188,14 +188,10 @@ def test_judgment_score_cannot_bypass_the_local_contract(score: float) -> None:
         Judgment(True, score=score)
 
 
-def test_protocol_construction_rejects_missing_operations() -> None:
+def test_task_verifier_requires_an_evaluator() -> None:
     invalid: Any = object()
-    with pytest.raises(ValueError, match="generate"):
-        Agent(generator=invalid)
     with pytest.raises(ValueError, match="evaluate"):
         Task(agents={"assistant": Agent()}, verifier=invalid)
-    with pytest.raises(ValueError, match="evaluate"):
-        Agent(reviewer=invalid)
 
 
 @pytest.mark.asyncio

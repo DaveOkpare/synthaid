@@ -80,13 +80,13 @@ async def test_intent_append_fsync_failure_prevents_all_tool_effects(
         effects.append("effect")
         return {"ok": True}
 
-    class Calling(Agent):
+    class Calling:
         async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
             return Message(
                 "assistant", tool_calls=(ToolCall("call", FunctionCall("effect")),)
             )
 
-    task = Task(agents={"assistant": Calling(tools=[Tool(effect)])})
+    task = Task(agents={"assistant": Agent(generator=Calling(), tools=[Tool(effect)])})
     import agentinstruct.episode as recording
 
     original = recording._append_json
@@ -110,7 +110,7 @@ async def test_segment_failure_stops_future_instructions_and_final_judging(
     activated: list[str] = []
     judged: list[Sequence[Message]] = []
 
-    class Failing(Agent):
+    class Failing:
         async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
             activated.append(history[0].content)
             raise ValueError("deliberate failure")
@@ -120,7 +120,7 @@ async def test_segment_failure_stops_future_instructions_and_final_judging(
         return True
 
     task = Task(
-        agents={"assistant": Failing()},
+        agents={"assistant": Agent(generator=Failing())},
         segments=[
             {"name": name, "instructions": {"assistant": name}}
             for name in ("first", "future")
@@ -141,12 +141,12 @@ async def test_segment_failure_stops_future_instructions_and_final_judging(
 async def test_task_deadline_truncates_and_preserves_partial_accepted_history(
     tmp_path: Path,
 ) -> None:
-    class Waiting(Agent):
+    class Waiting:
         async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
             await asyncio.Event().wait()
             return Message("assistant", "unreachable")
 
-    task = Task(agents={"assistant": Waiting()}, timeout_seconds=0.01)
+    task = Task(agents={"assistant": Agent(generator=Waiting())}, timeout_seconds=0.01)
     await Runner([task], output_dir=tmp_path).run()
     assert task.episode.generation == {"state": "truncated", "reason": "timeout"}
     assert task.episode.sealed and not task.episode.messages
@@ -160,7 +160,7 @@ async def test_application_owns_cleanup_after_environment_cancellation(
     closed: list[str] = []
     borrowed = object()
 
-    class Waiting(Agent):
+    class Waiting:
         async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
             generated.set()
             await asyncio.Event().wait()
@@ -173,7 +173,7 @@ async def test_application_owns_cleanup_after_environment_cancellation(
         finally:
             closed.append("application")
 
-    task = Task(agents={"assistant": Waiting()})
+    task = Task(agents={"assistant": Agent(generator=Waiting())})
 
     async def application() -> None:
         async with resource():
@@ -192,11 +192,11 @@ async def test_application_owns_cleanup_after_environment_cancellation(
 async def test_cancellation_and_seal_failure_preserve_the_primary_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    class Cancelled(Agent):
+    class Cancelled:
         async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
             raise asyncio.CancelledError()
 
-    task = Task(agents={"assistant": Cancelled()})
+    task = Task(agents={"assistant": Agent(generator=Cancelled())})
     import agentinstruct.episode as recording
 
     original = recording.write_json
@@ -228,7 +228,7 @@ async def test_historical_episode_and_immutable_diagnostics(tmp_path: Path) -> N
 
 @pytest.mark.asyncio
 async def test_export_rejects_evidence_aliases_before_writing(tmp_path: Path) -> None:
-    task = Task(agents={"assistant": Reply()})
+    task = Task(agents={"assistant": Agent(generator=Reply())})
     await Runner([task], output_dir=tmp_path).run()
     assert task.episode.path is not None
     snapshot = task.episode.path / "trace.json"
@@ -252,7 +252,7 @@ async def test_final_judge_timeout_leaves_sealed_generation_unverified(
         return True
 
     task = Task(
-        agents={"assistant": Reply()},
+        agents={"assistant": Agent(generator=Reply())},
         verifier=Judge(check=blocked, timeout_seconds=0.01),
     )
     await Runner([task], output_dir=tmp_path).run()
@@ -272,7 +272,9 @@ async def test_final_judge_cancellation_survives_sidecar_publication_failure(
         await asyncio.Event().wait()
         return True
 
-    task = Task(agents={"assistant": Reply()}, verifier=Judge(check=blocked))
+    task = Task(
+        agents={"assistant": Agent(generator=Reply())}, verifier=Judge(check=blocked)
+    )
     worker = asyncio.create_task(Runner([task], output_dir=tmp_path).run())
     await started.wait()
     snapshot = (tmp_path / task.episode.id / "trace.json").read_bytes()
@@ -305,7 +307,10 @@ async def test_final_verification_publication_failure_is_not_swallowed(
         original(path, value)
 
     monkeypatch.setattr(recording, "write_json", broken)
-    task = Task(agents={"assistant": Reply()}, verifier=Judge(check=lambda m: True))
+    task = Task(
+        agents={"assistant": Agent(generator=Reply())},
+        verifier=Judge(check=lambda m: True),
+    )
     with pytest.raises(failure, match="sidecar unavailable"):
         await Runner([task], output_dir=tmp_path).run()
     assert task.episode.sealed and not task.episode.verification
@@ -323,13 +328,13 @@ async def test_actual_commit_fsync_failure_prevents_capability_execution(
         effects.append("effect")
         return {}
 
-    class Calling(Agent):
+    class Calling:
         async def generate(self, history: Sequence[Message], **kwargs: Any) -> Message:
             return Message(
                 "assistant", tool_calls=(ToolCall("call", FunctionCall("effect")),)
             )
 
-    task = Task(agents={"assistant": Calling(tools=[Tool(effect)])})
+    task = Task(agents={"assistant": Agent(generator=Calling(), tools=[Tool(effect)])})
     destination = tmp_path / task.episode.id
     conversation = destination / "conversation.jsonl"
     original = os.fsync
@@ -365,7 +370,7 @@ async def test_seal_publication_failure_preserves_partial_ledgers(
         original(source, destination)
 
     monkeypatch.setattr(os, "link", broken)
-    task = Task(agents={"assistant": Reply()})
+    task = Task(agents={"assistant": Agent(generator=Reply())})
     with pytest.raises(PersistenceError):
         await Runner([task], output_dir=tmp_path).run()
     assert (
