@@ -23,7 +23,7 @@ type = "local"
 
 [environment]
 type = "dialogue"
-max_rounds = 4
+max_turns = 8
 
 [agents.user]
 type = "stepped_components:DemoAgent"
@@ -44,4 +44,3 @@ type = "function"
 function = "stepped_components:lookup"
 description = "Return the Seed's greeting privately."
 input_schema = { type = "object", properties = { name = { type = "string" } }, required = ["name"], additionalProperties = false }
-output_schema = { type = "object", properties = { greeting = { type = "string" } }, required = ["greeting"], additionalProperties = false }

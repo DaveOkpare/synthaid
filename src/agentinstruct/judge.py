@@ -84,15 +84,6 @@ class Evaluator(Protocol):
     async def evaluate(self, messages: Sequence[Message]) -> Judgment: ...
 
 
-def evaluation_settings(evaluator: Evaluator | None) -> dict[str, Any] | None:
-    if evaluator is None:
-        return None
-    if isinstance(evaluator, Judge):
-        return evaluator.declaration()
-    kind = type(evaluator)
-    return {"type": f"{kind.__module__}:{kind.__qualname__}"}
-
-
 @dataclass(frozen=True)
 class Judge:
     client: Any = field(default=None, repr=False, compare=False)
@@ -174,16 +165,6 @@ class Judge:
                 raise ValueError("Judge response did not complete")
             content = choice.message.content or ""
         return _judgment(json.loads(content), self.rubric)
-
-    def declaration(self) -> dict[str, Any]:
-        return {
-            "model": self.model,
-            "prompt": self.prompt,
-            "rubric": self.rubric,
-            "api": self.api,
-            "timeout_seconds": self.timeout_seconds,
-            "check": getattr(self.check, "__qualname__", None),
-        }
 
 
 def _verdicts(value: Any) -> dict[str, bool]:

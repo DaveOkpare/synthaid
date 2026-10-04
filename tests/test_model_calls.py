@@ -93,6 +93,17 @@ async def test_usersim_rejects_model_tool_proposals_without_effects(
             await Runner([task], output_dir=tmp_path, client=borrowed).run()
     assert not effects and not task.episode.messages
     assert len(transport.requests) == 1
+    advertised = json.loads(transport.requests[0].content)["tools"]
+    assert advertised == [
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "description": "",
+                "parameters": {"type": "object"},
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio

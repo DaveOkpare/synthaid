@@ -3,21 +3,20 @@
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
 from agentinstruct import Agent, Runner, Task
-from agentinstruct.environment import UserSimEnv
 from agentinstruct.episode import Message
 from agentinstruct.judge import Judgment
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("initiator", ["user", "assistant"])
-@pytest.mark.parametrize("max_rounds,max_turns,turns", [(2, 100, 4), (10, 3, 3)])
+@pytest.mark.parametrize("order", [("user", "assistant"), ("assistant", "user")])
+@pytest.mark.parametrize("max_turns", [3, 4])
 async def test_agents_take_turns_with_recorded_history(
-    tmp_path: Path, initiator: str, max_rounds: int, max_turns: int, turns: int
+    tmp_path: Path, order: tuple[Literal["user", "assistant"], ...], max_turns: int
 ) -> None:
     seen: list[tuple[str, Sequence[Message]]] = []
     client = object()
@@ -30,16 +29,14 @@ async def test_agents_take_turns_with_recorded_history(
 
     shared = Agent(generator=Speaker(), instruction="Talk about the topic")
     task = Task(
-        agents={"assistant": shared, "user": shared},
+        agents=dict.fromkeys(order, shared),
         input={"topic": "fractions"},
-        initiator=initiator,
-        max_rounds=max_rounds,
         max_turns=max_turns,
     )
     await Runner([task], output_dir=tmp_path, client=client).run()
-    expected = list(task.roles) * max_rounds
-    assert [m.role for m in task.episode.messages] == expected[:turns]
-    assert [m.actor_id for m in task.episode.messages] == expected[:turns]
+    expected = (list(order) * max_turns)[:max_turns]
+    assert [m.role for m in task.episode.messages] == expected
+    assert [m.actor_id for m in task.episode.messages] == expected
     for index, (role, history) in enumerate(seen):
         assert role == expected[index]
         assert [m.content for m in history[:2]] == [
@@ -77,7 +74,7 @@ async def test_completion_and_optional_verification(
 
     agent = Agent(generator=Speaker())
     task = Task(
-        agents={"assistant": agent, "user": agent}
+        agents={"user": agent, "assistant": agent}
         if dialogue
         else {"assistant": agent},
         verifier=Verifier() if verdict is not None else None,
@@ -91,19 +88,7 @@ async def test_completion_and_optional_verification(
     ) is verdict
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "settings",
-    [
-        {"segments": [{"name": "draft"}]},
-        {"timeout_seconds": 1.0},
-    ],
-)
-async def test_unsupported_settings_fail_before_generation(
-    tmp_path: Path, settings: dict[str, Any]
-) -> None:
-    task = Task(agents={"assistant": Agent()}, **settings)
-    task.episode.path = tmp_path / task.episode.id / "trace.json"
-    with pytest.raises(ValueError, match="does not support segments or deadlines"):
-        await UserSimEnv().run(task)
-    assert not task.episode.messages and not task.episode.path.exists()
+@pytest.mark.parametrize("max_turns", [0, -1, True, 1.5])
+def test_invalid_turn_limits_are_rejected(max_turns: Any) -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        Task(agents={"assistant": Agent()}, max_turns=max_turns)

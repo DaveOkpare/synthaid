@@ -39,19 +39,20 @@ async def test_runner_saves_messages_metadata_and_verification_once(
     monkeypatch.setattr(os, "replace", record)
     task = Task(
         agents={
-            "assistant": Agent(generator=Reply()),
             "user": Agent(generator=Learner()),
+            "assistant": Agent(generator=Reply()),
         },
         input={"topic": "fractions"},
         verifier=Judge(check=lambda messages: Judgment(True, "Correct")),
         max_turns=2,
     )
+    task.episode.metadata = {"source": "prepared"}
     [episode] = await Runner([task], output_dir=tmp_path).run()
     assert episode.path is not None
     assert published == [episode.path]
     trace = json.loads(episode.path.read_text())
     assert trace["id"] == episode.id
-    assert trace["metadata"]["variables"] == {"topic": "fractions"}
+    assert trace["metadata"] == {"source": "prepared", "input": {"topic": "fractions"}}
     assert [m["content"] for m in trace["messages"]] == ["Explain fractions", "Hello"]
     assert (
         trace["verification"]["passed"]
@@ -115,8 +116,8 @@ async def test_failure_preserves_current_trace_and_preceding_run(
     previous = Task(agents={"assistant": Agent(generator=Reply())})
     failing = Task(
         agents={
-            "assistant": Agent(generator=Failing()),
             "user": Agent(generator=Learner()),
+            "assistant": Agent(generator=Failing()),
         },
         verifier=Judge(check=verify),
     )
@@ -153,8 +154,8 @@ async def test_cancellation_preserves_snapshot_and_application_cleans_up(
 
     task = Task(
         agents={
-            "assistant": Agent(generator=Waiting()),
             "user": Agent(generator=Learner()),
+            "assistant": Agent(generator=Waiting()),
         }
     )
 

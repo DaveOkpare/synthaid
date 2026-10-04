@@ -85,18 +85,9 @@ async def _model_sample(
     messages = [_chat_message(message, role) for message in history]
     options = dict(model=agent.model, store=False, stream=False)
     if agent.tools:
-        options["tools"] = [_model_tool(tool) for tool in agent.tools]
+        options["tools"] = [tool.schema() for tool in agent.tools]
     response = await client.chat.completions.create(messages=messages, **options)
     return _chat_response(response)
-
-
-def _model_tool(tool: Tool) -> dict[str, Any]:
-    function = dict(
-        name=tool.id,
-        description=tool.description,
-        parameters=tool.input_schema,
-    )
-    return {"type": "function", "function": function}
 
 
 def _chat_message(message: Message, role: str) -> dict[str, Any]:

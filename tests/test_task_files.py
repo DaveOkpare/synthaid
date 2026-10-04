@@ -43,6 +43,7 @@ async def test_python_records_compile_to_the_direct_task_interface(
     assert all(
         task.episode.path is None and not task.episode.messages for task in tasks
     )
+    assert tasks[0].episode.metadata["seed"]["data"] == {"name": "Ada"}
     episodes = await Runner(tasks, output_dir=tmp_path / "runs").run()
     assert all(
         episode.verification is not None and episode.verification.passed
@@ -50,14 +51,10 @@ async def test_python_records_compile_to_the_direct_task_interface(
     )
 
 
-def test_steps_still_compile_as_task_data(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.syspath_prepend(str(EXAMPLES / "stepped-dialogue"))
-    tasks = load_tasks(EXAMPLES / "stepped-dialogue")
-    assert len(tasks) == 1 and [segment["name"] for segment in tasks[0].segments] == [
-        "collect",
-        "conclude",
-    ]
-    assert tasks[0].episode.path is None
+@pytest.mark.parametrize("name", ["stepped-dialogue", "release-workflow"])
+def test_task_files_reject_removed_steps(name: str) -> None:
+    with pytest.raises(TaskValidationError, match="steps are no longer supported"):
+        list(compile_records(EXAMPLES / name))
 
 
 @pytest.mark.parametrize(
@@ -65,9 +62,7 @@ def test_steps_still_compile_as_task_data(monkeypatch: pytest.MonkeyPatch) -> No
     [
         "function-tool",
         "multi-tool",
-        "stepped-dialogue",
         "custom-components",
-        "release-workflow",
     ],
 )
 @pytest.mark.asyncio
@@ -81,6 +76,21 @@ async def test_legacy_execution_examples_require_a_custom_environment(
     with pytest.raises(ValueError, match="UserSimEnv"):
         await Runner(tasks, output_dir=tmp_path).run()
     assert tasks[0].episode.verification is None
+
+
+@pytest.mark.parametrize(
+    "setting", ["initiator='user'", "max_rounds=2", "timeout_seconds=1"]
+)
+def test_task_files_reject_removed_scheduling_settings(
+    tmp_path: Path, setting: str
+) -> None:
+    root = package(tmp_path)
+    path = root / "task.toml"
+    path.write_text(
+        path.read_text().replace("[environment]", f"[environment]\n{setting}")
+    )
+    with pytest.raises(TaskValidationError, match="only type and max_turns"):
+        list(compile_records(root))
 
 
 @pytest.mark.parametrize(
@@ -248,6 +258,8 @@ def test_invalid_python_record_has_safe_evidence_without_live_values(
     "change",
     [
         '[tools.bad]\nfunction="missing:capability"\nexecution_errors="ignore"',
+        '[tools.bad]\nfunction="missing:capability"\nexecution_errors="result"',
+        '[tools.bad]\nfunction="missing:capability"\noutput_schema={type="object"}',
         "[agents.assistant.model]\nmax_tokens=0",
         '[agents.assistant.model]\napi="wrong"',
     ],

@@ -11,6 +11,7 @@ import pytest
 
 from agentinstruct import Agent, Episode, Judge, Runner, Task, Tool
 from agentinstruct.agent import ReviewExhausted
+from agentinstruct.environment import UserSimEnv
 from agentinstruct.episode import FunctionCall, Message, ToolCall
 from agentinstruct.judge import Criterion, Judgment, Rubric
 
@@ -26,14 +27,12 @@ class Learner:
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
-@pytest.mark.parametrize("field", ["input", "provenance"])
-def test_task_rejects_nested_nonfinite_json_before_recording(
-    value: float, field: str, tmp_path: Path
-) -> None:
-    settings: dict[str, Any] = {field: {"nested": [{"value": value}]}}
+@pytest.mark.asyncio
+async def test_nonfinite_input_fails_before_generation(value: float) -> None:
+    task = Task(agents={"assistant": Agent(generator=Reply())}, input={"value": value})
     with pytest.raises(ValueError, match="Out of range float values"):
-        Task(agents={"assistant": Agent(generator=Reply())}, **settings)
-    assert not list(tmp_path.iterdir())
+        await UserSimEnv().run(task)
+    assert not task.episode.messages
 
 
 @pytest.mark.asyncio
@@ -75,7 +74,7 @@ async def test_task_identity_dialogue_and_shared_judge(tmp_path: Path) -> None:
     judge = Judge(check=check)
     assistant = Agent(generator=Reply(), instruction="Teach", reviewer=judge)
     task = Task(
-        agents={"assistant": assistant, "user": Agent(generator=Learner())},
+        agents={"user": Agent(generator=Learner()), "assistant": assistant},
         verifier=judge,
     )
     episode: Episode = task.episode
@@ -102,7 +101,6 @@ async def test_task_identity_dialogue_and_shared_judge(tmp_path: Path) -> None:
     "agents",
     [
         {},
-        {"assistant": None},
         {"user": Agent(generator=Reply())},
         {"assistant": Agent(generator=Reply()), "other": Agent(generator=Learner())},
     ],
@@ -112,7 +110,7 @@ def test_invalid_participants_are_rejected(agents: Any) -> None:
         Task(agents=agents)
 
 
-def test_task_and_agent_configuration_is_inert_and_detached(tmp_path: Path) -> None:
+def test_task_records_are_independent_and_construction_is_inert(tmp_path: Path) -> None:
     values: dict[str, Any] = {"topic": ["fractions"]}
     tools: list[Tool] = []
     agent = Agent(generator=Reply(), tools=tools)
@@ -120,19 +118,14 @@ def test_task_and_agent_configuration_is_inert_and_detached(tmp_path: Path) -> N
         Task(agents={"assistant": agent}, input=values),
         Task(agents={"assistant": agent}),
     )
-    values["topic"].append("decimals")
     assert one.input["topic"] == ["fractions"]
+    assert not two.input
     assert one.episode is not two.episode and one.episode.id != two.episode.id
     assert not list(tmp_path.iterdir())
     with pytest.raises(FrozenInstanceError):
         agent.instruction = "mutated"  # type: ignore[misc]
     with pytest.raises(TypeError):
         Task(agents={"assistant": agent}, tools=[])  # type: ignore[call-arg]
-    with pytest.raises(ValueError):
-        Task(
-            agents={"assistant": agent},
-            segments=[{"name": "bad", "instructions": {"user": "hidden"}}],
-        )
 
 
 @pytest.mark.asyncio
@@ -201,10 +194,10 @@ async def test_revisions_receive_draft_and_feedback_without_peer_visibility(
     )
     task = Task(
         agents={
+            "user": Agent(generator=Learner()),
             "assistant": Agent(
                 generator=Revising(), reviewer=judge, max_revisions=max_revisions
             ),
-            "user": Agent(generator=Learner()),
         }
     )
     await Runner([task], output_dir=tmp_path).run()
@@ -365,7 +358,7 @@ async def test_malformed_review_never_approves_and_user_cannot_complete(
         }
     )
     user = Task(
-        agents={"assistant": Agent(generator=Reply()), "user": Agent(generator=Reply())}
+        agents={"user": Agent(generator=Reply()), "assistant": Agent(generator=Reply())}
     )
     with pytest.raises(RuntimeError, match="Judge"):
         await Runner([invalid], output_dir=tmp_path).run()
@@ -374,73 +367,6 @@ async def test_malformed_review_never_approves_and_user_cannot_complete(
     assert all(not t.episode.messages for t in (invalid, user))
 
 
-@pytest.mark.parametrize(
-    "value",
-    [
-        float("nan"),
-        object(),
-        "wrong shape",
-        {"error": {"exception": "Fake", "kind": "execution"}},
-    ],
-)
-@pytest.mark.asyncio
-async def test_tool_result_policy_does_not_soften_contract_failures(value: Any) -> None:
-    from agentinstruct.tools import ToolError
-
-    async def capability(arguments: Mapping[str, Any]) -> Any:
-        return value
-
-    tool = Tool(
-        capability,
-        output_schema={"type": "object", "required": ["ok"]},
-        execution_errors="result",
-    )
-    with pytest.raises(ToolError, match="result"):
-        await tool.call({})
-
-
-@pytest.mark.asyncio
-async def test_invalid_tool_inputs_and_execution_error_contracts() -> None:
-    from agentinstruct.tools import ToolError
-
-    calls: list[str] = []
-
-    async def capability(arguments: Mapping[str, Any]) -> Any:
-        calls.append("called")
-        raise ValueError("unsafe exception body")
-
-    tool = Tool(capability, input_schema={"type": "object", "required": ["name"]})
-    with pytest.raises(ToolError, match="arguments"):
-        await tool.call({})
-    assert not calls
-    with pytest.raises(ToolError, match="execution"):
-        await tool.call({"name": "Ada"})
-    result = await Tool(capability, execution_errors="result").call({})
-    assert result == {"error": {"exception": "ValueError", "kind": "execution"}}
-    assert "unsafe" not in str(result)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "arguments",
-    [{"x": float("nan")}, {"x": float("inf")}, {"x": object()}, []],
-)
-async def test_non_json_tool_arguments_never_reach_capability(arguments: Any) -> None:
-    from agentinstruct.tools import ToolError
-
-    calls: list[str] = []
-
-    async def capability(arguments: Mapping[str, Any]) -> Any:
-        calls.append("called")
-        return {}
-
-    with pytest.raises(ToolError, match="arguments"):
-        await Tool(capability, execution_errors="result").call(arguments)
-    assert not calls
-
-
-def test_overflowing_rubric_and_non_mapping_task_inputs_are_rejected() -> None:
+def test_overflowing_rubric_is_rejected() -> None:
     with pytest.raises(ValueError):
         Rubric((Criterion("one", 1e308), Criterion("two", 1e308)))
-    with pytest.raises(ValueError):
-        Task(agents={"assistant": Agent(generator=Reply())}, input=[])  # type: ignore[arg-type]

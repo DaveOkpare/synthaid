@@ -54,9 +54,9 @@ async def main():
         user = Agent(os.environ["MODEL_NAME"], "Ask questions about the supplied topic.")
         tasks = [
             Task(
-                agents={"assistant": assistant, "user": user},
+                agents={"user": user, "assistant": assistant},
                 input={"topic": topic},
-                max_rounds=3,
+                max_turns=6,
                 verifier=correctness,
             )
             for topic in ("fractions", "decimals")
@@ -75,8 +75,14 @@ Configure different endpoints with separate application-owned clients, supplied 
 or Judge. An Agent's explicit client takes precedence over Runner.client.
 
 Agents can declare Tools for direct generation, but UserSimEnv only supports
-conversation messages. It rejects Tool calls, segments and Task deadlines.
+conversation messages. It rejects Tool calls.
 Tool execution and other execution policies require a custom Environment.
+
+Tool holds an async function, its `id`, `description` and `input_schema`.
+`schema()` returns its Chat Completions function schema; `call(arguments)` awaits
+the function with the supplied argument mapping and returns its result unchanged.
+The ID defaults to the function name. Validation and error handling belong in the
+function when needed; exceptions propagate directly.
 
 ## Customize generation and scheduling
 
@@ -101,10 +107,16 @@ values live in episode.py, and Judgment lives in judge.py.
 
 Task.agents requires `assistant`; an optional `user` uses the same Agent class.
 Only assistant may return `Message(..., control="complete")`. An assistant-only
-Task finishes after one response. Dialogue alternates roles, starting with `user`
-by default, until completion, `max_rounds` or `max_turns`. Task input is included in
-each Agent's context. Construct another Task for another sample; completed Tasks
-cannot be reset or rerun.
+Task finishes after one response. Agents take turns in dictionary insertion order:
+`{"user": user, "assistant": assistant}` starts with the user. Dialogue ends on
+completion or `max_turns` (20 messages by default). There is no separate roles list
+or initiator setting.
+
+Task is a small dataclass holding `agents`, `input`, `verifier`, `max_turns` and an
+automatically created `episode`. It keeps supplied mappings as ordinary data.
+Input is included in each Agent's context and saved in `episode.metadata["input"]`.
+Add other trace metadata directly to `episode.metadata`. Construct another Task
+for another sample; Runner rejects an existing output directory.
 
 A callable Judge uses `Judge(check=...)`. Its check receives immutable Messages
 and returns a Boolean, Judgment, or ordinary verdict/feedback mapping. Rubrics
@@ -163,9 +175,10 @@ tasks = load_tasks(
 output files. `load_tasks` constructs the same core objects; model-backed settings
 need supplied `client` or named `clients`. JSON, JSONL, CSV, directories, and Python
 iterables retain record origins. Invalid records and source-enumeration failures
-are distinct. Authored steps still load as Task segments for custom Environments;
-UserSimEnv rejects them. The older Tool and stepped examples require a custom
-Environment. See [examples](examples/README.md) for the supported conversations.
+are distinct. Agent table order determines turn order. Task files reject removed
+steps, `max_rounds`, `initiator` and environment deadlines; use `max_turns` for the
+conversation limit. Record provenance is placed in Episode metadata.
+See [examples](examples/README.md) for the supported conversations.
 
 ```sh
 uv run agentinstruct validate examples/verified-single --json

@@ -23,7 +23,7 @@ type = "local"
 
 [environment]
 type = "dialogue"
-max_rounds = 1
+max_turns = 2
 
 [agents.user]
 target = false

@@ -16,11 +16,13 @@ from typing import Any
 
 from jinja2 import StrictUndefined, TemplateError, Undefined, meta
 from jinja2.sandbox import ImmutableSandboxedEnvironment
+from jsonschema import FormatChecker, validate
+from jsonschema.validators import validator_for
+from referencing import Registry
 
 from agentinstruct import Agent, Judge, Task, Tool
 from agentinstruct.episode import Message
 from agentinstruct.judge import Criterion, Rubric
-from agentinstruct.tools import schema_validator
 
 
 class TaskValidationError(ValueError):
@@ -128,6 +130,8 @@ def _configuration(root: Path) -> tuple[dict[str, Any], str]:
     config = tomllib.loads(text)
     if config.get("schema_version") != "1" or set(config) - _TASK_FIELDS:
         raise TaskValidationError("Unsupported task schema or unknown task fields")
+    if config["task"].get("steps"):
+        raise TaskValidationError("Task steps are no longer supported")
     _roles(config)
     _name(config["task"]["id"])
     _layout(root, "agents", set(config["agents"]))
@@ -171,27 +175,12 @@ def _files(root: Path, config: dict[str, Any], text: str) -> dict[str, str]:
             label = f"agents/{role}/{name}"
             files[label] = _text(root, label)
     _verifier_files(root, config, files)
-    _segment_files(root, config, files)
     if config["seed"].get("schema"):
         label = config["seed"]["schema"]
         files[label] = _text(root, label)
-        schema_validator(json.loads(files[label]))
+        schema = json.loads(files[label])
+        validator_for(schema).check_schema(schema)
     return files
-
-
-def _segment_files(
-    root: Path, config: Mapping[str, Any], files: dict[str, str]
-) -> None:
-    steps = config["task"].get("steps", [])
-    if not isinstance(steps, list) or len(steps) != len(set(steps)):
-        raise TaskValidationError("Task steps must be an ordered unique list")
-    if steps:
-        _layout(root, "steps", set(steps))
-    for step in steps:
-        _name(step)
-        _layout(root, f"steps/{step}/agents", set(config["agents"]))
-        for role in config["agents"]:
-            files.update(_phase_files(root, f"steps/{step}/agents/{role}"))
 
 
 def _sources(path: Path, pattern: str | None) -> list[Path]:
@@ -332,7 +321,6 @@ def _compile_record(
         config=config,
         input=variables,
         agents=_agent_records(config, files, variables),
-        segments=_segments(config, files, variables),
         provenance=_provenance(config["task"], files, identity, data, source["origin"]),
         verifier=_judge_record(config.get("verifier"), "verifier", files, variables),
     )
@@ -356,35 +344,12 @@ def _agent_records(
     return result
 
 
-def _segments(
-    config: Mapping[str, Any], files: Mapping[str, str], variables: Mapping[str, Any]
-) -> list[dict[str, Any]]:
-    return [
-        {
-            "name": step,
-            "instructions": {
-                role: _render(files[label], variables)
-                for role in config["agents"]
-                if (label := f"steps/{step}/agents/{role}/instruction.md") in files
-            },
-        }
-        for step in config["task"].get("steps", [])
-    ]
-
-
 def _judge_record(
     settings: Any, prefix: str, files: Mapping[str, str], variables: Mapping[str, Any]
 ) -> Any:
     if settings is None:
         return None
     rubric = tomllib.loads(files[prefix + "/rubric.toml"])
-    for label, text in files.items():
-        if (
-            prefix.startswith("agents/")
-            and label.startswith("steps/")
-            and label.endswith(prefix + "/rubric.toml")
-        ):
-            rubric["criteria"].extend(tomllib.loads(text)["criteria"])
     _validate_judging(settings, rubric)
     suffix = "/reviewer.md" if prefix.startswith("agents/") else "/instruction.md"
     prompt = _render(
@@ -547,8 +512,9 @@ def task_from_record(
         for role, agent in record["agents"].items()
     }
     verifier = _judge(record["verifier"], config, client, dependencies)
-    values = {key: record[key] for key in ("input", "segments", "provenance")}
-    return Task(agents=agents, verifier=verifier, **values, **_execution_limits(config))
+    task = Task(agents, record["input"], verifier, **_execution_limits(config))
+    task.episode.metadata = record["provenance"]
+    return task
 
 
 def load_tasks(
@@ -649,7 +615,8 @@ def _input_data(
         raise TaskValidationError("Input record must be a JSON object")
     json.dumps(data, allow_nan=False)
     if config["seed"].get("schema"):
-        schema_validator(json.loads(files[config["seed"]["schema"]])).validate(data)
+        schema = json.loads(files[config["seed"]["schema"]])
+        validate(data, schema, registry=Registry(), format_checker=FormatChecker())
     return data
 
 
@@ -691,11 +658,9 @@ def _agent_options(
 
 def _execution_limits(config: Mapping[str, Any]) -> dict[str, Any]:
     settings = config.get("environment", {})
-    return {
-        key: settings[key]
-        for key in ("max_rounds", "max_turns", "initiator", "timeout_seconds")
-        if key in settings
-    }
+    if set(settings) - {"type", "max_turns"}:
+        raise TaskValidationError("Environment accepts only type and max_turns")
+    return {"max_turns": settings.get("max_turns", 20)}
 
 
 def _declarations(config: Mapping[str, Any]) -> None:
@@ -717,15 +682,11 @@ def _declarations(config: Mapping[str, Any]) -> None:
     Task(agents=agents, **_execution_limits(config))
 
 
-async def _declaration_only(arguments: Mapping[str, Any]) -> Any:
-    raise RuntimeError("Authoring validation cannot execute capabilities")
-
-
 def _tool_options(settings: Mapping[str, Any]) -> dict[str, Any]:
+    if {"output_schema", "execution_errors"} & settings.keys():
+        raise TaskValidationError("Tool output_schema and execution_errors are removed")
     return {
-        key: settings[key]
-        for key in ("description", "input_schema", "output_schema", "execution_errors")
-        if key in settings
+        key: settings[key] for key in ("description", "input_schema") if key in settings
     }
 
 
@@ -864,7 +825,7 @@ def _tool_declarations(catalog: Mapping[str, Any]) -> None:
         _name(name)
         kind = settings.get("type", "function")
         _reference_syntax(settings.get("function") if kind == "function" else kind)
-        Tool(_declaration_only, id=name, **_tool_options(settings))
+        _tool_options(settings)
 
 
 def _data_filter(function: Callable[..., Any]) -> Callable[..., Any]:
@@ -908,13 +869,3 @@ def _judge_declarations(config: Mapping[str, Any]) -> None:
             _model_declaration(model)
             if not model.get("name"):
                 raise TaskValidationError("Model Judge requires a declared model name")
-
-
-def _phase_files(root: Path, prefix: str) -> dict[str, str]:
-    path = _path(root, prefix)
-    names = {item.name for item in path.iterdir()}
-    if names - {"instruction.md", "rubric.toml"}:
-        raise TaskValidationError("Unknown segment authoring files")
-    return {
-        f"{prefix}/{name}": _text(root, f"{prefix}/{name}") for name in sorted(names)
-    }

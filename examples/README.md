@@ -13,8 +13,10 @@ default UserSimEnv.
 
 `single-agent`, `chat-completions` and `structured-quality` use model clients.
 
-The older `function-tool`, `multi-tool`, `stepped-dialogue`, `custom-components`,
-`release-workflow` and `doubleword-medagent` examples use execution features removed
-from UserSimEnv. Their declarations remain available for reference; running them
-requires a custom Environment. UserSimEnv rejects Tool calls, segments and Task
-deadlines explicitly.
+The older `function-tool`, `multi-tool`, `custom-components` and
+`doubleword-medagent` examples need a custom Environment to execute Tools.
+`stepped-dialogue` and `release-workflow` remain historical references; their step
+declarations are no longer supported by the task-file loader.
+
+For dialogue, put the user before the assistant in the Agent dictionary or TOML
+tables. This order determines who starts. `max_turns` limits the total messages.

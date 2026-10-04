@@ -19,5 +19,4 @@ def read_scenario(config: Mapping[str, Any]) -> Tool:
         id=config["id"],
         description=config["description"],
         input_schema=config["input_schema"],
-        output_schema=config["output_schema"],
     )

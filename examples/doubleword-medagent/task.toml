@@ -29,8 +29,7 @@ type = "local"
 
 [environment]
 type = "dialogue"
-max_rounds = 2
-timeout_seconds = 120.0
+max_turns = 4
 
 [agents.user]
 target = false
@@ -43,7 +42,6 @@ tools = ["read_scenario"]
 type = "smoke_components:read_scenario"
 description = "Read the non-personal synthetic scenario brief for this test. Read once before answering the first user question."
 input_schema = { type = "object", properties = {}, additionalProperties = false }
-output_schema = { type = "object", properties = { topic = { type = "string" }, discussion_type = { type = "string" }, language = { type = "string" } }, required = ["topic", "discussion_type", "language"], additionalProperties = false }
 
 [verifier]
 type = "model"

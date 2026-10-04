@@ -46,7 +46,7 @@ async def main(output: str) -> None:
     user = Agent(instruction="Ask about the supplied purchase.", generator=generator)
     tasks = [
         Task(
-            agents={"assistant": assistant, "user": user},
+            agents={"user": user, "assistant": assistant},
             verifier=judge,
             input={"item": item, "days_since_purchase": days},
         )

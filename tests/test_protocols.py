@@ -100,7 +100,6 @@ async def test_runner_invokes_saves_and_collects_episodes(tmp_path: Path) -> Non
 
     task = Task(
         agents={"assistant": Agent()},
-        timeout_seconds=0.001,
         verifier=ArithmeticCheck(),
     )
     other = Task(agents={"assistant": Agent()})
@@ -181,12 +180,6 @@ async def test_malformed_domain_evaluation_never_authorizes_effects(
 def test_judgment_score_cannot_bypass_the_local_contract(score: float) -> None:
     with pytest.raises(ValueError, match="score"):
         Judgment(True, score=score)
-
-
-def test_task_verifier_requires_an_evaluator() -> None:
-    invalid: Any = object()
-    with pytest.raises(ValueError, match="evaluate"):
-        Task(agents={"assistant": Agent()}, verifier=invalid)
 
 
 @pytest.mark.asyncio

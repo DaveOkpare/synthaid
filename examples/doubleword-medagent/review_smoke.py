@@ -24,7 +24,6 @@ async def main(output: Path) -> None:
             "id": "read_scenario",
             "description": "Read fixture",
             "input_schema": {"type": "object"},
-            "output_schema": None,
             "variables": {
                 "topic": "fictional",
                 "discussion_type": "general",
@@ -34,7 +33,7 @@ async def main(output: Path) -> None:
     )
     judge = Judge(check=check)
     assistant = ProbeAssistant(tools=[reader], reviewer=judge, max_revisions=2)
-    task = Task(agents={"assistant": assistant, "user": ProbeUser()}, verifier=judge)
+    task = Task(agents={"user": ProbeUser(), "assistant": assistant}, verifier=judge)
     for episode in await Runner([task], output_dir=output).run():
         print(episode.verification, episode.path)
 

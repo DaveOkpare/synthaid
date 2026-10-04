@@ -19,7 +19,7 @@ name = "unused-offline-model"
 type = "local"
 [environment]
 type = "dialogue"
-max_rounds = 3
+max_turns = 6
 [agents.user]
 type = "release_components:Participant"
 target = false
@@ -41,11 +41,6 @@ description = "Return a reviewed label and this Trace's invocation count."
 type = "object"
 properties = { label = { type = "string" }, seed = { type = "string" } }
 required = ["label", "seed"]
-additionalProperties = false
-[tools.lookup.output_schema]
-type = "object"
-properties = { label = { type = "string" }, invocation = { const = 1 }, seed = { type = "string" } }
-required = ["label", "invocation", "seed"]
 additionalProperties = false
 [verifier]
 type = "release_components:verify"

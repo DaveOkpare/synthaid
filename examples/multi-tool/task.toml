@@ -27,18 +27,11 @@ type = "single"
 type = "function"
 function = "multi_tool_components:summarize"
 description = "Summarize a label in uppercase."
-execution_errors = "result"
 
 [tools.summarize.input_schema]
 type = "object"
 properties = { text = { type = "string" } }
 required = ["text"]
-additionalProperties = false
-
-[tools.summarize.output_schema]
-type = "object"
-properties = { summary = { type = "string" } }
-required = ["summary"]
 additionalProperties = false
 
 [agents.assistant]

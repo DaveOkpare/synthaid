@@ -34,12 +34,6 @@ properties = { text = { type = "string" } }
 required = ["text"]
 additionalProperties = false
 
-[tools.uppercase.output_schema]
-type = "object"
-properties = { text = { type = "string" } }
-required = ["text"]
-additionalProperties = false
-
 [agents.assistant]
 type = "function_tool_components:GreetingAgent"
 target = true
