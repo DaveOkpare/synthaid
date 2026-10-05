@@ -9,7 +9,6 @@ import tomllib
 import unicodedata
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -21,7 +20,6 @@ from jsonschema.validators import validator_for
 from referencing import Registry
 
 from agentinstruct import Agent, Judge, Task, Tool
-from agentinstruct.episode import Message
 from agentinstruct.judge import Criterion, Rubric
 
 
@@ -392,15 +390,18 @@ def _judge(
 
 
 def _checks(
-    messages: Sequence[Message], rubric: Rubric, checks: Mapping[str, str]
+    messages: Sequence[Mapping[str, Any]], rubric: Rubric, checks: Mapping[str, str]
 ) -> dict[str, Any]:
+    content = messages[-1].get("content") if messages else None
+    if isinstance(content, str):
+        content = content.strip()
     values = {
         "nonempty_content": bool(
-            messages and (messages[-1].content.strip() or messages[-1].tool_calls)
+            messages and (content or messages[-1].get("type") == "function_call")
         ),
         "nonempty_conversation": bool(messages),
-        "assistant_present": any(m.actor_id == "assistant" for m in messages),
-        "user_present": any(m.actor_id == "user" for m in messages),
+        "assistant_present": any(m.get("role") == "assistant" for m in messages),
+        "user_present": any(m.get("role") == "user" for m in messages),
     }
     return {
         "criteria": {
@@ -409,14 +410,6 @@ def _checks(
         },
         "feedback": "Provide a nonempty, valid response.",
     }
-
-
-def _api(model: Mapping[str, Any], config: Mapping[str, Any]) -> str:
-    return str(
-        config.get("providers", {})
-        .get(model.get("provider", "default"), {})
-        .get("api", "chat_completions")
-    )
 
 
 def _client(
@@ -438,29 +431,6 @@ def _client(
             "Endpoint requires a separately initialized application-owned client"
         )
     return client
-
-
-@dataclass(frozen=True)
-class _Scripted:
-    responses: Sequence[Any] = ()
-
-    async def generate(
-        self,
-        history: Sequence[Message],
-        *,
-        client: Any = None,
-        role: str = "assistant",
-        instruction: str | None = None,
-    ) -> Message:
-        index = sum(m.actor_id == role and m.role != "tool" for m in history)
-        if index >= len(self.responses):
-            raise ValueError("Scripted Agent has no remaining response")
-        value = self.responses[index]
-        return (
-            Message("assistant", value)
-            if isinstance(value, str)
-            else Message("assistant", value["content"], control=value.get("control"))
-        )
 
 
 def _tool(identifier: str, settings: Mapping[str, Any], variables: Any) -> Tool:
@@ -490,11 +460,6 @@ def _agent(
     ]
     options["reviewer"] = _judge(settings.get("reviewer"), config, client, clients)
     options["client"] = _client(settings["model"], config, client, clients)
-    kind = settings.get("type", "model")
-    if kind == "scripted":
-        options["generator"] = _Scripted(tuple(settings.get("responses", ())))
-    elif kind != "model":
-        options["generator"] = _reference(kind)()
     return Agent(**options)
 
 
@@ -647,8 +612,12 @@ def _agent_options(
 ) -> dict[str, Any]:
     model, policy = settings["model"], settings.get("reviewer") or {}
     _model_declaration(model)
-    if _api(model, config) != "chat_completions":
-        raise TaskValidationError("Agent supports only Chat Completions")
+    if settings.get("type", "model") != "model" or "responses" in settings:
+        raise TaskValidationError(
+            "Agents use OpenAI clients; scripted/custom generators are removed"
+        )
+    if not model.get("name"):
+        raise TaskValidationError("Agent requires a model name")
     return dict(
         model=model.get("name"),
         instruction=settings.get("instruction", ""),
@@ -673,6 +642,8 @@ def _declarations(config: Mapping[str, Any]) -> None:
             raise TaskValidationError(
                 "Variables need identifiers and nonempty selectors"
             )
+    if any("api" in provider for provider in config.get("providers", {}).values()):
+        raise TaskValidationError("Only Responses is supported; remove provider.api")
     _tool_declarations(config.get("tools", {}))
     _judge_declarations(config)
     agents = {
@@ -707,9 +678,6 @@ def _validate_agent(settings: Mapping[str, Any], config: Mapping[str, Any]) -> A
         raise TaskValidationError(
             "Agent Tool assignments must be unique declared names"
         )
-    kind = settings.get("type", "model")
-    if kind not in {"model", "scripted"}:
-        _reference_syntax(kind)
     model = {**config.get("model", {}), **settings.get("model", {})}
     return Agent(**_agent_options({**settings, "model": model}, config))
 
@@ -816,7 +784,6 @@ def _judge_model(
         client=_client(model, config, client, clients),
         model=model["name"],
         prompt=settings["prompt"],
-        api=_api(model, config),
     )
 
 

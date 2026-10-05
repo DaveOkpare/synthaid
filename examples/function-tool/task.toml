@@ -35,7 +35,7 @@ required = ["text"]
 additionalProperties = false
 
 [agents.assistant]
-type = "function_tool_components:GreetingAgent"
+type = "model"
 target = true
 tools = ["uppercase"]
 

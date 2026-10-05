@@ -16,7 +16,6 @@ language = "scenario.language"
 
 [providers.doubleword]
 type = "openai-compatible"
-api = "chat_completions"
 base_url = "https://api.doubleword.ai/v1"
 api_key_env = "DOUBLEWORD_API_KEY"
 

@@ -27,8 +27,7 @@ max_turns = 2
 
 [agents.user]
 target = false
-type = "scripted"
-responses = ["", "Hello, Ada."]
+type = "model"
 
 [agents.user.reviewer]
 type = "deterministic"
@@ -39,8 +38,7 @@ nonempty = "nonempty_content"
 
 [agents.assistant]
 target = true
-type = "scripted"
-responses = [{ content = "Welcome, Ada.", control = "complete" }]
+type = "model"
 
 [verifier]
 type = "deterministic"

@@ -2,7 +2,9 @@
 
 This historical example depends on Tool execution, which the lean UserSimEnv no
 longer provides. Its run scripts require a custom Environment; the instructions
-below describe the earlier workflow. Task-file validation remains available; historical trace loading is retired.
+below describe the earlier workflow. The current core also requires a server
+supporting `/v1/responses`; this example's live endpoint has not been revalidated.
+Task-file validation remains available; historical trace loading is retired.
 
 The opt-in live script projects two English scenario labels from an existing
 medagent data file. It creates assistant/user Tasks with a read-only scenario Tool
@@ -36,7 +38,7 @@ uv run --locked agentinstruct validate examples/doubleword-medagent
 The former CLI reverification command has been retired.
 
 The separate review_smoke.py now demonstrates rejection, feedback-driven revision,
-and private Tool visibility entirely offline through the direct API:
+and rejected Tool isolation entirely offline through the SDK:
 
 ```sh
 uv run --locked python examples/doubleword-medagent/review_smoke.py \

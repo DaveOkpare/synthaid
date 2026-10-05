@@ -4,39 +4,6 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from agentinstruct.episode import FunctionCall, Message, ToolCall
-
-
-class Participant:
-    async def generate(
-        self, history: Sequence[Message], *, role: str = "assistant", **kwargs: Any
-    ) -> Message:
-        variables = json.loads(history[1].content)
-        feedback = history[-1].content == "Use accepted wording and a safe label."
-        if role == "user":
-            if any(message.tool_calls or message.role == "tool" for message in history):
-                raise ValueError("Private Tool activity reached the user")
-            return Message(
-                "user", ("User " if feedback else "DRAFT ") + variables["name"]
-            )
-        results = [message for message in history if message.role == "tool"]
-        if not results:
-            label = "safe" if feedback else "reject"
-            return Message(
-                "assistant",
-                tool_calls=(
-                    ToolCall(
-                        label,
-                        FunctionCall(
-                            "lookup", {"label": label, "seed": variables["case_id"]}
-                        ),
-                    ),
-                ),
-            )
-        if variables["outcome"] == "failed":
-            raise ValueError("Deliberate post-commit failure")
-        return Message("assistant", "Final " + variables["name"], control="complete")
-
 
 async def lookup(arguments: Mapping[str, Any]) -> dict[str, Any]:
     if arguments["label"] != "safe":
@@ -44,10 +11,15 @@ async def lookup(arguments: Mapping[str, Any]) -> dict[str, Any]:
     return {"label": "safe", "invocation": 1, "seed": arguments["seed"]}
 
 
-def review(messages: Sequence[Message]) -> dict[str, Any]:
+def review(messages: Sequence[dict[str, Any]]) -> dict[str, Any]:
     message = messages[-1]
-    safe = not message.content.startswith("DRAFT") and all(
-        call.function.arguments.get("label") != "reject" for call in message.tool_calls
+    content = message.get("content", "")
+    if not isinstance(content, str):
+        content = "".join(part.get("text", "") for part in content)
+    safe = not content.startswith("DRAFT") and all(
+        json.loads(call["arguments"]).get("label") != "reject"
+        for call in messages
+        if call.get("type") == "function_call"
     )
     return {
         "criteria": {"safe": safe},
@@ -55,7 +27,5 @@ def review(messages: Sequence[Message]) -> dict[str, Any]:
     }
 
 
-def verify(messages: Sequence[Message]) -> dict[str, Any]:
-    return {
-        "criteria": {"complete": bool(messages and messages[-1].control == "complete")}
-    }
+def verify(messages: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    return {"criteria": {"complete": bool(messages and messages[-1].get("content"))}}

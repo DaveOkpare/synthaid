@@ -14,21 +14,33 @@ from agentinstruct.adapters.task_files import load_tasks
 
 def reply(request: httpx.Request) -> httpx.Response:
     body = json.loads(request.content)
-    schema = body["response_format"]["json_schema"]["schema"]
-    criteria = {name: True for name in schema["properties"]["criteria"]["properties"]}
-    decision = json.dumps({"criteria": criteria, "feedback": "Offline validation."})
+    decision = "Hello Ada."
+    if "text" in body:
+        schema = body["text"]["format"]["schema"]
+        criteria = {
+            name: True for name in schema["properties"]["criteria"]["properties"]
+        }
+        decision = json.dumps({"criteria": criteria, "feedback": "Offline validation."})
     return httpx.Response(
         200,
         json={
             "id": "offline",
             "model": body["model"],
-            "created": 1,
-            "object": "chat.completion",
-            "choices": [
+            "created_at": 1.0,
+            "object": "response",
+            "status": "completed",
+            "parallel_tool_calls": True,
+            "tools": [],
+            "tool_choice": "auto",
+            "output": [
                 {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": decision},
-                    "finish_reason": "stop",
+                    "id": "message",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [
+                        {"type": "output_text", "text": decision, "annotations": []}
+                    ],
                 }
             ],
         },

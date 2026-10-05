@@ -15,7 +15,7 @@ The current implementation follows [ADR-0027](docs/adr/0027-restore-runner-to-th
 ## Generation
 
 **Task**:
-An inert execution definition containing public input, configured Agent instances (each with its own Tools and optional reviewer), ordered segments, an optional verifier and execution limits. Task.agents holds the definitions directly: assistant is required and always the target; user is optional and may be omitted. Those are the only permitted keys, and declared values must be Agent instances. There are no separate Task.assistant/Task.user fields or configurable target flag. Task has no tools field or shared Tool pool. Construction automatically creates its own empty Episode with a unique ID; task.episode and task.episode.id are immediately available. The first execution uses that same Episode/ID, shared across all segments. Episode is not a required configuration argument. Construction performs no file writes, model/Tool calls or live resource acquisition. Task has no separate message_judge or episode_judge field. Applications prepare Tasks; Task validates its declarations locally; UserSimEnv uses its Agents and invokes its final verifier. Only public input and active instructions are available to Agents; grading-only data and future segment instructions remain private.
+A dataclass containing Agents in turn order, input, an optional verifier, one turn limit and its Episode. It creates a fresh Agent copy with an empty history for each participant.
 _Avoid_: Benchmark, evaluation
 
 **Taskset**:
@@ -57,23 +57,19 @@ The application-owned asynchronous client for an inference endpoint, holding net
 _Avoid_: Client manager, model instance, Episode
 
 **Agent**:
-A directly constructed participant: Agent(model, instruction, tools=(), reviewer=None), with revision settings such as max_revisions=1. Task.agents holds these objects and Environment uses them directly. Only that Agent's declared Tools are advertised or callable; shared capability references must be explicitly declared on each Agent. turn(episode) obtains proposals through generate(history), using an injected Generator when supplied. It applies its reviewer/revision policy, records accepted output and executes approved private Tools. For revision, generate receives temporary private history containing the rejected draft and reviewer guidance, and Agent authors a replacement for another review. generate is the customization seam; it does not authorize effects or accept output. Agent keeps stable settings; Episode owns accepted/private history and continuation state, while drafts/feedback/counters stay local to each turn. The same built-in Agent can serve separate Episodes concurrently without state leakage. UserSimEnv passes client, participant identity and active instructions per invocation rather than rebinding Agent. Custom Agents obey the same state rule or callers provide separate instances for mutable dependencies. Construction is inert and snapshots Tool collections.
+A participant that calls the OpenAI Responses API and optionally revises its response from reviewer feedback. It owns its private history, including tool activity and review feedback, and declares its model, instruction and Tools. UserSimEnv publishes approved reply text.
 _Avoid_: Role, policy
-
-**Generator**:
-A structural protocol supplying async generate(history, *, client, role, instruction). Agent accepts a Generator object and retains ownership of proposal validation, review, acceptance and effects. The generator returns Message values without committing or executing Agent Tools; custom invocation state stays local.
-_Avoid_: Agent runtime, Provider hierarchy
 
 **Evaluator**:
 A structural protocol supplying async evaluate(messages) -> Judgment. Domain implementations need no SDK attributes, Judge inheritance or resource fields. Reviewers and verifiers share this interface, while their invoking owners choose the messages and timing. Results obey Judgment's local Boolean/score/JSON contracts.
 _Avoid_: Evaluation factory, lifecycle owner
 
 **Provider**:
-The model-client dependency used for inference through its selected Responses or Chat Completions API. The core has no public Provider request/response hierarchy. Agent uses an injected client, Generator or custom generate override; Judge uses an injected client or a callable check. SDK/transport types stay implementation details.
+The inference endpoint accessed through a model client.
 _Avoid_: Agent, model, runtime
 
 **Provider API Surface**:
-The wire protocol selected by an actual Provider: `responses` or `chat_completions`, recorded in Trace evidence.
+The endpoint's Responses wire protocol.
 _Avoid_: Provider type, model API
 
 **Structured Output Schema**:
@@ -109,7 +105,7 @@ A structural protocol with one method: async run(task, *, client=None) -> None. 
 _Avoid_: Runtime, sandbox, orchestrator
 
 **UserSimEnv**:
-The stateless default Environment implementation. It activates ordered segments and schedules the configured assistant/user Agents through Agent.turn. Its run method begins recording, applies the Task deadline, records outcomes, seals generation and invokes final verification; its state stays local to each invocation. It keeps no Task binding or external resource lifetime.
+The built-in Environment: Agents speak in turn, only their published replies cross to the other Agent, and an optional verifier evaluates the recorded conversation.
 _Avoid_: Lifecycle manager, simulator Agent
 
 **Runtime**:
@@ -117,7 +113,7 @@ The place where framework code, agents, and tools execute; local execution is th
 _Avoid_: Environment
 
 **Observation**:
-The model-visible OpenAI-style message history projected for one agent, including only accepted conversation content and that agent's private tool exchanges.
+The latest published reply supplied to an Agent, added to its own private history.
 _Avoid_: Context, state
 
 **Action**:
@@ -128,8 +124,11 @@ _Avoid_: Turn, response
 The identified history/output created automatically with Task and shared across its segments: accepted Conversation, execution Events and verification results. Its read-only id is UUID-based and exists before execution; its read-only messages view initially contains no accepted messages. Task.episode holds it; Environment and Agents use it. Drafts/review Events remain separate. Episode.open(path) establishes recording without changing identity before accepted appends/Tool effects; construction itself writes no files. It owns history projection, durable recording, segment provenance and task-wide sealed generation. Serialization/format conversion is optional and retains target/visibility rules. Separate Tasks have separate Episodes/history. Verification records append without changing generation, and historical Trace JSON remains readable with recorded IDs intact.
 _Avoid_: Agent session, Run
 
+**Message**:
+A TypedDict with role and content for text conversation messages; an ordinary OpenAI-format dictionary at runtime.
+
 **Conversation**:
-The canonical ordered history of accepted participant messages and accepted tool calls and results.
+The ordered published replies in the Episode. Tool exchanges remain in the owning Agent’s private history.
 _Avoid_: Event log, transcript
 
 **Message Commit**:
@@ -151,7 +150,7 @@ The directly usable evaluator with one constructor for both message review and f
 _Avoid_: Quality-call layer, judge factory
 
 **Reviewer**:
-The optional Evaluator supplied as reviewer on an Agent definition. It evaluates that Agent's proposals, including Tool calls, before acceptance/effects. A rejection provides actionable guidance or suggested edits; Agent uses the review and rejected draft to generate a replacement and reviews it again before acceptance. Reviewer does not rewrite accepted output. Different Agents can use different Judge configurations or None; appropriately configured instances can be shared without revision-state leakage. Revision limits belong to Agent. Drafts/review guidance remain private Events, excluded from peer history/default export. Reviewer is an invocation role of an Evaluator, without a task-wide message_judge or separate required module/constructor.
+An evaluator invoked by an Agent before returning a response.
 _Avoid_: Final verification
 
 **Rubric**:

@@ -8,15 +8,13 @@ path = "seed.json"
 name = "name"
 [providers.judge]
 type = "openai-compatible"
-api = "chat_completions"
 base_url = "https://example.invalid/v1"
 [model]
 provider = "judge"
 name = "example-judge"
 [agents.assistant]
 target = true
-type = "scripted"
-responses = [{ content = "Hello Ada.", control = "complete" }]
+type = "model"
 [agents.assistant.reviewer]
 type = "model"
 max_revisions = 1

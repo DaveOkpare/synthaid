@@ -1,8 +1,10 @@
-"""Prepare ordinary Tasks with the optional file loader and run offline."""
+"""Prepare Tasks from files and run with an application-owned SDK client."""
 
 import argparse
 import asyncio
 from pathlib import Path
+
+from openai import AsyncOpenAI
 
 from agentinstruct import Runner
 from agentinstruct.adapters.task_files import load_tasks
@@ -10,10 +12,11 @@ from agentinstruct.adapters.task_files import load_tasks
 
 async def main(output: Path) -> None:
     tasks = load_tasks(Path(__file__).parent)
-    for episode in await Runner(tasks, output_dir=output).run():
-        print(episode.verification, episode.path)
-        for message in episode.messages:
-            print(message.actor_id, message.content)
+    async with AsyncOpenAI() as client:
+        for episode in await Runner(tasks, output_dir=output, client=client).run():
+            print(episode.verification, episode.path)
+            for message in episode.messages:
+                print(message["role"], message["content"])
 
 
 if __name__ == "__main__":

@@ -14,10 +14,10 @@ type = "local"
 [environment]
 type = "dialogue"
 [agents.user]
-type = "round_table_components:Participant"
+type = "model"
 target = false
 [agents.assistant]
-type = "round_table_components:Participant"
+type = "model"
 target = true
 tools = ["lookup"]
 [agents.assistant.reviewer]

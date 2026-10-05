@@ -7,10 +7,8 @@ import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol, runtime_checkable
-
-from agentinstruct.episode import Message
 
 
 @dataclass(frozen=True)
@@ -81,7 +79,7 @@ class JudgeError(RuntimeError):
 
 @runtime_checkable
 class Evaluator(Protocol):
-    async def evaluate(self, messages: Sequence[Message]) -> Judgment: ...
+    async def evaluate(self, messages: Sequence[Mapping[str, Any]]) -> Judgment: ...
 
 
 @dataclass(frozen=True)
@@ -90,8 +88,9 @@ class Judge:
     model: str | None = None
     prompt: str = ""
     rubric: Rubric | None = None
-    check: Callable[[Sequence[Message]], Any] | None = field(default=None, repr=False)
-    api: str = "chat_completions"
+    check: Callable[[Sequence[Mapping[str, Any]]], Any] | None = field(
+        default=None, repr=False
+    )
     timeout_seconds: float | None = None
 
     def __post_init__(self) -> None:
@@ -109,7 +108,7 @@ class Judge:
             raise ValueError("Model Judge needs client, model and prompt")
         _judge_settings(self)
 
-    async def evaluate(self, messages: Sequence[Message]) -> Judgment:
+    async def evaluate(self, messages: Sequence[Mapping[str, Any]]) -> Judgment:
         try:
             async with asyncio.timeout(self.timeout_seconds):
                 if self.check is not None:
@@ -129,12 +128,14 @@ class Judge:
                 kind = "timeout"
             raise JudgeError(kind, getattr(exc, "evidence", {})) from exc
 
-    async def _model_judgment(self, messages: tuple[Message, ...]) -> Judgment:
+    async def _model_judgment(
+        self, messages: tuple[Mapping[str, Any], ...]
+    ) -> Judgment:
         history = [
             {"role": "system", "content": self.prompt},
             {
                 "role": "user",
-                "content": json.dumps(messages, default=asdict, allow_nan=False),
+                "content": json.dumps(messages, allow_nan=False),
             },
         ]
         format_ = {
@@ -143,28 +144,15 @@ class Judge:
             "strict": True,
         }
         client = self.client.with_options(max_retries=0)
-        if self.api == "responses":
-            response = await client.responses.create(
-                model=self.model,
-                input=history,
-                store=False,
-                text={"format": {"type": "json_schema", **format_}},
-            )
-            if response.status != "completed" or response.error:
-                raise ValueError("Judge response did not complete")
-            content = response.output_text
-        else:
-            response = await client.chat.completions.create(
-                model=self.model,
-                messages=history,
-                store=False,
-                response_format={"type": "json_schema", "json_schema": format_},
-            )
-            choice = response.choices[0]
-            if choice.message.refusal or choice.finish_reason != "stop":
-                raise ValueError("Judge response did not complete")
-            content = choice.message.content or ""
-        return _judgment(json.loads(content), self.rubric)
+        response = await client.responses.create(
+            model=self.model,
+            input=history,
+            store=False,
+            text={"format": {"type": "json_schema", **format_}},
+        )
+        if response.status != "completed" or response.error:
+            raise ValueError("Judge response did not complete")
+        return _judgment(json.loads(response.output_text), self.rubric)
 
 
 def _verdicts(value: Any) -> dict[str, bool]:
@@ -236,8 +224,6 @@ def _judge_settings(judge: Judge) -> None:
         judge.model is not None and not isinstance(judge.model, str)
     ):
         raise ValueError("Judge model and prompt must be text")
-    if judge.api not in {"chat_completions", "responses"}:
-        raise ValueError("Unsupported Judge API")
     if judge.rubric is not None and not isinstance(judge.rubric, Rubric):
         raise ValueError("Judge rubric must be a Rubric")
     if judge.timeout_seconds is not None and (

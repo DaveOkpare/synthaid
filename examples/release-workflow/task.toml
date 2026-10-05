@@ -21,10 +21,10 @@ type = "local"
 type = "dialogue"
 max_turns = 6
 [agents.user]
-type = "release_components:Participant"
+type = "model"
 target = false
 [agents.assistant]
-type = "release_components:Participant"
+type = "model"
 target = true
 tools = ["lookup"]
 [agents.user.reviewer]

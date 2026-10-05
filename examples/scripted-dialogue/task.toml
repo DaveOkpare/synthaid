@@ -10,7 +10,6 @@ path = "seed.json"
 [variables]
 topic = "topic"
 
-# Recorded defaults; scripted Agents do not call the Provider.
 [providers.default]
 type = "openai"
 
@@ -27,13 +26,8 @@ max_turns = 6
 
 [agents.user]
 target = false
-type = "scripted"
-responses = ["What is gravity?", "Thanks, that helps."]
+type = "model"
 
 [agents.assistant]
 target = true
-type = "scripted"
-responses = [
-    "Gravity is the attraction between objects with mass.",
-    { content = "You are welcome.", control = "complete" },
-]
+type = "model"

@@ -1,7 +1,7 @@
 """Conversation inputs and the Episode that records their execution."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from agentinstruct.agent import Agent
@@ -22,3 +22,6 @@ class Task:
             raise ValueError("Task requires assistant and permits only optional user")
         if type(self.max_turns) is not int or self.max_turns < 1:
             raise ValueError("max_turns must be a positive integer")
+        self.agents = {
+            role: replace(agent, history=[]) for role, agent in self.agents.items()
+        }

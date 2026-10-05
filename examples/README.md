@@ -8,10 +8,14 @@ uv run python examples/direct-dialogue/run.py --output /tmp/agentinstruct-dialog
 ```
 
 The task-file examples `scripted-single`, `scripted-dialogue`, `reviewed-dialogue`,
-`verified-single`, `seed-collection` and `seed-sources` also run offline with the
-default UserSimEnv.
+`verified-single`, `seed-collection` and `seed-sources` use model Agents with the
+default UserSimEnv. The folders retain their historical names; scripted Agents
+are removed. Configure the model name and credentials before running them.
 
-`single-agent`, `chat-completions` and `structured-quality` use model clients.
+`single-agent` and `responses` use configured model clients. All model clients
+must connect to a server supporting `/v1/responses`.
+`structured-quality/run.py` demonstrates model generation and judging offline
+through the SDK with an HTTP fixture.
 
 The older `function-tool`, `multi-tool`, `custom-components` and
 `doubleword-medagent` examples need a custom Environment to execute Tools.

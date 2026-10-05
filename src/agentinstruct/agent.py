@@ -1,122 +1,69 @@
-"""Generate a sample and optionally revise it from reviewer feedback."""
+"""Call OpenAI and optionally revise its response from reviewer feedback."""
 
 import json
-from collections.abc import Sequence
-from dataclasses import asdict, dataclass, field, replace
-from typing import Any, Protocol
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any
 
-from agentinstruct.episode import FunctionCall, Message, ToolCall
 from agentinstruct.judge import Evaluator, Judgment
 from agentinstruct.tools import Tool
-
-
-class Generator(Protocol):
-    async def generate(
-        self,
-        history: Sequence[Message],
-        *,
-        client: Any = None,
-        role: str = "assistant",
-        instruction: str | None = None,
-    ) -> Message: ...
 
 
 class ReviewExhausted(RuntimeError):
     """The reviewer rejected the final sample."""
 
 
-@dataclass(frozen=True)
+@dataclass
 class Agent:
-    model: str | None = None
+    model: str
     instruction: str = ""
     tools: Sequence[Tool] = ()
     reviewer: Evaluator | None = None
     max_revisions: int = 1
     client: Any = field(default=None, repr=False, compare=False)
-    generator: Generator | None = field(default=None, repr=False, compare=False)
+    history: list[Mapping[str, Any]] = field(default_factory=list, repr=False)
 
     async def generate(
-        self, history: Sequence[Message], *, client: Any = None, role: str = "assistant"
-    ) -> Message:
+        self, messages: Sequence[Mapping[str, Any]] = (), **options: Any
+    ) -> Any:
         if type(self.max_revisions) is not int or self.max_revisions < 0:
             raise ValueError("max_revisions must be a nonnegative integer")
-        history = tuple(history)
-        if not history or history[0].role != "system":
-            history = (Message("system", self.instruction), *history)
-        sampling = history
+        history = self.history
+        history.extend(messages)
+        if not history or history[0].get("role") not in {"system", "developer"}:
+            history.insert(0, {"role": "system", "content": self.instruction})
         for _ in range(self.max_revisions + 1):
-            draft = await _sample(self, sampling, client, role)
-            judgment = await self._review((*history, draft))
-            if judgment is None or judgment.passed:
-                return draft
-            sampling = (*history, draft, Message("user", judgment.feedback))
+            raw = await self._request(history, **options)
+            draft = [item.model_dump(exclude_none=True) for item in raw.output]
+            feedback = await self._review(history, draft)
+            history.extend(draft if feedback is None else feedback)
+            if feedback is None:
+                return raw
         raise ReviewExhausted("Reviewer revisions exhausted")
 
-    async def _review(self, history: Sequence[Message]) -> Judgment | None:
+    async def _request(self, history: list[Mapping[str, Any]], **options: Any) -> Any:
+        client = options.pop("client", None)
+        client = self.client if self.client is not None else client
+        if client is None:
+            raise ValueError("Agent requires an OpenAI client")
+        return await client.responses.create(
+            model=self.model,
+            tools=[tool.schema() for tool in self.tools],
+            stream=False,
+            input=history,
+            **options,
+        )
+
+    async def _review(
+        self, history: list[Mapping[str, Any]], draft: list[dict[str, Any]]
+    ) -> list[dict[str, Any]] | None:
         if self.reviewer is None:
             return None
-        result = await self.reviewer.evaluate(history)
+        result = await self.reviewer.evaluate([*history, *draft])
         if not isinstance(result, Judgment):
             raise ValueError("Reviewer must return a Judgment")
-        return result
-
-
-async def _sample(
-    agent: Agent, history: Sequence[Message], client: Any, role: str
-) -> Message:
-    client = agent.client if agent.client is not None else client
-    if agent.generator is None:
-        message = await _model_sample(agent, history, client, role)
-    else:
-        message = await agent.generator.generate(
-            history, client=client, role=role, instruction=history[0].content
-        )
-    if not isinstance(message, Message) or message.role not in {"assistant", "user"}:
-        raise ValueError("Agent must return one participant Message")
-    return replace(message, actor_id=role)
-
-
-async def _model_sample(
-    agent: Agent, history: Sequence[Message], client: Any, role: str
-) -> Message:
-    if client is None or not agent.model:
-        raise ValueError("Model Agent requires a client and model")
-    client = client.with_options(max_retries=0)
-    messages = [_chat_message(message, role) for message in history]
-    options = dict(model=agent.model, store=False, stream=False)
-    if agent.tools:
-        options["tools"] = [tool.schema() for tool in agent.tools]
-    response = await client.chat.completions.create(messages=messages, **options)
-    return _chat_response(response)
-
-
-def _chat_message(message: Message, role: str) -> dict[str, Any]:
-    wire_role = message.role
-    if message.actor_id is not None and wire_role not in {"system", "tool"}:
-        wire_role = "assistant" if message.actor_id == role else "user"
-    data: dict[str, Any] = {"role": wire_role, "content": message.content}
-    if message.tool_calls:
-        data["tool_calls"] = [asdict(call) for call in message.tool_calls]
-        for call in data["tool_calls"]:
-            function = call["function"]
-            function["arguments"] = json.dumps(function["arguments"], allow_nan=False)
-    if message.tool_call_id:
-        data["tool_call_id"] = message.tool_call_id
-    return data
-
-
-def _chat_response(response: Any) -> Message:
-    choice = response.choices[0]
-    if choice.message.refusal or choice.finish_reason not in {"stop", "tool_calls"}:
-        raise RuntimeError("Model response did not complete")
-    return Message(
-        "assistant",
-        choice.message.content or "",
-        tool_calls=tuple(
-            ToolCall(
-                call.id,
-                FunctionCall(call.function.name, json.loads(call.function.arguments)),
-            )
-            for call in choice.message.tool_calls or ()
-        ),
-    )
+        if result.passed:
+            return None
+        if any(m.get("type") == "function_call" for m in draft):
+            draft = [{"role": "assistant", "content": json.dumps(draft)}]
+        return [*draft, {"role": "user", "content": result.feedback}]

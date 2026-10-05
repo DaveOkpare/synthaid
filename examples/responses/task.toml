@@ -12,13 +12,12 @@ name = "name"
 
 [providers.default]
 type = "openai"
-api = "chat_completions"
 api_key_env = "OPENAI_API_KEY"
 
 [model]
 provider = "default"
-# Replace with a Chat Completions model available to your account.
-name = "your-chat-model"
+# Replace with a Responses model available to your account.
+name = "your-model"
 
 [runtime]
 type = "local"

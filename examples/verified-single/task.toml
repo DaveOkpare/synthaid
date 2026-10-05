@@ -10,7 +10,6 @@ path = "seed.json"
 [variables]
 name = "name"
 
-# The scripted Agent and deterministic Verifier do not call this Provider.
 [providers.default]
 type = "openai"
 
@@ -26,8 +25,7 @@ type = "single"
 
 [agents.assistant]
 target = true
-type = "scripted"
-responses = ["Hello, Ada."]
+type = "model"
 
 [verifier]
 type = "deterministic"

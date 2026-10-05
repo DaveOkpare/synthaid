@@ -18,11 +18,9 @@ class Tool:
     def schema(self) -> dict[str, Any]:
         return {
             "type": "function",
-            "function": {
-                "name": self.id,
-                "description": self.description,
-                "parameters": self.input_schema,
-            },
+            "name": self.id,
+            "description": self.description,
+            "parameters": self.input_schema,
         }
 
     async def call(self, arguments: Mapping[str, Any]) -> Any:

@@ -20,11 +20,9 @@ async def test_tool_schema_and_function_call() -> None:
     )
     assert tool.schema() == {
         "type": "function",
-        "function": {
-            "name": "shout",
-            "description": "Uppercase text",
-            "parameters": parameters,
-        },
+        "name": "shout",
+        "description": "Uppercase text",
+        "parameters": parameters,
     }
     assert await tool.call({"text": "Hello"}) == "HELLO"
 

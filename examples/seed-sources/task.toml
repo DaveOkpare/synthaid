@@ -29,8 +29,7 @@ type = "single"
 
 [agents.assistant]
 target = true
-type = "scripted"
-responses = ["Seed received."]
+type = "model"
 
 [verifier]
 type = "deterministic"

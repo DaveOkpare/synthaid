@@ -69,8 +69,9 @@ async def main():
 asyncio.run(main())
 ```
 
-Agent uses Chat Completions. OpenAI SDK 2.30.0 is pinned; generation uses accepted
-history and disabled retries. Judge also supports `api="responses"`.
+Agent and Judge use the Responses API. The configured server must support
+`/v1/responses`. OpenAI SDK 2.30.0 is pinned. Agent uses the supplied client
+and its configured retry policy.
 Configure different endpoints with separate application-owned clients, supplied to Agent
 or Judge. An Agent's explicit client takes precedence over Runner.client.
 
@@ -79,46 +80,65 @@ conversation messages. It rejects Tool calls.
 Tool execution and other execution policies require a custom Environment.
 
 Tool holds an async function, its `id`, `description` and `input_schema`.
-`schema()` returns its Chat Completions function schema; `call(arguments)` awaits
+`schema()` returns the Responses function schema; `call(arguments)` awaits
 the function with the supplied argument mapping and returns its result unchanged.
 The ID defaults to the function name. Validation and error handling belong in the
 function when needed; exceptions propagate directly.
 
 ## Customize generation and scheduling
 
-Generation, evaluation and execution have small structural protocols:
+Agent calls the OpenAI SDK directly. Set its model, instruction, tools, optional
+reviewer and revision limit. `generate()` makes one request, then optionally
+reviews and revises the result. Each Agent owns a private `history`. Pass only new
+messages to `generate()`; it appends them and retains its outputs and review
+feedback for subsequent turns. It returns the native SDK response, preserving
+text, tool calls, status and other API fields. Additional request options go directly
+to the SDK through `generate(..., **options)`, including `reasoning` and `text.format`
+for reasoning summaries and structured output on compatible models. Reasoning summaries
+are distinct from raw internal reasoning, which OpenAI does not expose
+([reasoning guide](https://developers.openai.com/api/docs/guides/reasoning)).
+Generation is non-streaming.
 
-| Seam | Interface | Domain adapter |
+`Message` is a small `TypedDict` with `role` and `content`:
+
+```python
+from agentinstruct.episode import Message
+
+message = Message(role="user", content="Hello")
+```
+
+It is an ordinary OpenAI-format dictionary at runtime, with type checking for
+text conversation messages. Episode stores `list[Message]`. Agent and Judge
+also accept native API mappings for tool calls and multimodal content.
+There are no `actor_id` or `control` fields, conversion methods, or custom
+FunctionCall/ToolCall wrappers.
+
+Evaluation and execution have small structural protocols:
+
+| Seam | Interface | Usage |
 | --- | --- | --- |
-| agent.Generator | async generate(history, *, client, role, instruction) | Supply a plain object as Agent(generator=...) |
-| judge.Evaluator | async evaluate(messages) -> Judgment | Supply it as Agent.reviewer or Task.verifier |
-| Environment | async run(task, *, client) -> None | Supply an instance to Runner(environment=...) |
-
-A domain adapter implements these methods without inheriting framework classes.
-Generator returns one unreviewed Message. Agent has one public operation:
-`generate()` samples, reviews and revises until approved or its revision limit is
-exhausted. Its private `_review()` invokes the optional reviewer. UserSimEnv records
-the returned Message and passes accepted history to the next Agent.
-Reviewer feedback and the current rejected draft reach the generator privately.
-The retail example uses a plain generator; tests also demonstrate arithmetic
-generation/evaluation and a custom Environment. Supply custom sampling through
-`generator=` so it participates in the same review loop. Supporting Message/Tool-call
-values live in episode.py, and Judgment lives in judge.py.
+| judge.Evaluator | async evaluate(messages) -> Judgment | Agent.reviewer or Task.verifier |
+| Environment | async run(task, *, client) -> None | Runner(environment=...) |
 
 Task.agents requires `assistant`; an optional `user` uses the same Agent class.
-Only assistant may return `Message(..., control="complete")`. An assistant-only
-Task finishes after one response. Agents take turns in dictionary insertion order:
-`{"user": user, "assistant": assistant}` starts with the user. Dialogue ends on
-completion or `max_turns` (20 messages by default). There is no separate roles list
-or initiator setting.
+An assistant-only Task finishes after one response. Agents take turns in dictionary
+insertion order: `{"user": user, "assistant": assistant}` starts with the user.
+Dialogue ends at `max_turns` (20 messages by default). UserSimEnv records the role
+from Task.agents. On each turn it passes only the last published Episode message
+as a user message. Each Agent keeps its own earlier context, including private
+tool calls, tool results and review feedback. Only the reply text is published
+to the Episode and made available to the other Agent.
 
 Task is a small dataclass holding `agents`, `input`, `verifier`, `max_turns` and an
-automatically created `episode`. It keeps supplied mappings as ordinary data.
-Input is included in each Agent's context and saved in `episode.metadata["input"]`.
+automatically created `episode`. Task copies each supplied Agent with a fresh
+history, including when the same configuration is used for both participants or
+across Tasks. Clients, Tools and reviewers remain shared as configured. Inspect
+`task.agents[role].history` for that participant's private context.
+Input is added once on each Agent's first turn and saved in `episode.metadata["input"]`.
 Add other trace metadata directly to `episode.metadata`. Construct another Task
 for another sample; Runner rejects an existing output directory.
 
-A callable Judge uses `Judge(check=...)`. Its check receives immutable Messages
+A callable Judge uses `Judge(check=...)`. Its check receives message dictionaries
 and returns a Boolean, Judgment, or ordinary verdict/feedback mapping. Rubrics
 require exact Boolean criterion IDs and compute weighted scores locally. A Judge
 can serve both review and verification when its criteria suit both uses.
@@ -136,28 +156,33 @@ Standalone UserSimEnv runs entirely in memory. Use Runner to persist its traces.
 Episode has five ordinary fields: `id`, `messages`, `metadata`, `verification` and
 `path`; it has no methods.
 
-Different domains can usually supply a Generator and Evaluator to the default
-UserSimEnv. A custom Environment defines its own execution policy and updates the
-supplied Episode. Runner owns writing that data to disk.
+Different domains can supply instructions and an Evaluator to UserSimEnv.
+A custom Environment defines its own execution policy and updates the supplied
+Episode. Runner owns writing that data to disk.
 
 Generation can also be used directly without a Task or Episode:
 
 ```python
-from agentinstruct.episode import Message
-
 agent = Agent("model", "Write a worked example.", reviewer=correctness)
-reply = await agent.generate([Message("user", "Explain fractions.")], client=client)
+reply = await agent.generate(
+    [{"role": "user", "content": "Explain fractions."}], client=client, temperature=0.2
+)
+print(reply.output_text)
 ```
 
 Use this inside the application's async client scope. `generate()` uses the Agent's
-instruction unless history starts with an explicit system instruction. It returns
-a reviewed proposal without committing it or executing Tools. Drafts and review
-feedback stay local to that call. UserSimEnv records accepted messages.
+instruction unless its initial history starts with an explicit system or developer
+instruction. Direct calls continue the same conversation; use separate Agents for
+independent conversations. `generate()` returns a reviewed SDK response and retains
+it in the Agent's private history. Drafts and review feedback stay with that Agent.
+Rejected tool proposals are included as JSON text
+when requesting a revision, so no pending tool call requires execution.
+UserSimEnv records accepted conversation text.
 
 Task.verifier receives a constructed Judge or an Evaluator, and Agent.reviewer
 accepts either. Task data and domain adapters carry no hidden client binding or
-resource manager. Custom adapters honor cancellation and keep invocation state
-local; their own external dependencies have application-defined lifetimes.
+resource manager. Custom adapters honor cancellation; their external dependencies have
+application-defined lifetimes.
 
 ## Optional task files and CLI
 
@@ -176,7 +201,7 @@ output files. `load_tasks` constructs the same core objects; model-backed settin
 need supplied `client` or named `clients`. JSON, JSONL, CSV, directories, and Python
 iterables retain record origins. Invalid records and source-enumeration failures
 are distinct. Agent table order determines turn order. Task files reject removed
-steps, `max_rounds`, `initiator` and environment deadlines; use `max_turns` for the
+scripted/custom generators, steps, `max_rounds`, `initiator` and environment deadlines; use `max_turns` for the
 conversation limit. Record provenance is placed in Episode metadata.
 See [examples](examples/README.md) for the supported conversations.
 
@@ -194,9 +219,10 @@ environment variable, defaulting to `OPENAI_API_KEY`.
 
 ## Read, inspect, and export
 
-`episode.messages` is an ordinary list of accepted Messages. `episode.verification`
+`episode.messages` is an ordinary list of accepted OpenAI message dictionaries. `episode.verification`
 is a Judgment or None. Episode does no judging, history filtering, sealing, loading,
-or exporting. Rejected drafts and reviewer feedback remain private to Agent.generate.
+or exporting. Rejected drafts and reviewer feedback remain in the owning Agent's
+private history.
 
 Runner writes one JSON snapshot containing `id`, `messages`, `metadata` and
 `verification`. It writes and flushes a temporary file beside the destination, then

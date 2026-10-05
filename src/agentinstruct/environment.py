@@ -1,7 +1,6 @@
 """Environments run Tasks; UserSimEnv records a conversation and verifies it."""
 
 import json
-from dataclasses import replace
 from itertools import cycle, islice
 from typing import Any, Protocol
 
@@ -19,20 +18,21 @@ class UserSimEnv(Environment):
         episode = task.episode
         episode.metadata = {**episode.metadata, "input": task.input}
         context = (
-            [Message("user", json.dumps(task.input, allow_nan=False))]
+            [Message(role="user", content=json.dumps(task.input, allow_nan=False))]
             if task.input
             else []
         )
         for role, agent in islice(cycle(task.agents.items()), task.max_turns):
-            reply = await agent.generate(
-                (*context, *episode.messages), client=client, role=role
-            )
-            if reply.tool_calls or (reply.control and role != "assistant"):
-                raise ValueError(
-                    "UserSimEnv rejects Tool calls and only assistant may complete"
+            incoming = list(context) if not agent.history else []
+            if episode.messages:
+                incoming.append(
+                    Message(role="user", content=episode.messages[-1]["content"])
                 )
-            episode.messages.append(replace(reply, role=role))
-            if reply.control == "complete" or len(task.agents) == 1:
+            result = await agent.generate(incoming, client=client)
+            if any(item.type == "function_call" for item in result.output):
+                raise ValueError("UserSimEnv does not execute Tool calls")
+            episode.messages.append(Message(role=role, content=result.output_text))
+            if len(task.agents) == 1:
                 break
         if task.verifier is not None:
             result = await task.verifier.evaluate(tuple(episode.messages))

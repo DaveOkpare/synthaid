@@ -14,6 +14,7 @@ from agentinstruct.adapters.task_files import (
     compile_records,
     load_tasks,
 )
+from tests.model_fixtures import Transport, client, response
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
@@ -22,15 +23,6 @@ def package(tmp_path: Path, source: str = "verified-single") -> Path:
     root = tmp_path / "package"
     shutil.copytree(EXAMPLES / source, root)
     return root
-
-
-def scripted(root: Path) -> None:
-    path = root / "task.toml"
-    text = path.read_text().replace(
-        "[agents.assistant]",
-        '[agents.assistant]\ntype = "scripted"\nresponses = ["Hello"]',
-    )
-    path.write_text(text)
 
 
 @pytest.mark.asyncio
@@ -44,7 +36,10 @@ async def test_python_records_compile_to_the_direct_task_interface(
         task.episode.path is None and not task.episode.messages for task in tasks
     )
     assert tasks[0].episode.metadata["seed"]["data"] == {"name": "Ada"}
-    episodes = await Runner(tasks, output_dir=tmp_path / "runs").run()
+    async with client(Transport(response(), response())) as borrowed:
+        episodes = await Runner(
+            tasks, output_dir=tmp_path / "runs", client=borrowed
+        ).run()
     assert all(
         episode.verification is not None and episode.verification.passed
         for episode in episodes
@@ -57,25 +52,13 @@ def test_task_files_reject_removed_steps(name: str) -> None:
         list(compile_records(EXAMPLES / name))
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        "function-tool",
-        "multi-tool",
-        "custom-components",
-    ],
-)
-@pytest.mark.asyncio
-async def test_legacy_execution_examples_require_a_custom_environment(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    name: str,
+@pytest.mark.parametrize("name", ["function-tool", "multi-tool", "custom-components"])
+def test_tool_declarations_use_native_agents(
+    name: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.syspath_prepend(str(EXAMPLES / name))
     tasks = load_tasks(EXAMPLES / name)
-    with pytest.raises(ValueError, match="UserSimEnv"):
-        await Runner(tasks, output_dir=tmp_path).run()
-    assert tasks[0].episode.verification is None
+    assert tasks[0].agents["assistant"].tools
 
 
 @pytest.mark.parametrize(
@@ -207,15 +190,17 @@ def test_templates_cannot_render_runtime_objects_or_undeclared_variables(
     assert records[0]["error"]
 
 
-def test_compile_does_not_import_or_construct_custom_components(tmp_path: Path) -> None:
+def test_compile_rejects_custom_generators_without_import(tmp_path: Path) -> None:
     root = package(tmp_path)
     path = root / "task.toml"
     path.write_text(
         path.read_text().replace(
-            'type = "scripted"', 'type = "never_import_this:Custom"'
+            '[agents.assistant]\ntarget = true\ntype = "model"',
+            '[agents.assistant]\ntarget = true\ntype = "never_import_this:Custom"',
         )
     )
-    assert list(compile_records(root))
+    with pytest.raises(TaskValidationError, match="generators are removed"):
+        list(compile_records(root))
     assert "never_import_this" not in sys.modules
 
 
@@ -231,12 +216,14 @@ def test_compile_does_not_import_or_construct_custom_components(tmp_path: Path) 
     ],
 )
 @pytest.mark.asyncio
-async def test_shipped_offline_packages_use_canonical_interfaces(
+async def test_shipped_packages_use_native_agents(
     name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.syspath_prepend(str(EXAMPLES / name))
     tasks = load_tasks(EXAMPLES / name)
-    episodes = await Runner(tasks, output_dir=tmp_path).run()
+    transport = Transport(*(response() for _ in range(sum(t.max_turns for t in tasks))))
+    async with client(transport) as borrowed:
+        episodes = await Runner(tasks, output_dir=tmp_path, client=borrowed).run()
     assert episodes
     assert all(
         episode.path is not None and episode.path.is_file() for episode in episodes
@@ -294,3 +281,51 @@ def test_template_iterators_cannot_render_runtime_addresses(tmp_path: Path) -> N
     record = next(compile_records(root, seeds=[{"name": "Ada"}]))
     assert record["agents"]["assistant"]["instruction"] == "['A', 'D', 'A']"
     assert "generator" not in record["agents"]["assistant"]["instruction"]
+
+
+@pytest.mark.asyncio
+async def test_task_file_uses_responses_api(tmp_path: Path) -> None:
+    import json
+
+    root = package(tmp_path)
+    transport = Transport(response("Hello Ada"))
+    async with client(transport) as borrowed:
+        [task] = load_tasks(root, client=borrowed)
+        await Runner([task], output_dir=tmp_path / "runs").run()
+    assert transport.requests[0].url.path == "/v1/responses"
+    assert "input" in json.loads(transport.requests[0].content)
+    assert task.episode.messages == [{"role": "assistant", "content": "Hello Ada"}]
+
+
+@pytest.mark.parametrize("api", ["chat_completions", "responses"])
+def test_task_files_reject_removed_api_selector(tmp_path: Path, api: str) -> None:
+    root = package(tmp_path)
+    path = root / "task.toml"
+    path.write_text(path.read_text() + f'\n[providers.legacy]\napi="{api}"\n')
+    with pytest.raises(TaskValidationError, match=r"remove provider\.api"):
+        list(compile_records(root))
+
+
+@pytest.mark.parametrize(
+    "component",
+    [
+        "custom-components/round_table_components.py",
+        "release-workflow/release_components.py",
+    ],
+)
+def test_example_reviewers_check_responses_function_calls(component: str) -> None:
+    from runpy import run_path
+
+    review = run_path(str(EXAMPLES / component))["review"]
+    rejected = {"type": "function_call", "arguments": '{"label":"reject"}'}
+    accepted = {"type": "function_call", "arguments": '{"label":"safe"}'}
+    reply = {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "Done"}],
+    }
+    assert review([rejected, reply])["criteria"]["safe"] is False
+    assert review([accepted, reply])["criteria"]["safe"] is True
+    if component.startswith("release-workflow/"):
+        reply["content"] = [{"type": "output_text", "text": "DRAFT"}]
+        assert review([reply])["criteria"]["safe"] is False

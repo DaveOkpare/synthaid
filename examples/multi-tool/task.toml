@@ -35,7 +35,7 @@ required = ["text"]
 additionalProperties = false
 
 [agents.assistant]
-type = "multi_tool_components:LabelAgent"
+type = "model"
 target = true
 tools = ["summarize"]
 

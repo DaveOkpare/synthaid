@@ -1,21 +1,63 @@
-"""Offline negative controls demonstrate revisions and rejected Tool isolation."""
+"""Offline rejection and revision through the SDK, without executing Tools."""
 
 import argparse
 import asyncio
+import json
 from pathlib import Path
 
-from review_components import ProbeAssistant, ProbeUser
+import httpx
+from openai import AsyncOpenAI
 from smoke_components import read_scenario
 
-from agentinstruct import Judge, Runner, Task
-from agentinstruct.episode import Message
+from agentinstruct import Agent, Judge, Runner, Task
+from agentinstruct.judge import Judgment
 
 
-def check(messages: tuple[Message, ...]) -> dict[str, object]:
-    return {
-        "passed": "BLOCK_THIS_CALL" not in messages[-1].content,
-        "feedback": "Remove the blocked marker and call read_scenario once.",
-    }
+def reply(request: httpx.Request) -> httpx.Response:
+    history = json.loads(request.content)["input"]
+    revised = history[-1]["content"] == "Reply with the accepted scenario."
+    output = (
+        [
+            {
+                "type": "message",
+                "id": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "Accepted scenario",
+                        "annotations": [],
+                    }
+                ],
+            }
+        ]
+        if revised
+        else [
+            {
+                "type": "function_call",
+                "id": "call",
+                "call_id": "BLOCK_THIS_CALL",
+                "status": "completed",
+                "name": "read_scenario",
+                "arguments": "{}",
+            }
+        ]
+    )
+    return httpx.Response(
+        200,
+        json={
+            "id": "offline",
+            "model": "offline",
+            "created_at": 1.0,
+            "object": "response",
+            "status": "completed",
+            "parallel_tool_calls": True,
+            "tools": [],
+            "tool_choice": "auto",
+            "output": output,
+        },
+    )
 
 
 async def main(output: Path) -> None:
@@ -31,11 +73,23 @@ async def main(output: Path) -> None:
             },
         }
     )
-    judge = Judge(check=check)
-    assistant = ProbeAssistant(tools=[reader], reviewer=judge, max_revisions=2)
-    task = Task(agents={"user": ProbeUser(), "assistant": assistant}, verifier=judge)
-    for episode in await Runner([task], output_dir=output).run():
-        print(episode.verification, episode.path)
+    judge = Judge(
+        check=lambda messages: Judgment(
+            "BLOCK_THIS_CALL" not in json.dumps(messages[-1]),
+            "Reply with the accepted scenario.",
+        )
+    )
+    task = Task(
+        agents={"assistant": Agent("offline", tools=[reader], reviewer=judge)},
+        verifier=judge,
+    )
+    async with AsyncOpenAI(
+        base_url="https://example.invalid/v1",
+        api_key="offline",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(reply)),
+    ) as client:
+        for episode in await Runner([task], output_dir=output, client=client).run():
+            print(episode.verification, episode.path)
 
 
 if __name__ == "__main__":

@@ -12,7 +12,6 @@ id_variable = "case_id"
 case_id = "id"
 name = "name"
 
-# The scripted Agent and deterministic Verifier do not call this Provider.
 [providers.default]
 type = "openai"
 
@@ -28,8 +27,7 @@ type = "single"
 
 [agents.assistant]
 target = true
-type = "scripted"
-responses = ["Hello from this independent Trace."]
+type = "model"
 
 [verifier]
 type = "deterministic"

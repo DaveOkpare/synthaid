@@ -26,11 +26,11 @@ type = "dialogue"
 max_turns = 8
 
 [agents.user]
-type = "stepped_components:DemoAgent"
+type = "model"
 target = false
 
 [agents.assistant]
-type = "stepped_components:DemoAgent"
+type = "model"
 target = true
 tools = ["lookup"]
 
