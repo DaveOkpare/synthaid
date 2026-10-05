@@ -10,7 +10,6 @@ path = "seed.json"
 [variables]
 name = "name"
 
-# Scripted Agents and deterministic quality checks make no Provider calls.
 [providers.default]
 type = "openai"
 
@@ -30,18 +29,12 @@ target = false
 type = "model"
 
 [agents.user.reviewer]
-type = "deterministic"
+type = "model"
 max_revisions = 1
-
-[agents.user.reviewer.checks]
-nonempty = "nonempty_content"
 
 [agents.assistant]
 target = true
 type = "model"
 
 [verifier]
-type = "deterministic"
-
-[verifier.checks]
-assistant_reply = "assistant_present"
+type = "model"

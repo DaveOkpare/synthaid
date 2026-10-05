@@ -8,11 +8,11 @@ from typing import Any
 import httpx
 import pytest
 
-from agentinstruct import Agent, Judge
+from agentinstruct import Agent
 from agentinstruct.agent import ReviewExhausted
 from agentinstruct.episode import Message
 from agentinstruct.judge import Judgment
-from tests.model_fixtures import Transport, client, response
+from tests.model_fixtures import Check, Transport, client, response
 
 
 @pytest.mark.asyncio
@@ -32,7 +32,7 @@ async def test_review_revises_native_output_without_mutating_history() -> None:
     transport = Transport(sample, sample)
     history = [Message(role="user", content="Question")]
     async with client(transport) as borrowed:
-        agent = Agent("model", "Be accurate", reviewer=Judge(check=review))
+        agent = Agent("model", "Be accurate", reviewer=Check(check=review))
         result = await agent.generate(history, client=borrowed, temperature=0.2)
         assert not borrowed.is_closed()
     assert result.output_text == "correct"
@@ -53,7 +53,7 @@ async def test_review_revises_native_output_without_mutating_history() -> None:
 async def test_revision_limit(max_revisions: int) -> None:
     transport = Transport(*(response("draft") for _ in range(max_revisions + 1)))
     agent = Agent(
-        "model", reviewer=Judge(check=lambda m: False), max_revisions=max_revisions
+        "model", reviewer=Check(check=lambda m: False), max_revisions=max_revisions
     )
     async with client(transport) as borrowed:
         with pytest.raises(ReviewExhausted):
@@ -67,7 +67,7 @@ async def test_separate_agents_keep_concurrent_feedback_private() -> None:
         await asyncio.sleep(0)
         return response(json.loads(request.content)["input"][-1]["content"])
 
-    reviewer = Judge(
+    reviewer = Check(
         check=lambda m: Judgment(
             m[-1]["content"][0]["text"] == "fixed " + m[1]["content"],
             "fixed " + m[1]["content"],
@@ -113,7 +113,7 @@ async def test_responses_keeps_reasoning_when_revising() -> None:
         response(output=[reasoning, draft]),
         response("correct"),
     )
-    judge = Judge(
+    judge = Check(
         check=lambda m: Judgment('"correct"' in json.dumps(m[-1]), "Use correct")
     )
     async with client(transport) as borrowed:
@@ -145,7 +145,7 @@ async def test_explicit_instruction_is_forwarded(role: str) -> None:
 @pytest.mark.asyncio
 async def test_tool_review_supplies_feedback_without_running_tools() -> None:
     from agentinstruct import Tool
-    from tests.model_fixtures import function
+    from tests.model_fixtures import Check, function
 
     effects: list[bool] = []
 
@@ -166,7 +166,7 @@ async def test_tool_review_supplies_feedback_without_running_tools() -> None:
             assert "unsafe" in rejected["content"]
         return response("", output=[call])
 
-    judge = Judge(
+    judge = Check(
         check=lambda m: Judgment("unsafe" not in json.dumps(m[-1]), "Use safe")
     )
     transport = Transport(sample, sample)

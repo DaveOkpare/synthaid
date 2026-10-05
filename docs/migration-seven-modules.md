@@ -14,7 +14,7 @@ Runner writes the lean Episode as plain JSON. Historical trace loading is retire
 | Task-level tools or global Tool lookup | Agent.tools: explicit sequence of Tool objects, default empty |
 | FunctionTool and Tool subclasses with contexts | Tool(async_function, id=..., description=..., input_schema=...); custom factories return Tool |
 | Provider, ProviderRequest/Response, ChatCompletionsProvider, ResponsesProvider | Application-owned AsyncOpenAI; Agent and Judge use Responses |
-| Reviewer/Verifier classes and request/result factories | Judge(check=...) or Judge(client=..., model=..., prompt=..., rubric=...) |
+| Reviewer/Verifier classes and request/result factories | Judge(rubric, model, client) or Judge(rubric, check=...) |
 | Taskset or global message_judge / episode_judge | list[Task]; Agent.reviewer and Task.verifier |
 | Root Criterion/Rubric/ReviewResult exports | Criterion, Rubric, Judgment from agentinstruct.judge |
 | Root Message/FunctionCall/ToolCall exports | Message TypedDict from agentinstruct.episode; native SDK tool calls and response objects |
@@ -35,22 +35,15 @@ ordinary mutable trace data.
 Clients are borrowed through Runner/Environment/Agent and Judge. Explicit Agent and
 Judge clients retain their declared dependency. Initialize and close each endpoint's
 client in the application's outer async scope. Configure SDK retries explicitly;
-Agent honors the supplied SDK client policy; Judge currently disables retries.
+Agent and Judge honor the supplied SDK client policy.
 
 Task files preserve assistant/user syntax, templates, source formats, Tool catalogs,
 review rubrics. Target flags are allowed only when consistent with those
 fixed roles. Other roles and custom scheduling references produce migration errors;
 use direct structural Environments for custom scheduling. Scripted/custom Agent
-generators are removed; task-file Agents use models. Custom Judge references name
-message-check callables; custom Tool references name factories returning Tool.
+generators are removed; task-file Agents use models. Judges use models or check callables.
+Custom Tool references name factories returning Tool.
 Compilation validates these references syntactically without importing them.
-
-Deterministic task-file checks evaluate accepted Messages: nonempty_content,
-nonempty_conversation, assistant_present, and user_present. The former
-`generation_terminated` check depended on a Trace wrapper and is rejected explicitly.
-Applications apply completion policies around execution; Episode no longer
-classifies generation outcomes. Shipped structural-check examples use
-assistant_present. This does not establish semantic correctness or full completion.
 
 ## Task holds conversation data
 
@@ -142,7 +135,7 @@ The speculative resources= API and runtime verifier-dictionary assembly are
 removed. Applications own async contexts around their batch. Task.verifier takes
 a constructed Judge or an Evaluator implementing evaluate(messages) -> Judgment.
 Agent.reviewer accepts the same protocol. Domain evaluators need no client/model
-attributes; supply validated Judgment values. Built-in SDK clients remain borrowed.
+attributes; supply Judgment values. Built-in SDK clients remain borrowed.
 
 ## Agent calls the SDK directly
 
@@ -179,3 +172,34 @@ on that Agent's first turn. It never reconstructs model history from the Episode
 Private tool calls, results and review feedback stay with their owning Agent.
 Dialogue length uses max_turns; there is no message control field. Draft/review
 events and historical readers remain retired.
+
+
+## Judge grades a Rubric
+
+Construct `Criterion(context, weight=1.0)` and `Rubric([criterion, ...], threshold)`.
+Judge takes this Rubric and either a model/client or `check=` callable. Its public
+`evaluate(messages)` method obtains pass/fail grades and optional feedback,
+then divides the sum of passing weights by the sum of all weights. Use nonempty
+criteria with positive weights. Acceptance uses `score > threshold`; equality
+rejects. A threshold of 1.0 never accepts, so choose an explicit lower threshold.
+
+Criterion IDs and descriptions are replaced by context. Judgment holds only
+passed, feedback and score. Evidence, JudgeError,
+timeout_seconds and custom validation helpers are removed. Configure timeouts and
+retries on the SDK client; errors propagate directly. The SDK generates and parses
+the structured grading response.
+
+Set `Judge(..., prompt="...")` to customize the model's grading instructions.
+Omitting it keeps the default pass/fail and feedback prompt. Task-file reviewers
+and verifiers also accept an inline `prompt`, including template variables.
+
+Code checks can be synchronous or asynchronous. They receive messages and return
+`{"criteria": [True, False, ...], "feedback": "..."}` with one Boolean per criterion
+in rubric order. Feedback defaults to an empty string when omitted. Judge applies
+the same weights and threshold, without making a model request. Bare Booleans,
+precomputed Judgments and criterion-ID mappings are replaced by this single shape.
+
+In task files, use `type = "model"` or `type = "module:check_function"`, put each criterion's instructions in its context,
+and specify the rubric threshold. Move reviewer.md and verifier/instruction.md
+instructions into those contexts; separate judging instruction files are removed.
+The former built-in deterministic check catalog and Judge timeout settings are removed.

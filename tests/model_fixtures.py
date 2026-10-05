@@ -1,11 +1,15 @@
 """Official SDK calls through an offline HTTP transport."""
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 from openai import AsyncOpenAI
+
+from agentinstruct.judge import Judge, Judgment
+from agentinstruct.task import Task
 
 
 class Transport(httpx.AsyncBaseTransport):
@@ -83,3 +87,34 @@ def function(identifier: str, value: str) -> dict[str, Any]:
         "name": "lookup",
         "arguments": json.dumps({"value": value}),
     }
+
+
+@dataclass
+class Check:
+    """A domain evaluator stub for tests that do not exercise Judge."""
+
+    check: Callable[[Sequence[Mapping[str, Any]]], Judgment | bool]
+
+    async def evaluate(self, messages: Sequence[Mapping[str, Any]]) -> Judgment:
+        result = self.check(messages)
+        return result if isinstance(result, Judgment) else Judgment(result)
+
+
+def assessment(*criteria: bool, feedback: str = "") -> httpx.Response:
+    return response(json.dumps({"criteria": criteria, "feedback": feedback}))
+
+
+def task_responses(tasks: Sequence[Task]) -> list[httpx.Response]:
+    replies = []
+    for task in tasks:
+        agents = list(task.agents.values())
+        for turn in range(task.max_turns if len(agents) > 1 else 1):
+            agent = agents[turn % len(agents)]
+            replies.append(response())
+            if isinstance(agent.reviewer, Judge) and agent.reviewer.check is None:
+                replies.append(
+                    assessment(*(True for _ in agent.reviewer.rubric.criteria))
+                )
+        if isinstance(task.verifier, Judge) and task.verifier.check is None:
+            replies.append(assessment(*(True for _ in task.verifier.rubric.criteria)))
+    return replies

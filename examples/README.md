@@ -11,6 +11,9 @@ The task-file examples `scripted-single`, `scripted-dialogue`, `reviewed-dialogu
 `verified-single`, `seed-collection` and `seed-sources` use model Agents with the
 default UserSimEnv. The folders retain their historical names; scripted Agents
 are removed. Configure the model name and credentials before running them.
+Reviewers and verifiers use models or code checks. The direct dialogue example uses
+`check=`; the structured quality example uses a model. Rubric files contain criterion contexts,
+weights and a threshold; the score must be strictly greater than that threshold.
 
 `single-agent` and `responses` use configured model clients. All model clients
 must connect to a server supporting `/v1/responses`.

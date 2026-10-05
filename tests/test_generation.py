@@ -1,17 +1,15 @@
-"""Task conversation and callable Judge behavior."""
+"""Task conversation and domain evaluator behavior."""
 
-import asyncio
 import json
-from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from agentinstruct import Agent, Judge, Runner, Task, Tool
+from agentinstruct import Agent, Runner, Task, Tool
 from agentinstruct.environment import UserSimEnv
-from agentinstruct.judge import Criterion, Judgment, Rubric
-from tests.model_fixtures import Transport, client, response
+from agentinstruct.judge import Judgment
+from tests.model_fixtures import Check, Transport, client, response
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
@@ -21,33 +19,6 @@ async def test_nonfinite_input_fails_before_generation(value: float) -> None:
     with pytest.raises(ValueError, match="Out of range float values"):
         await UserSimEnv().run(task)
     assert not task.episode.messages
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("rubric", [None, Rubric((Criterion("ok"),))])
-async def test_callable_judgment_evidence_survives_verification(
-    rubric: Rubric | None, tmp_path: Path
-) -> None:
-    evidence = {"source": "custom-check", "labels": ["stable"]}
-    original = Judgment(
-        rubric is None,
-        "Reviewed",
-        {"ok": True} if rubric else {},
-        score=0.0,
-        evidence=evidence,
-    )
-    evidence["labels"] = ["changed"]
-    judge = Judge(check=lambda messages: original, rubric=rubric)
-    evaluated = await judge.evaluate([])
-    assert evaluated.passed and evaluated.score == 1.0
-    assert evaluated.feedback == "Reviewed"
-    assert evaluated.evidence == {"source": "custom-check", "labels": ["stable"]}
-    task = Task(agents={"assistant": Agent("model", reviewer=judge)}, verifier=judge)
-    async with client(Transport(response())) as borrowed:
-        await Runner([task], output_dir=tmp_path, client=borrowed).run()
-    assert task.episode.verification == evaluated
-    loaded = json.loads((tmp_path / task.episode.id / "trace.json").read_text())
-    assert loaded["verification"]["evidence"] == evaluated.evidence
 
 
 @pytest.mark.parametrize(
@@ -93,7 +64,7 @@ async def test_custom_structural_environment_owns_its_execution(
 
     task = Task(
         agents={"assistant": Agent("model")},
-        verifier=Judge(check=lambda m: True),
+        verifier=Check(check=lambda m: True),
     )
     await Runner([task], output_dir=tmp_path, environment=Custom()).run()
     assert task.episode.messages[0]["content"] == "custom"
@@ -109,50 +80,12 @@ async def test_missing_model_dependency_propagates(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_judge_weighted_validation_and_reuse() -> None:
-    rubric = Rubric((Criterion("accurate", 3), Criterion("clear", 1)), threshold=0.75)
-    judge = Judge(
-        check=lambda messages: {
-            "criteria": {"accurate": True, "clear": False},
-            "feedback": messages[-1]["content"],
-        },
-        rubric=rubric,
-    )
-    results = await asyncio.gather(
-        *(judge.evaluate([{"role": "assistant", "content": str(i)}]) for i in range(3))
-    )
-    assert [r.feedback for r in results] == ["0", "1", "2"]
-    assert all(r.passed and r.score == 0.75 for r in results)
-    with pytest.raises(ValueError):
-        Judge(check=lambda messages: True, model="ambiguous")
-    for evidence in (
-        {"accurate": 1, "clear": True},
-        {"accurate": True},
-        {"accurate": True, "clear": True, "extra": True},
-    ):
-
-        def invalid_check(
-            messages: Sequence[Mapping[str, Any]], value: Any = evidence
-        ) -> Any:
-            return {"criteria": value}
-
-        invalid = Judge(check=invalid_check, rubric=rubric)
-        with pytest.raises(RuntimeError):
-            await invalid.evaluate([])
-
-
-def test_overflowing_rubric_is_rejected() -> None:
-    with pytest.raises(ValueError):
-        Rubric((Criterion("one", 1e308), Criterion("two", 1e308)))
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("first", ["user", "assistant"])
 async def test_dialogue_records_roles_and_only_accepted_samples(
     first: Any, tmp_path: Path
 ) -> None:
     second: Any = "assistant" if first == "user" else "user"
-    judge = Judge(
+    judge = Check(
         check=lambda m: Judgment('"wrong"' not in json.dumps(m[-1]), "Use correct")
     )
     task = Task(
@@ -161,7 +94,7 @@ async def test_dialogue_records_roles_and_only_accepted_samples(
             second: Agent("two", reviewer=judge),
         },
         max_turns=3,
-        verifier=Judge(check=lambda m: len(m) == 3),
+        verifier=Check(check=lambda m: len(m) == 3),
     )
     transport = Transport(
         response("question"),

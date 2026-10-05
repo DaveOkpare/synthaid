@@ -1,2 +1,5 @@
+threshold = 0.9
+
 [[criteria]]
-id = "complete"
+context = "complete"
+weight = 1.0

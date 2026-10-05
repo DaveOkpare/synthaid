@@ -1,3 +1,5 @@
+threshold = 0.9
+
 [[criteria]]
-id = "conclude_explanation"
-description = "The concluding Message has a nonempty explanation."
+context = "The concluding Message has a nonempty explanation."
+weight = 1.0

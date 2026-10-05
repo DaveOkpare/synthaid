@@ -21,7 +21,7 @@ type = "model"
 target = true
 tools = ["lookup"]
 [agents.assistant.reviewer]
-type = "round_table_components:review"
+type = "model"
 [tools.lookup]
 type = "function"
 function = "round_table_components:lookup"
@@ -32,4 +32,4 @@ properties = {label = {type = "string"}}
 required = ["label"]
 additionalProperties = false
 [verifier]
-type = "round_table_components:verify"
+type = "model"

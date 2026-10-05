@@ -28,10 +28,10 @@ type = "model"
 target = true
 tools = ["lookup"]
 [agents.user.reviewer]
-type = "release_components:review"
+type = "model"
 max_revisions = 1
 [agents.assistant.reviewer]
-type = "release_components:review"
+type = "model"
 max_revisions = 1
 [tools.lookup]
 type = "function"
@@ -43,4 +43,4 @@ properties = { label = { type = "string" }, seed = { type = "string" } }
 required = ["label", "seed"]
 additionalProperties = false
 [verifier]
-type = "release_components:verify"
+type = "model"

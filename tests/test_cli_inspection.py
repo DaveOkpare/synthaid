@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from agentinstruct import Agent, Judge, Runner, Task
+from agentinstruct import Agent, Runner, Task
 from agentinstruct.cli import main
 from agentinstruct.inspection import VIEWS, Inspector, terminal_text
 from agentinstruct.ui.terminal import InspectionSession, run_terminal
-from tests.model_fixtures import Transport, client, response
+from tests.model_fixtures import Check, Transport, assessment, client, response
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
@@ -46,7 +46,7 @@ def test_cli_help_and_validation_are_inert(
 def test_cli_run_inspect_and_export_read_saved_trace(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    offline = client(Transport(response("Hello, Ada.")))
+    offline = client(Transport(response("Hello, Ada."), assessment(True, True)))
     monkeypatch.setattr("openai.AsyncOpenAI", lambda **kwargs: offline)
     output = tmp_path / "runs"
     assert (
@@ -80,7 +80,7 @@ def test_cli_run_inspect_and_export_read_saved_trace(
 def test_invalid_records_remain_in_report_without_fabricating_episodes(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    offline = client(Transport(response("Hello, Ada.")))
+    offline = client(Transport(response("Hello, Ada."), assessment(True, True)))
     monkeypatch.setattr("openai.AsyncOpenAI", lambda **kwargs: offline)
     source = tmp_path / "inputs.jsonl"
     source.write_text('not json\n{"name":"Ada"}\n')
@@ -141,7 +141,7 @@ def test_tui_navigation_is_read_only(saved_trace: Path) -> None:
 async def test_export_does_not_overwrite_a_trace(tmp_path: Path) -> None:
     task = Task(
         agents={"assistant": Agent("model")},
-        verifier=Judge(check=lambda messages: True),
+        verifier=Check(check=lambda messages: True),
     )
     async with client(Transport(response())) as borrowed:
         await Runner([task], output_dir=tmp_path, client=borrowed).run()
@@ -158,11 +158,11 @@ async def test_export_filters_verdicts_and_ids(
 ) -> None:
     accepted = Task(
         agents={"assistant": Agent("model")},
-        verifier=Judge(check=lambda messages: True),
+        verifier=Check(check=lambda messages: True),
     )
     rejected = Task(
         agents={"assistant": Agent("model")},
-        verifier=Judge(check=lambda messages: False),
+        verifier=Check(check=lambda messages: False),
     )
     async with client(Transport(response(), response())) as borrowed:
         await Runner(

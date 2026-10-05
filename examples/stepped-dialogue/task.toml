@@ -35,9 +35,8 @@ target = true
 tools = ["lookup"]
 
 [agents.assistant.reviewer]
-type = "deterministic"
+type = "model"
 max_revisions = 0
-checks = { nonempty = "nonempty_content", collect_explanation = "nonempty_content", conclude_explanation = "nonempty_content" }
 
 [tools.lookup]
 type = "function"

@@ -16,10 +16,7 @@ def reply(request: httpx.Request) -> httpx.Response:
     body = json.loads(request.content)
     decision = "Hello Ada."
     if "text" in body:
-        schema = body["text"]["format"]["schema"]
-        criteria = {
-            name: True for name in schema["properties"]["criteria"]["properties"]
-        }
+        criteria = [True for _ in json.loads(body["input"])["criteria"]]
         decision = json.dumps({"criteria": criteria, "feedback": "Offline validation."})
     return httpx.Response(
         200,

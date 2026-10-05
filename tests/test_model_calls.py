@@ -10,7 +10,8 @@ import pytest
 from openai import APIStatusError
 
 from agentinstruct import Agent, Judge, Runner, Task, Tool
-from tests.model_fixtures import Transport, client, function, response
+from agentinstruct.judge import Criterion, Rubric
+from tests.model_fixtures import Transport, assessment, client, function, response
 
 
 @pytest.mark.asyncio
@@ -122,10 +123,10 @@ async def test_real_judge_client_call_does_not_serialize_client_credentials(
     secret = "credential-canary"
     transport = Transport(
         response("Hello"),
-        response('{"passed":true,"feedback":"Good"}'),
+        assessment(True, feedback="Good"),
     )
     async with client(transport, api_key=secret) as borrowed:
-        judge = Judge(client=borrowed, model="judge", prompt="Evaluate")
+        judge = Judge(Rubric([Criterion("Evaluate the reply")], 0.5), "judge", borrowed)
         task = Task(agents={"assistant": Agent("model")}, verifier=judge)
         await Runner([task], output_dir=tmp_path, client=borrowed).run()
         assert not borrowed.is_closed()
@@ -134,7 +135,7 @@ async def test_real_judge_client_call_does_not_serialize_client_credentials(
     assert request.url.path == "/v1/responses"
     format_ = json.loads(request.content)["text"]["format"]
     assert format_["type"] == "json_schema" and format_["strict"] is True
-    assert format_["schema"]["required"] == ["passed", "feedback"]
+    assert format_["schema"]["required"] == ["criteria", "feedback"]
     assert secret not in "".join(path.read_text() for path in tmp_path.rglob("*.json*"))
 
 

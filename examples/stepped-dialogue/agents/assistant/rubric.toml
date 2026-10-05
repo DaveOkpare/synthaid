@@ -1,5 +1,5 @@
-threshold = 1.0
+threshold = 0.9
 
 [[criteria]]
-id = "nonempty"
-description = "The Message contains a nonempty explanation."
+context = "Review each proposal using the active structural Criteria for this offline example.\nThe Message contains a nonempty explanation."
+weight = 1.0

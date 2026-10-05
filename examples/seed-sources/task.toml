@@ -32,7 +32,4 @@ target = true
 type = "model"
 
 [verifier]
-type = "deterministic"
-
-[verifier.checks]
-reply = "nonempty_conversation"
+type = "model"

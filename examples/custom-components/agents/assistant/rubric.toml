@@ -1,2 +1,5 @@
+threshold = 0.9
+
 [[criteria]]
-id="safe"
+context = "Require the safe label.\nsafe"
+weight = 1.0

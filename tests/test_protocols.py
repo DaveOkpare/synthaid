@@ -20,7 +20,7 @@ class ArithmeticCheck:
         content = messages[-1]["content"]
         result = json.loads(content if isinstance(content, str) else content[0]["text"])
         passed = sum(result["operands"]) == result["sum"]
-        return Judgment(passed, evidence={"domain": "arithmetic"})
+        return Judgment(passed, "Arithmetic checked")
 
 
 @pytest.mark.asyncio
@@ -49,8 +49,7 @@ async def test_plain_domain_evaluator_is_reusable(
     )
     assert [json.loads(e.messages[0]["content"])["sum"] for e in results] == [3, 12]
     assert all(
-        e.verification is not None
-        and e.verification.evidence == {"domain": "arithmetic"}
+        e.verification is not None and e.verification.feedback == "Arithmetic checked"
         for e in results
     )
     assert all(
@@ -139,9 +138,7 @@ async def test_malformed_domain_evaluation_never_authorizes_effects(
 
     class Malformed:
         async def evaluate(self, messages: Sequence[Mapping[str, Any]]) -> Judgment:
-            result: Any = SimpleNamespace(
-                passed="yes", criteria={}, feedback="", score=1.0, evidence={}
-            )
+            result: Any = SimpleNamespace(passed="yes", feedback="", score=1.0)
             return cast(Judgment, result)
 
     evaluator = Malformed()
@@ -160,12 +157,6 @@ async def test_malformed_domain_evaluation_never_authorizes_effects(
     assert not effects
     assert bool(task.episode.messages) == (placement == "verification")
     assert task.episode.verification is None
-
-
-@pytest.mark.parametrize("score", [True, float("nan"), float("inf"), -0.1, 1.1])
-def test_judgment_score_cannot_bypass_the_local_contract(score: float) -> None:
-    with pytest.raises(ValueError, match="score"):
-        Judgment(True, score=score)
 
 
 @pytest.mark.asyncio

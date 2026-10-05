@@ -10,40 +10,63 @@ from openai import AsyncOpenAI
 from smoke_components import read_scenario
 
 from agentinstruct import Agent, Judge, Runner, Task
-from agentinstruct.judge import Judgment
+from agentinstruct.judge import Criterion, Rubric
 
 
 def reply(request: httpx.Request) -> httpx.Response:
-    history = json.loads(request.content)["input"]
-    revised = history[-1]["content"] == "Reply with the accepted scenario."
-    output = (
-        [
+    body = json.loads(request.content)
+    if "text" in body:
+        messages = json.loads(body["input"])["messages"]
+        decision = {
+            "criteria": ["BLOCK_THIS_CALL" not in json.dumps(messages[-1])],
+            "feedback": "Reply with the accepted scenario.",
+        }
+        output = [
             {
                 "type": "message",
-                "id": "message",
+                "id": "judgment",
                 "role": "assistant",
                 "status": "completed",
                 "content": [
                     {
                         "type": "output_text",
-                        "text": "Accepted scenario",
+                        "text": json.dumps(decision),
                         "annotations": [],
                     }
                 ],
             }
         ]
-        if revised
-        else [
-            {
-                "type": "function_call",
-                "id": "call",
-                "call_id": "BLOCK_THIS_CALL",
-                "status": "completed",
-                "name": "read_scenario",
-                "arguments": "{}",
-            }
-        ]
-    )
+    else:
+        history = body["input"]
+        revised = history[-1]["content"] == "Reply with the accepted scenario."
+        output = (
+            [
+                {
+                    "type": "message",
+                    "id": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "Accepted scenario",
+                            "annotations": [],
+                        }
+                    ],
+                }
+            ]
+            if revised
+            else [
+                {
+                    "type": "function_call",
+                    "id": "call",
+                    "call_id": "BLOCK_THIS_CALL",
+                    "status": "completed",
+                    "name": "read_scenario",
+                    "arguments": "{}",
+                }
+            ]
+        )
     return httpx.Response(
         200,
         json={
@@ -73,21 +96,27 @@ async def main(output: Path) -> None:
             },
         }
     )
-    judge = Judge(
-        check=lambda messages: Judgment(
-            "BLOCK_THIS_CALL" not in json.dumps(messages[-1]),
-            "Reply with the accepted scenario.",
-        )
-    )
-    task = Task(
-        agents={"assistant": Agent("offline", tools=[reader], reviewer=judge)},
-        verifier=judge,
-    )
     async with AsyncOpenAI(
         base_url="https://example.invalid/v1",
         api_key="offline",
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(reply)),
     ) as client:
+        judge = Judge(
+            Rubric(
+                [
+                    Criterion(
+                        "Reject BLOCK_THIS_CALL and request the accepted scenario."
+                    )
+                ],
+                0.9,
+            ),
+            "offline-judge",
+            client,
+        )
+        task = Task(
+            agents={"assistant": Agent("offline", tools=[reader], reviewer=judge)},
+            verifier=judge,
+        )
         for episode in await Runner([task], output_dir=output, client=client).run():
             print(episode.verification, episode.path)
 

@@ -7,14 +7,14 @@ from typing import Any
 
 import pytest
 
-from agentinstruct import Runner
+from agentinstruct import Judge, Runner
 from agentinstruct.adapters.task_files import (
     SourceError,
     TaskValidationError,
     compile_records,
     load_tasks,
 )
-from tests.model_fixtures import Transport, client, response
+from tests.model_fixtures import Transport, assessment, client, response, task_responses
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
@@ -30,13 +30,17 @@ async def test_python_records_compile_to_the_direct_task_interface(
     tmp_path: Path,
 ) -> None:
     root = package(tmp_path)
-    tasks = load_tasks(root, seeds=[{"name": "Ada"}, {"name": "Grace"}])
-    assert len(tasks) == 2 and tasks[0].episode.id != tasks[1].episode.id
-    assert all(
-        task.episode.path is None and not task.episode.messages for task in tasks
-    )
-    assert tasks[0].episode.metadata["seed"]["data"] == {"name": "Ada"}
-    async with client(Transport(response(), response())) as borrowed:
+    transport = Transport()
+    async with client(transport) as borrowed:
+        tasks = load_tasks(
+            root, seeds=[{"name": "Ada"}, {"name": "Grace"}], client=borrowed
+        )
+        assert len(tasks) == 2 and tasks[0].episode.id != tasks[1].episode.id
+        assert all(
+            task.episode.path is None and not task.episode.messages for task in tasks
+        )
+        assert tasks[0].episode.metadata["seed"]["data"] == {"name": "Ada"}
+        transport.responses.extend(task_responses(tasks))
         episodes = await Runner(
             tasks, output_dir=tmp_path / "runs", client=borrowed
         ).run()
@@ -220,9 +224,10 @@ async def test_shipped_packages_use_native_agents(
     name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.syspath_prepend(str(EXAMPLES / name))
-    tasks = load_tasks(EXAMPLES / name)
-    transport = Transport(*(response() for _ in range(sum(t.max_turns for t in tasks))))
+    transport = Transport()
     async with client(transport) as borrowed:
+        tasks = load_tasks(EXAMPLES / name, client=borrowed)
+        transport.responses.extend(task_responses(tasks))
         episodes = await Runner(tasks, output_dir=tmp_path, client=borrowed).run()
     assert episodes
     assert all(
@@ -288,7 +293,7 @@ async def test_task_file_uses_responses_api(tmp_path: Path) -> None:
     import json
 
     root = package(tmp_path)
-    transport = Transport(response("Hello Ada"))
+    transport = Transport(response("Hello Ada"), assessment(True, True))
     async with client(transport) as borrowed:
         [task] = load_tasks(root, client=borrowed)
         await Runner([task], output_dir=tmp_path / "runs").run()
@@ -306,26 +311,58 @@ def test_task_files_reject_removed_api_selector(tmp_path: Path, api: str) -> Non
         list(compile_records(root))
 
 
-@pytest.mark.parametrize(
-    "component",
-    [
-        "custom-components/round_table_components.py",
-        "release-workflow/release_components.py",
-    ],
-)
-def test_example_reviewers_check_responses_function_calls(component: str) -> None:
-    from runpy import run_path
+def test_task_files_reject_retired_builtin_checks(tmp_path: Path) -> None:
+    root = package(tmp_path)
+    path = root / "task.toml"
+    path.write_text(
+        path.read_text().replace(
+            '[verifier]\ntype = "model"', '[verifier]\ntype = "deterministic"'
+        )
+    )
+    [record] = compile_records(root)
+    assert "check callable returning ordered criterion grades" in record["error"]
 
-    review = run_path(str(EXAMPLES / component))["review"]
-    rejected = {"type": "function_call", "arguments": '{"label":"reject"}'}
-    accepted = {"type": "function_call", "arguments": '{"label":"safe"}'}
-    reply = {
-        "type": "message",
-        "role": "assistant",
-        "content": [{"type": "output_text", "text": "Done"}],
-    }
-    assert review([rejected, reply])["criteria"]["safe"] is False
-    assert review([accepted, reply])["criteria"]["safe"] is True
-    if component.startswith("release-workflow/"):
-        reply["content"] = [{"type": "output_text", "text": "DRAFT"}]
-        assert review([reply])["criteria"]["safe"] is False
+
+@pytest.mark.asyncio
+async def test_task_file_check_is_imported_only_when_loading_and_can_verify(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = package(tmp_path)
+    path = root / "task.toml"
+    path.write_text(
+        path.read_text().replace(
+            '[verifier]\ntype = "model"', '[verifier]\ntype = "local_judge:check"'
+        )
+    )
+    [record] = compile_records(root)
+    assert "error" not in record and "local_judge" not in sys.modules
+    (tmp_path / "local_judge.py").write_text(
+        "def check(messages):\n"
+        '    assistant = messages[-1]["role"] == "assistant"\n'
+        '    return {"criteria": [bool(messages), assistant]}\n'
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    transport = Transport(response("Hello"))
+    try:
+        async with client(transport) as borrowed:
+            [task] = load_tasks(root, client=borrowed)
+            await Runner([task], output_dir=tmp_path / "runs").run()
+        assert (
+            task.episode.verification is not None and task.episode.verification.passed
+        )
+        assert len(transport.requests) == 1
+    finally:
+        sys.modules.pop("local_judge", None)
+
+
+def test_task_files_render_criterion_context(tmp_path: Path) -> None:
+    root = package(tmp_path)
+    (root / "verifier/rubric.toml").write_text(
+        "threshold = 0.8\n[[criteria]]\n"
+        'context = "The response greets {{ name }}."\nweight = 2.0\n'
+    )
+    [task] = load_tasks(root, seeds=[{"name": "Ada"}])
+    assert isinstance(task.verifier, Judge)
+    assert task.verifier.rubric.criteria[0].context == "The response greets Ada."
+    assert task.verifier.rubric.criteria[0].weight == 2.0
+    assert task.verifier.rubric.threshold == 0.8

@@ -30,9 +30,4 @@ target = true
 type = "model"
 
 [verifier]
-type = "deterministic"
-timeout_seconds = 10.0
-
-[verifier.checks]
-has_reply = "nonempty_conversation"
-assistant_reply = "assistant_present"
+type = "model"

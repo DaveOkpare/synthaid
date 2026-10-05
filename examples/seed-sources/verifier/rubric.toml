@@ -1,2 +1,5 @@
+threshold = 0.9
+
 [[criteria]]
-id = "reply"
+context = "reply"
+weight = 1.0

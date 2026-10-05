@@ -16,8 +16,11 @@ async def main(output: Path) -> None:
         {"id": f"python-{i}", "name": name}
         for i, name in enumerate(("Ada", "Grace"), 1)
     )
-    tasks = [*load_tasks(root), *load_tasks(root, seeds=prepared)]
     async with AsyncOpenAI() as client:
+        tasks = [
+            *load_tasks(root, client=client),
+            *load_tasks(root, seeds=prepared, client=client),
+        ]
         for episode in await Runner(tasks, output_dir=output, client=client).run():
             print(episode.verification, episode.path)
             for message in episode.messages:

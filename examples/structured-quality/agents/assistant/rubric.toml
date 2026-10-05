@@ -1,4 +1,5 @@
-threshold = 1.0
+threshold = 0.9
+
 [[criteria]]
-id = "greeting"
-description = "The Message contains a polite greeting."
+context = "Review the exact proposed Message for {{ name }} using every active Criterion.\nThe Message contains a polite greeting."
+weight = 1.0

@@ -1,1 +1,0 @@
-Require the safe label.

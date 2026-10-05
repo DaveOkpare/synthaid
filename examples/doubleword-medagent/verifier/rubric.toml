@@ -1,11 +1,9 @@
-threshold = 1.0
+threshold = 0.9
 
 [[criteria]]
-id = "dialogue"
-description = "There are two nonempty user conversational replies and two nonempty assistant conversational replies, excluding Tool calls and Tool results."
+context = "Evaluate only the declared structural smoke-test criteria against the recorded Conversation. This is an API/workflow check, not a clinical-quality evaluation. Tool-call Messages and Tool results do not count as conversational replies. Return exactly the requested Boolean criteria and concise feedback using the supplied structured-output schema.\nThere are two nonempty user conversational replies and two nonempty assistant conversational replies, excluding Tool calls and Tool results."
 weight = 1.0
 
 [[criteria]]
-id = "tool_exchange"
-description = "The assistant called read_scenario once and a matching Tool result provided the scenario topic."
+context = "Evaluate only the declared structural smoke-test criteria against the recorded Conversation. This is an API/workflow check, not a clinical-quality evaluation. Tool-call Messages and Tool results do not count as conversational replies. Return exactly the requested Boolean criteria and concise feedback using the supplied structured-output schema.\nThe assistant called read_scenario once and a matching Tool result provided the scenario topic."
 weight = 1.0

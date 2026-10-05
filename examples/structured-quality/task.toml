@@ -20,7 +20,6 @@ type = "model"
 max_revisions = 1
 [verifier]
 type = "model"
-timeout_seconds = 30.0
 [environment]
 type = "single"
 [runtime]

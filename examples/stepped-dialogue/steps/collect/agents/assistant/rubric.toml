@@ -1,3 +1,5 @@
+threshold = 0.9
+
 [[criteria]]
-id = "collect_explanation"
-description = "The collection-phase Message has a nonempty explanation."
+context = "The collection-phase Message has a nonempty explanation."
+weight = 1.0

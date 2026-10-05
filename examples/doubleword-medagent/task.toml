@@ -44,4 +44,3 @@ input_schema = { type = "object", properties = {}, additionalProperties = false 
 
 [verifier]
 type = "model"
-timeout_seconds = 60.0

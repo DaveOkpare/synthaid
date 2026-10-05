@@ -135,7 +135,7 @@ def _configuration(root: Path) -> tuple[dict[str, Any], str]:
     _layout(root, "agents", set(config["agents"]))
     for role, agent in config["agents"].items():
         expected = {"instruction.md"} | (
-            {"reviewer.md", "rubric.toml"} if agent.get("reviewer") else set()
+            {"rubric.toml"} if agent.get("reviewer") else set()
         )
         _layout(root, f"agents/{role}", expected)
     _declarations(config)
@@ -167,7 +167,7 @@ def _files(root: Path, config: dict[str, Any], text: str) -> dict[str, str]:
     for role, settings in config["agents"].items():
         names = [
             "instruction.md",
-            *(["rubric.toml", "reviewer.md"] if settings.get("reviewer") else []),
+            *(["rubric.toml"] if settings.get("reviewer") else []),
         ]
         for name in names:
             label = f"agents/{role}/{name}"
@@ -348,12 +348,12 @@ def _judge_record(
     if settings is None:
         return None
     rubric = tomllib.loads(files[prefix + "/rubric.toml"])
+    for criterion in rubric["criteria"]:
+        criterion["context"] = _render(criterion["context"], variables)
     _validate_judging(settings, rubric)
-    suffix = "/reviewer.md" if prefix.startswith("agents/") else "/instruction.md"
-    prompt = _render(
-        files.get(prefix + suffix, "Evaluate accepted messages."), variables
-    )
-    return {**settings, "rubric": rubric, "prompt": prompt}
+    if "prompt" in settings:
+        settings = {**settings, "prompt": _render(settings["prompt"], variables)}
+    return {**settings, "rubric": rubric}
 
 
 def _reference(reference: str) -> Any:
@@ -366,10 +366,7 @@ def _reference(reference: str) -> Any:
 
 
 def _rubric(value: Any) -> Rubric:
-    return Rubric(
-        tuple(Criterion(**item) for item in value["criteria"]),
-        value.get("threshold", 1.0),
-    )
+    return Rubric([Criterion(**item) for item in value["criteria"]], value["threshold"])
 
 
 def _judge(
@@ -377,39 +374,14 @@ def _judge(
 ) -> Judge | None:
     if settings is None:
         return None
-    rubric, kind = _rubric(settings["rubric"]), settings.get("type", "model")
-    options = {"rubric": rubric, "timeout_seconds": settings.get("timeout_seconds")}
-    if kind == "deterministic":
-        checks = settings.get("checks", {})
+    if settings.get("type", "model") != "model":
         return Judge(
-            check=lambda messages: _checks(messages, rubric, checks), **options
+            rubric=_rubric(settings["rubric"]), check=_reference(settings["type"])
         )
-    if kind != "model":
-        return Judge(check=_reference(kind), **options)
-    return Judge(**options, **_judge_model(settings, config, client, clients))
-
-
-def _checks(
-    messages: Sequence[Mapping[str, Any]], rubric: Rubric, checks: Mapping[str, str]
-) -> dict[str, Any]:
-    content = messages[-1].get("content") if messages else None
-    if isinstance(content, str):
-        content = content.strip()
-    values = {
-        "nonempty_content": bool(
-            messages and (content or messages[-1].get("type") == "function_call")
-        ),
-        "nonempty_conversation": bool(messages),
-        "assistant_present": any(m.get("role") == "assistant" for m in messages),
-        "user_present": any(m.get("role") == "user" for m in messages),
-    }
-    return {
-        "criteria": {
-            item.id: values[checks.get(item.id, "nonempty_content")]
-            for item in rubric.criteria
-        },
-        "feedback": "Provide a nonempty, valid response.",
-    }
+    return Judge(
+        rubric=_rubric(settings["rubric"]),
+        **_judge_model(settings, config, client, clients),
+    )
 
 
 def _client(
@@ -509,12 +481,6 @@ _TASK_FIELDS = {
     "verifier",
     "tools",
 }
-_CHECKS = {
-    "nonempty_content",
-    "nonempty_conversation",
-    "assistant_present",
-    "user_present",
-}
 
 
 def _exact_member(path: Path, part: str) -> None:
@@ -544,8 +510,6 @@ def _verifier_files(
 ) -> None:
     if config.get("verifier"):
         files["verifier/rubric.toml"] = _text(root, "verifier/rubric.toml")
-        if (root / "verifier/instruction.md").exists():
-            files["verifier/instruction.md"] = _text(root, "verifier/instruction.md")
 
 
 def _json_boundary(raw: str, end: int, array: bool) -> tuple[int, bool]:
@@ -683,24 +647,16 @@ def _validate_agent(settings: Mapping[str, Any], config: Mapping[str, Any]) -> A
 
 
 def _validate_judging(settings: Mapping[str, Any], value: Any) -> None:
-    rubric = _rubric(value)
     kind = settings.get("type", "model")
-    if kind == "deterministic":
-        checks = settings.get("checks", {})
-        if (
-            set(checks) - {item.id for item in rubric.criteria}
-            or set(checks.values()) - _CHECKS
-        ):
-            raise TaskValidationError(
-                "Migrate deterministic checks to accepted-message predicates"
-            )
-    elif kind != "model":
+    if kind == "deterministic" or "checks" in settings:
+        raise TaskValidationError(
+            "Use a Judge check callable returning ordered criterion grades"
+        )
+    if kind != "model":
         _reference_syntax(kind)
-    Judge(
-        check=lambda messages: True,
-        rubric=rubric,
-        timeout_seconds=settings.get("timeout_seconds"),
-    )
+    if "timeout_seconds" in settings:
+        raise TaskValidationError("Configure Judge timeouts on the OpenAI client")
+    _rubric(value)
 
 
 def _source_selection(path: Path, pattern: str) -> list[Path]:
@@ -783,7 +739,7 @@ def _judge_model(
     return dict(
         client=_client(model, config, client, clients),
         model=model["name"],
-        prompt=settings["prompt"],
+        **({"prompt": settings["prompt"]} if "prompt" in settings else {}),
     )
 
 

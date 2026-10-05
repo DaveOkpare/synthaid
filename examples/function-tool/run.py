@@ -11,8 +11,8 @@ from agentinstruct.adapters.task_files import load_tasks
 
 
 async def main(output: Path) -> None:
-    tasks = load_tasks(Path(__file__).parent)
     async with AsyncOpenAI() as client:
+        tasks = load_tasks(Path(__file__).parent, client=client)
         for episode in await Runner(tasks, output_dir=output, client=client).run():
             print(episode.verification, episode.path)
             for message in episode.messages:

@@ -3,11 +3,14 @@
 import argparse
 import asyncio
 import json
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import httpx
 from openai import AsyncOpenAI
 
 from agentinstruct import Agent, Judge, Runner, Task
+from agentinstruct.judge import Criterion, Rubric
 
 
 def reply(request: httpx.Request) -> httpx.Response:
@@ -47,26 +50,38 @@ def reply(request: httpx.Request) -> httpx.Response:
     )
 
 
+def nonempty(messages: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    content = messages[-1]["content"]
+    if isinstance(content, list):
+        content = "".join(part.get("text", "") for part in content)
+    return {"criteria": [bool(content.strip())]}
+
+
 async def main(output: str) -> None:
-    judge = Judge(check=lambda messages: bool(messages[-1]["content"]))
-    assistant = Agent(
-        "retail-assistant", "Apply the fictional 30-day return policy.", reviewer=judge
-    )
-    user = Agent("retail-user", "Ask about the supplied purchase.")
-    tasks = [
-        Task(
-            agents={"user": user, "assistant": assistant},
-            verifier=judge,
-            input={"item": item, "days_since_purchase": days},
-            max_turns=2,
-        )
-        for item, days in (("headphones", 12), ("desk lamp", 45))
-    ]
     async with AsyncOpenAI(
         base_url="https://example.invalid/v1",
         api_key="offline",
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(reply)),
     ) as client:
+        judge = Judge(
+            Rubric([Criterion("The reply contains nonempty text.")], 0.9),
+            check=nonempty,
+        )
+        assistant = Agent(
+            "retail-assistant",
+            "Apply the fictional 30-day return policy.",
+            reviewer=judge,
+        )
+        user = Agent("retail-user", "Ask about the supplied purchase.")
+        tasks = [
+            Task(
+                agents={"user": user, "assistant": assistant},
+                verifier=judge,
+                input={"item": item, "days_since_purchase": days},
+                max_turns=2,
+            )
+            for item, days in (("headphones", 12), ("desk lamp", 45))
+        ]
         for episode in await Runner(tasks, output_dir=output, client=client).run():
             print(episode.verification, episode.path)
             print(json.dumps(episode.messages, indent=2))

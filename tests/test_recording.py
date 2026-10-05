@@ -12,10 +12,10 @@ import httpx
 import pytest
 from openai import APIStatusError
 
-from agentinstruct import Agent, Episode, Judge, Runner, Task
+from agentinstruct import Agent, Episode, Runner, Task
 from agentinstruct.episode import Message
 from agentinstruct.judge import Judgment
-from tests.model_fixtures import Transport, client, response
+from tests.model_fixtures import Check, Transport, client, response
 
 
 def test_episode_is_independent_data(tmp_path: Path) -> None:
@@ -45,7 +45,7 @@ async def test_runner_saves_messages_metadata_and_verification_once(
             "assistant": Agent("model"),
         },
         input={"topic": "fractions"},
-        verifier=Judge(check=lambda messages: Judgment(True, "Correct")),
+        verifier=Check(check=lambda messages: Judgment(True, "Correct")),
         max_turns=2,
     )
     task.episode.metadata = {"source": "prepared"}
@@ -123,7 +123,7 @@ async def test_failure_preserves_current_trace_and_preceding_run(
             "user": Agent("model"),
             "assistant": Agent("model"),
         },
-        verifier=Judge(check=verify),
+        verifier=Check(check=verify),
     )
     later = Task(agents={"assistant": Agent("model")})
     transport = Transport(

@@ -42,8 +42,11 @@ async def main():
         correctness = Judge(
             client=client,
             model=os.environ["JUDGE_MODEL"],
-            prompt="Check mathematical correctness. Give specific repair feedback.",
-            rubric=Rubric((Criterion("correct"),)),
+            prompt="Evaluate the criteria carefully and give specific repair feedback.",
+            rubric=Rubric(
+                [Criterion("The mathematics is correct.")],
+                threshold=0.9,
+            ),
         )
         assistant = Agent(
             os.environ["MODEL_NAME"],
@@ -138,10 +141,33 @@ Input is added once on each Agent's first turn and saved in `episode.metadata["i
 Add other trace metadata directly to `episode.metadata`. Construct another Task
 for another sample; Runner rejects an existing output directory.
 
-A callable Judge uses `Judge(check=...)`. Its check receives message dictionaries
-and returns a Boolean, Judgment, or ordinary verdict/feedback mapping. Rubrics
-require exact Boolean criterion IDs and compute weighted scores locally. A Judge
-can serve both review and verification when its criteria suit both uses.
+Judge takes a Rubric and either a model/client or a `check=` callback.
+`Criterion(context, weight=1.0)` describes
+one condition; `Rubric(criteria, threshold)` holds a list of these conditions and an
+explicit threshold. Supply a nonempty list with positive weights. Evaluation returns
+one pass/fail grade per criterion and optional feedback. Judge computes
+`score = sum(weights of passed criteria) / sum(all weights)` and returns
+`Judgment(passed=score > threshold, feedback=..., score=...)`. Equality rejects;
+a threshold of 1.0 therefore never accepts. There are no criterion IDs,
+evidence records or Judge-specific timeout/error policies.
+A Judge can serve both review and verification when its criteria suit both uses.
+For model evaluation, `prompt="..."` replaces the default grading instructions.
+The rubric's criterion contexts and the messages are supplied with every request.
+
+For code evaluation, pass a synchronous or asynchronous function. It receives the
+messages and returns `{"criteria": [True, False, ...], "feedback": "..."}` in rubric
+order; feedback can be omitted. Supplying `check=` uses that function without a model
+request. Judge still computes the score and acceptance:
+
+```python
+judge = Judge(
+    Rubric([Criterion("The conversation includes an assistant reply.")], 0.9),
+    check=lambda messages: {
+        "criteria": [any(m.get("role") == "assistant" for m in messages)]
+    },
+)
+```
+
 `max_revisions` counts replacement attempts after the initial draft. A rejected
 final sample raises `ReviewExhausted` and is never accepted.
 
@@ -189,10 +215,10 @@ application-defined lifetimes.
 ```python
 from agentinstruct.adapters.task_files import compile_records, load_tasks
 
-tasks = load_tasks("examples/verified-single")
+tasks = load_tasks("examples/verified-single", client=client)
 # Ordinary Python input instead of the configured source:
 tasks = load_tasks(
-    "examples/verified-single", seeds=({"name": n} for n in ["Ada", "Grace"])
+    "examples/verified-single", seeds=({"name": n} for n in ["Ada", "Grace"]), client=client
 )
 ```
 

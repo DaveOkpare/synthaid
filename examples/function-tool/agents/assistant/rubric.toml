@@ -1,2 +1,5 @@
+threshold = 0.9
+
 [[criteria]]
-id = "nonempty"
+context = "Require a nonempty description or reply.\nnonempty"
+weight = 1.0

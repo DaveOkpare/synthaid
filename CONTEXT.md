@@ -61,7 +61,7 @@ A participant that calls the OpenAI Responses API and optionally revises its res
 _Avoid_: Role, policy
 
 **Evaluator**:
-A structural protocol supplying async evaluate(messages) -> Judgment. Domain implementations need no SDK attributes, Judge inheritance or resource fields. Reviewers and verifiers share this interface, while their invoking owners choose the messages and timing. Results obey Judgment's local Boolean/score/JSON contracts.
+A structural protocol supplying async evaluate(messages) -> Judgment. Domain implementations need no SDK attributes, Judge inheritance or resource fields. Reviewers and verifiers share this interface, while their invoking owners choose the messages and timing. Results are Judgment values with passed, feedback and an optional score.
 _Avoid_: Evaluation factory, lifecycle owner
 
 **Provider**:
@@ -145,8 +145,11 @@ _Avoid_: Environment action
 
 ## Quality
 
+**Judgment**:
+An evaluator's passed verdict, weighted score and optional feedback.
+
 **Judge**:
-The directly usable evaluator with one constructor for both message review and final Episode evaluation. Its model evaluation uses client/model/prompt and an optional Rubric; callable evaluation uses check and an optional Rubric. Agent.reviewer and Task.verifier accept any Evaluator implementing evaluate(messages) -> Judgment; Judge is the built-in callable/model implementation. An instance can serve both roles when its criteria fit. evaluate(messages) returns a validated judgment with verdict/criteria and text feedback. Message review receives the invoking Agent's accepted visible context plus its unaccepted proposal; final verification receives sealed accepted Episode history. Judge keeps no mutable conversation, Episode binding, revision counters or accumulated verdicts. Per-call state is local; Agent owns revisions/acceptance, and Episode records invocation evidence/results. Borrowed clients remain application-owned. Ordinary authored settings translate into this same class without role subclasses or binding wrappers.
+An evaluator using a model or a check callable to grade each criterion, compute the weighted score, and accept only when score > threshold. It may return feedback.
 _Avoid_: Quality-call layer, judge factory
 
 **Reviewer**:
@@ -154,7 +157,7 @@ An evaluator invoked by an Agent before returning a response.
 _Avoid_: Final verification
 
 **Rubric**:
-The named weighted Boolean criteria and threshold configured with an Agent's Reviewer or Task's final Verifier; file-declared phase criteria can append to base criteria before execution.
+A list of criteria and an explicit acceptance threshold.
 _Avoid_: Reward, score
 
 **Verifier**:
@@ -162,7 +165,7 @@ The optional Evaluator supplied as verifier on Task, specifying final judgment o
 _Avoid_: Message approval
 
 **Criterion**:
-A uniquely identified Boolean quality condition with a weight used to derive a normalized reviewer or verifier score.
+A pass/fail condition described by its context, with a positive weight.
 _Avoid_: Metric, reward
 
 Ownership and API retirement: [ADR-0011](docs/adr/0011-remove-plans-and-use-ordinary-task-records.md), [ADR-0012](docs/adr/0012-keep-runner-as-an-environment-task-loop.md), and the implemented [ADR-0014](docs/adr/0014-use-task-lists-and-task-owned-run-settings.md)/[ADR-0015](docs/adr/0015-separate-environment-setup-and-run.md)/[ADR-0016](docs/adr/0016-build-seven-directly-usable-generation-modules.md)/[ADR-0017](docs/adr/0017-use-agent-reviewers-task-verifiers-and-independent-episodes.md)/[ADR-0018](docs/adr/0018-runner-owns-the-output-directory.md)/[ADR-0019](docs/adr/0019-task-owned-episodes-span-segments.md)/[ADR-0020](docs/adr/0020-create-an-identified-episode-with-each-task.md)/[ADR-0021](docs/adr/0021-declare-tools-on-each-agent.md)/[ADR-0022](docs/adr/0022-construct-agent-definitions-and-revise-from-review.md)/[ADR-0023](docs/adr/0023-use-agent-directly-and-keep-execution-state-local.md)/[ADR-0024](docs/adr/0024-use-required-assistant-and-optional-user-task-roles.md). ADR-0013's active Taskset design is superseded. Saved run_plan fields are ordinary historical JSON metadata, not runtime Plans.

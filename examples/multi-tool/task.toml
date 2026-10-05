@@ -40,8 +40,5 @@ target = true
 tools = ["summarize"]
 
 [agents.assistant.reviewer]
-type = "deterministic"
+type = "model"
 max_revisions = 0
-
-[agents.assistant.reviewer.checks]
-nonempty = "nonempty_content"
