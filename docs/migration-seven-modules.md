@@ -109,6 +109,13 @@ The saved JSON keys are id, messages, metadata and verification. Old trace forma
 ledger files, sidecars, historical verification selection and CLI reverification
 are retired. The optional Inspector and CLI export read the current snapshot shape.
 
+Inspection now exposes summary, conversation, verification and metadata views.
+Replace the provenance view with metadata. The participant view and --participant
+option are removed: saved Episodes contain published messages, not private Agent
+histories. Inspector.is_run replaces its placeholder run dictionary. Both view()
+and render() default to the batch summary when inspecting a batch directory;
+pass trace_index to select a trace (zero-based in Python, one-based in the CLI).
+
 The shared json_data, canonical_json, parse_json and freeze helpers are removed.
 Callers use standard json.dumps/json.loads and dataclasses.asdict. Task input,
 argument and judgment data stays in ordinary dictionaries and lists.

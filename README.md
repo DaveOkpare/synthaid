@@ -263,6 +263,13 @@ verification by default; use `--status unverified` for traces without a verifier
 An absent verification result alone does not distinguish an unfinished run from a
 completed run without a verifier.
 
+Inspector accepts a trace file, an Episode directory, or a batch directory.
+Its four views are `summary`, `conversation`, `verification`, and `metadata`.
+For example, `agentinstruct inspect runs/demo --trace 1 --view verification`
+shows the saved Judge verdict, score and feedback for the first trace.
+Conversation shows published role/content messages; private Agent histories are
+not saved in the Episode. `--json` returns the selected view as JSON.
+
 The former trace format, event ledgers, verification sidecars and `reverify` command
 are retired. There is no automatic migration or historical loader.
 

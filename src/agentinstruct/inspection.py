@@ -7,21 +7,17 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-VIEWS = ("summary", "conversation", "participant", "verification", "provenance")
+VIEWS = ("summary", "conversation", "verification", "metadata")
 
 
 class Inspector:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path).resolve(strict=True)
-        self.run = None
-        self.paths: tuple[Path, ...]
-        if self.path.is_file():
-            self.paths = (self.path,)
-        elif (self.path / "trace.json").is_file():
-            self.paths = (self.path / "trace.json",)
-        else:
-            self.run = {"path": str(self.path)}
-            self.paths = tuple(sorted(self.path.glob("*/trace.json")))
+        source = self.path / "trace.json" if self.path.is_dir() else self.path
+        self.is_run = not source.is_file()
+        self.paths = (
+            tuple(sorted(self.path.glob("*/trace.json"))) if self.is_run else (source,)
+        )
         self.traces = tuple(
             json.loads(p.read_text(encoding="utf-8")) for p in self.paths
         )
@@ -32,20 +28,22 @@ class Inspector:
             raise ValueError("Unsupported trace format; expected id and messages")
 
     def summary(self, *, trace_index: int | None = None) -> dict[str, Any]:
-        if trace_index is None and self.run is not None:
-            return {
-                "kind": "run",
-                "path": str(self.path),
-                "counts": dict(Counter(trace_status(t) for t in self.traces)),
-                "traces": [
-                    self.summary(trace_index=i) for i in range(len(self.traces))
-                ],
-            }
-        trace = self.traces[trace_index or 0]
+        if trace_index is not None or not self.is_run:
+            return self._trace_summary(trace_index or 0)
+        traces = [self._trace_summary(i) for i in range(len(self.traces))]
+        return {
+            "kind": "run",
+            "path": str(self.path),
+            "counts": dict(Counter(t["status"] for t in traces)),
+            "traces": traces,
+        }
+
+    def _trace_summary(self, index: int) -> dict[str, Any]:
+        trace = self.traces[index]
         return {
             "kind": "trace",
             "trace_id": trace["id"],
-            "path": str(self.paths[trace_index or 0]),
+            "path": str(self.paths[index]),
             "status": trace_status(trace),
             "messages": len(trace["messages"]),
             "verification": trace.get("verification"),
@@ -53,41 +51,23 @@ class Inspector:
         }
 
     def view(
-        self, name: str, *, trace_index: int = 0, participant: str | None = None
+        self, name: str = "summary", *, trace_index: int | None = None
     ) -> dict[str, Any]:
         if name == "summary":
             return self.summary(trace_index=trace_index)
         if name not in VIEWS:
             raise ValueError("Unknown inspection view")
-        trace = self.traces[trace_index]
-        if name == "participant" and participant not in {
-            m["role"] for m in trace["messages"]
-        }:
-            raise ValueError("Unknown participant")
-        if name in {"conversation", "participant"}:
-            content = {"messages": trace["messages"]}
-        elif name == "verification":
-            content = {"verification": trace.get("verification")}
-        else:
-            content = {"metadata": trace.get("metadata", {})}
-        return {"view": name, "trace_id": trace["id"], **content}
+        trace = self.traces[trace_index or 0]
+        key = "messages" if name == "conversation" else name
+        default: dict[str, Any] | None = {} if name == "metadata" else None
+        return {"view": name, "trace_id": trace["id"], key: trace.get(key, default)}
 
-    def render(
-        self,
-        view: str = "summary",
-        *,
-        trace_index: int | None = None,
-        participant: str | None = None,
-    ) -> str:
-        data = (
-            self.summary(trace_index=trace_index)
-            if view == "summary"
-            else self.view(view, trace_index=trace_index or 0, participant=participant)
-        )
+    def render(self, view: str = "summary", *, trace_index: int | None = None) -> str:
+        data = self.view(view, trace_index=trace_index)
         if isinstance(data.get("messages"), list):
             text = "\n".join(f"{m['role']}: {m['content']}" for m in data["messages"])
         else:
-            text = json.dumps(data, allow_nan=False)
+            text = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False)
         return terminal_text(text)
 
 

@@ -22,9 +22,12 @@ def saved_trace(tmp_path: Path) -> Path:
         json.dumps(
             {
                 "id": "recorded",
-                "messages": [{"role": "assistant", "content": "Hello"}],
-                "metadata": {},
-                "verification": {"passed": True},
+                "messages": [
+                    {"role": "user", "content": "Hi"},
+                    {"role": "assistant", "content": "Hello"},
+                ],
+                "metadata": {"input": {"name": "Ada"}},
+                "verification": {"passed": True, "score": 0.75, "feedback": "Good"},
             }
         )
     )
@@ -109,9 +112,8 @@ def test_invalid_records_remain_in_report_without_fabricating_episodes(
 def test_recorded_views_only_read_the_snapshot(view: str, saved_trace: Path) -> None:
     before = saved_trace.read_bytes()
     inspector = Inspector(saved_trace)
-    participant = "assistant" if view == "participant" else None
-    assert inspector.view(view, participant=participant)
-    assert inspector.render(view, participant=participant)
+    assert inspector.view(view)
+    assert inspector.render(view)
     assert saved_trace.read_bytes() == before
 
 
@@ -126,7 +128,10 @@ def test_tui_navigation_is_read_only(saved_trace: Path) -> None:
     session = InspectionSession(inspector, page_size=2)
     assert "Unknown" in session.execute("unsupported")
     assert "page" in session.execute("conversation")
-    assert "Unknown participant" in session.execute("participant missing")
+    assert "Unknown command" in session.execute("participant assistant")
+    assert '"view": "metadata"' in session.execute("metadata")
+    assert "page 2/" in session.execute("more")
+    assert "page 1/" in session.execute("back")
     output = io.StringIO()
     run_terminal(
         inspector,
@@ -135,6 +140,107 @@ def test_tui_navigation_is_read_only(saved_trace: Path) -> None:
     )
     assert "Inspection closed" in output.getvalue()
     assert "\\u001b" in terminal_text("unsafe\x1b[31m")
+
+
+def test_inspection_reads_a_trace_file_or_episode_directory(saved_trace: Path) -> None:
+    for path in (saved_trace, saved_trace.parent):
+        inspector = Inspector(path)
+        summary = inspector.summary()
+        assert not inspector.is_run and summary["kind"] == "trace"
+        assert summary["messages"] == 2 and summary["status"] == "accepted"
+        assert summary["path"] == str(saved_trace)
+        assert summary["verification"] == {
+            "passed": True,
+            "score": 0.75,
+            "feedback": "Good",
+        }
+        assert inspector.view("metadata")["metadata"] == {"input": {"name": "Ada"}}
+        assert inspector.render("conversation") == "user: Hi\nassistant: Hello"
+
+
+@pytest.fixture
+def saved_run(tmp_path: Path, saved_trace: Path) -> Path:
+    root = tmp_path / "run"
+    for index, passed in enumerate((True, False, None)):
+        trace = json.loads(saved_trace.read_text())
+        trace["id"] = f"trace-{index}"
+        trace["verification"] = (
+            None if passed is None else dict(passed=passed, score=0.75, feedback="Good")
+        )
+        destination = root / trace["id"]
+        destination.mkdir(parents=True)
+        (destination / "trace.json").write_text(json.dumps(trace))
+    return root
+
+
+def test_run_summary_counts_saved_verdicts(saved_run: Path) -> None:
+    inspector = Inspector(saved_run)
+    assert inspector.is_run
+    summary = inspector.view()
+    assert summary == inspector.summary()
+    assert summary["counts"] == {"accepted": 1, "rejected": 1, "unverified": 1}
+    assert [trace["trace_id"] for trace in summary["traces"]] == [
+        "trace-0",
+        "trace-1",
+        "trace-2",
+    ]
+    assert inspector.view("summary", trace_index=1)["status"] == "rejected"
+    assert inspector.view("verification", trace_index=2)["verification"] is None
+
+
+def test_empty_run_can_be_inspected(tmp_path: Path) -> None:
+    inspector = Inspector(tmp_path)
+    assert inspector.view() == {
+        "kind": "run",
+        "path": str(tmp_path),
+        "counts": {},
+        "traces": [],
+    }
+    session = InspectionSession(inspector)
+    assert '"traces": []' in session.execute("summary")
+    assert "out of range" in session.execute("next")
+    assert '"kind": "run"' in session.execute("")
+
+
+@pytest.mark.parametrize("view", VIEWS)
+def test_cli_inspection_selects_a_trace_and_view(
+    saved_run: Path, view: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        main(["inspect", str(saved_run), "--trace", "2", "--view", view, "--json"]) == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["trace_id"] == "trace-1"
+    field = "messages" if view in {"summary", "conversation"} else view
+    assert field in result
+
+
+def test_tui_navigates_between_run_and_trace_summaries(saved_run: Path) -> None:
+    session = InspectionSession(Inspector(saved_run), page_size=100)
+    assert '"kind": "run"' in session.execute("summary")
+    assert '"trace_id": "trace-0"' in session.execute("next")
+    assert '"trace_id": "trace-1"' in session.execute("next")
+    assert '"trace_id": "trace-0"' in session.execute("previous")
+    assert '"status": "unverified"' in session.execute("trace 3")
+    assert "Hi" in session.execute("conversation")
+    assert '"kind": "run"' in session.execute("run")
+    assert '"kind": "run"' in session.execute("summary")
+
+
+@pytest.mark.parametrize("view", ["conversation", "verification", "metadata"])
+def test_human_rendering_preserves_unicode_and_escapes_controls(
+    saved_trace: Path, view: str
+) -> None:
+    trace = json.loads(saved_trace.read_text())
+    text = "café\x1b[31m\u202e"
+    trace["messages"][0]["content"] = text
+    trace["metadata"]["note"] = text
+    trace["verification"]["feedback"] = text
+    saved_trace.write_text(json.dumps(trace))
+    rendered = Inspector(saved_trace).render(view)
+    assert "café" in rendered
+    assert "\x1b" not in rendered and "\u202e" not in rendered
+    assert "\\u001b" in rendered and "\\u202e" in rendered
 
 
 @pytest.mark.asyncio

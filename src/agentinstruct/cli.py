@@ -5,14 +5,15 @@ import asyncio
 import json
 import os
 import sys
-from collections.abc import Sequence
+from collections import Counter
+from collections.abc import Callable, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import asdict
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
-from agentinstruct.inspection import trace_status
+from agentinstruct.inspection import VIEWS, Inspector, terminal_text, trace_status
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -38,14 +39,16 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command")
     _task_commands(commands)
-    _recorded_commands(commands)
+    _inspection_command(commands)
+    _export_command(commands)
     commands.add_parser("vllm", help="Start a local vLLM server and run a program")
     return parser
 
 
 def _task_commands(commands: Any) -> None:
-    for name in ("validate", "run"):
+    for name, handler in (("validate", _validate), ("run", _run)):
         parser = commands.add_parser(name)
+        parser.set_defaults(handler=handler)
         parser.add_argument("package")
         parser.add_argument("--seed")
         parser.add_argument("--json", action="store_true", dest="as_json")
@@ -54,22 +57,20 @@ def _task_commands(commands: Any) -> None:
             parser.add_argument("--fail-fast", action="store_true")
 
 
-def _recorded_commands(commands: Any) -> None:
-    from agentinstruct.inspection import VIEWS
-
+def _inspection_command(commands: Any) -> None:
     parser = commands.add_parser("inspect")
+    parser.set_defaults(handler=_inspect)
     parser.add_argument("path")
     parser.add_argument("--view", choices=VIEWS, default="summary")
     parser.add_argument("--trace", type=int)
-    parser.add_argument("--participant")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--tui", action="store_true")
     group.add_argument("--json", action="store_true", dest="as_json")
-    _export_command(commands)
 
 
 def _export_command(commands: Any) -> None:
     parser = commands.add_parser("export")
+    parser.set_defaults(handler=_export)
     parser.add_argument("traces", nargs="+")
     parser.add_argument("--format", choices=["openai", "native"], default="openai")
     parser.add_argument("--output", required=True)
@@ -105,11 +106,7 @@ def _validate(args: argparse.Namespace) -> int:
 def _run(args: argparse.Namespace) -> int:
     result = asyncio.run(_run_tasks(args, _prepare(args)))
     _display(result, args.as_json)
-    return int(
-        result["status"] == "failed"
-        or result["counts"].get("failed", 0)
-        or result["counts"].get("invalid", 0)
-    )
+    return int(result["status"] == "failed" or result["counts"].get("invalid", 0) > 0)
 
 
 async def _run_tasks(
@@ -138,11 +135,9 @@ async def _execute_record(
     from agentinstruct.adapters.task_files import task_from_record
 
     if record.get("error"):
-        return {
-            "status": "invalid",
-            "error": record["error"],
-            "origin": record.get("origin"),
-        }
+        return dict(
+            status="invalid", error=record["error"], origin=record.get("origin")
+        )
     task = task_from_record(record, clients=clients)
     await Runner([task], output_dir=output).run()
     judgment = task.episode.verification
@@ -175,16 +170,18 @@ def _client_declarations(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
         if record.get("error"):
             continue
         config = record["config"]
-        for declaration in _model_declarations(record):
-            model = {**config.get("model", {}), **declaration.get("model", {})}
+        agents = list(record["agents"].values())
+        judges = [agent.get("reviewer") for agent in agents] + [record["verifier"]]
+        for declaration in [*agents, *judges]:
+            if declaration is None or declaration.get("type", "model") != "model":
+                continue
+            model = config.get("model", {}) | declaration.get("model", {})
             name = model.get("provider", "default")
             result[name] = config.get("providers", {}).get(name, {})
     return result
 
 
 def _inspect(args: argparse.Namespace) -> int:
-    from agentinstruct.inspection import Inspector
-
     inspector = Inspector(args.path)
     index = args.trace - 1 if args.trace is not None else None
     if index is not None and not 0 <= index < len(inspector.traces):
@@ -192,34 +189,24 @@ def _inspect(args: argparse.Namespace) -> int:
     if args.tui:
         from agentinstruct.ui.terminal import run_terminal
 
-        options = {
-            "trace_index": index,
-            "view": args.view,
-            "participant": args.participant,
-        }
-        run_terminal(inspector, sys.stdin, sys.stdout, **options)
+        run_terminal(
+            inspector, sys.stdin, sys.stdout, trace_index=index, view=args.view
+        )
     else:
         _inspect_output(inspector, args, index)
     return 0
 
 
 def _export(args: argparse.Namespace) -> int:
-    from agentinstruct.inspection import Inspector
-
-    traces = [t for path in args.traces for t in Inspector(path).traces]
-    selected = [t for t in traces if _include(t, args)]
+    selected = [
+        trace
+        for path in args.traces
+        for trace in Inspector(path).traces
+        if _include(trace, args)
+    ]
     with Path(args.output).open("x", encoding="utf-8") as stream:
         for trace in selected:
-            row = (
-                trace
-                if args.format == "native"
-                else {
-                    "messages": [
-                        {"role": m["role"], "content": m["content"]}
-                        for m in trace["messages"]
-                    ]
-                }
-            )
+            row = trace if args.format == "native" else {"messages": trace["messages"]}
             stream.write(json.dumps(row, allow_nan=False) + "\n")
     _display({"count": len(selected), "path": args.output}, args.as_json)
     return 0
@@ -232,40 +219,25 @@ def _include(trace: dict[str, Any], args: argparse.Namespace) -> bool:
 
 
 def _display(value: dict[str, Any], as_json: bool) -> None:
-    from agentinstruct.inspection import terminal_text
-
-    print(
-        json.dumps(value, allow_nan=False)
-        if as_json
-        else terminal_text(
-            "\n".join(
-                f"{key}: {item}" for key, item in value.items() if key != "records"
-            )
-        )
-    )
+    if as_json:
+        print(json.dumps(value, allow_nan=False))
+    else:
+        text = "\n".join(f"{k}: {v}" for k, v in value.items() if k != "records")
+        print(terminal_text(text))
 
 
 def _command(args: argparse.Namespace) -> int:
-    handlers = {
-        "validate": _validate,
-        "run": _run,
-        "inspect": _inspect,
-        "export": _export,
-    }
     try:
-        return handlers[args.command](args)
+        handler: Callable[[argparse.Namespace], int] = args.handler
+        return handler(args)
     except (ValueError, OSError, IndexError) as exc:
-        _display(
-            {"status": "error", "error": str(exc)}, getattr(args, "as_json", False)
-        )
+        _display({"status": "error", "error": str(exc)}, args.as_json)
         return 2 if isinstance(exc, ValueError) else 1
 
 
 def _run_report(
     output: str, traces: Sequence[dict[str, Any]], source_error: str | None
 ) -> dict[str, Any]:
-    from collections import Counter
-
     return {
         "path": str(Path(output)),
         "status": "failed" if source_error else "finished",
@@ -288,31 +260,11 @@ def _client_options(settings: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _model_declarations(record: dict[str, Any]) -> list[dict[str, Any]]:
-    agents = list(record["agents"].values())
-    judges = [agent["reviewer"] for agent in agents if agent.get("reviewer")]
-    if record["verifier"]:
-        judges.append(record["verifier"])
-    return [
-        settings
-        for settings in [*agents, *judges]
-        if settings.get("type", "model") == "model"
-    ]
-
-
 def _inspect_output(
-    inspector: Any, args: argparse.Namespace, index: int | None
+    inspector: Inspector, args: argparse.Namespace, index: int | None
 ) -> None:
     if args.as_json:
-        data = (
-            inspector.summary(trace_index=index)
-            if args.view == "summary"
-            else inspector.view(
-                args.view, trace_index=index or 0, participant=args.participant
-            )
-        )
+        data = inspector.view(args.view, trace_index=index)
         print(json.dumps(data, allow_nan=False))
     else:
-        print(
-            inspector.render(args.view, trace_index=index, participant=args.participant)
-        )
+        print(inspector.render(args.view, trace_index=index))
