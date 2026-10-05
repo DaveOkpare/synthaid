@@ -43,7 +43,13 @@ class Judge:
     model: str | None = None
     client: Any = None
     check: Callable[[Sequence[Mapping[str, Any]]], Any] | None = None
-    prompt: str = "Grade each criterion in order as pass/fail; give feedback."
+    prompt: str = (
+        "Evaluate the supplied conversation against every criterion. "
+        "Return exactly one Boolean per criterion in the original order: "
+        "true if it passes, false if it fails. "
+        "Include failed criteria; never omit them. "
+        "Provide concise feedback explaining failures."
+    )
 
     async def evaluate(self, messages: Sequence[Mapping[str, Any]]) -> Judgment:
         if self.check is None:
