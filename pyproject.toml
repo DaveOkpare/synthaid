@@ -1,5 +1,5 @@
 [project]
-name = "agentinstruct"
+name = "synthaid"
 version = "0.1.0"
 description = "A framework for generating verified traces from agent interactions"
 readme = "README.md"
@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-agentinstruct = "agentinstruct.cli:main"
+synthaid = "synthaid.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.11.26,<0.12.0"]

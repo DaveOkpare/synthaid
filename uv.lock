@@ -7,7 +7,7 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "agentinstruct"
+name = "synthaid"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

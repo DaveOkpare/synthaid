@@ -1,4 +1,4 @@
-# agentinstruct
+# synthaid
 
 Generate reviewed synthetic data directly in Python through seven imports:
 `Task`, `Runner`, `Environment`, `Agent`, `Episode`, `Tool`, and `Judge`.
@@ -11,9 +11,17 @@ verifier. Each Agent handles its own optional review and revisions.
 
 Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/).
 
+Install into another Python project:
+
+```sh
+uv add "synthaid @ git+https://github.com/DaveOkpare/synthaid.git"
+```
+
+For development from a checkout:
+
 ```sh
 uv sync --locked
-uv run python examples/direct-dialogue/run.py --output /tmp/agentinstruct-retail
+uv run python examples/direct-dialogue/run.py --output /tmp/synthaid-retail
 ```
 
 The retail example runs offline and reuses Agent and Judge definitions across
@@ -29,8 +37,8 @@ Set `MODEL_BASE_URL`, `MODEL_API_KEY`, `MODEL_NAME`, and `JUDGE_MODEL` for your 
 import asyncio
 import os
 from openai import AsyncOpenAI
-from agentinstruct import Agent, Judge, Runner, Task
-from agentinstruct.judge import Criterion, Rubric
+from synthaid import Agent, Judge, Runner, Task
+from synthaid.judge import Criterion, Rubric
 
 
 async def main():
@@ -105,7 +113,7 @@ Generation is non-streaming.
 `Message` is a small `TypedDict` with `role` and `content`:
 
 ```python
-from agentinstruct.episode import Message
+from synthaid.episode import Message
 
 message = Message(role="user", content="Hello")
 ```
@@ -213,7 +221,7 @@ application-defined lifetimes.
 ## Optional task files and CLI
 
 ```python
-from agentinstruct.adapters.task_files import compile_records, load_tasks
+from synthaid.adapters.task_files import compile_records, load_tasks
 
 tasks = load_tasks("examples/verified-single", client=client)
 # Ordinary Python input instead of the configured source:
@@ -232,11 +240,11 @@ conversation limit. Record provenance is placed in Episode metadata.
 See [examples](examples/README.md) for the supported conversations.
 
 ```sh
-uv run agentinstruct validate examples/verified-single --json
-uv run agentinstruct run examples/verified-single --output runs/demo --json
-uv run agentinstruct inspect runs/demo
-uv run agentinstruct inspect runs/demo --tui
-uv run agentinstruct export runs/demo --output /tmp/dataset.jsonl
+uv run synthaid validate examples/verified-single --json
+uv run synthaid run examples/verified-single --output runs/demo --json
+uv run synthaid inspect runs/demo
+uv run synthaid inspect runs/demo --tui
+uv run synthaid export runs/demo --output /tmp/dataset.jsonl
 ```
 
 CLI run creates an optional manifest alongside Episode directories. Choose a fresh
@@ -265,7 +273,7 @@ completed run without a verifier.
 
 Inspector accepts a trace file, an Episode directory, or a batch directory.
 Its four views are `summary`, `conversation`, `verification`, and `metadata`.
-For example, `agentinstruct inspect runs/demo --trace 1 --view verification`
+For example, `synthaid inspect runs/demo --trace 1 --view verification`
 shows the saved Judge verdict, score and feedback for the first trace.
 Conversation shows published role/content messages; private Agent histories are
 not saved in the Episode. `--json` returns the selected view as JSON.
@@ -276,11 +284,11 @@ are retired. There is no automatic migration or historical loader.
 ## Optional vLLM startup
 
 ```sh
-uv run agentinstruct vllm --model your-model \
+uv run synthaid vllm --model your-model \
   --server-python /path/to/vllm-env/bin/python -- python generate.py
 ```
 
-`agentinstruct.integrations.vllm.serve.vllm_server(...)` also provides a Python
+`synthaid.integrations.vllm.serve.vllm_server(...)` also provides a Python
 context manager yielding the ready API URL. It owns and stops its server process
 and restores signals. Initialize your separate inference client using that URL.
 Core imports and task validation do not start servers or import the vLLM SDK.
