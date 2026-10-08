@@ -1,5 +1,0 @@
-threshold = 0.9
-
-[[criteria]]
-context = "Reject draft conversation and the reject Tool label.\nsafe"
-weight = 1.0
