@@ -40,9 +40,29 @@ asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 target-version = "py313"
+line-length = 80
+extend-exclude = ["plan.md"]
 
+# Follows the Google Python Style Guide:
+# https://google.github.io/styleguide/pyguide.html
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "D"]
+# The guide annotates type aliases with TypeAlias instead of `type X = ...`.
+ignore = ["UP040"]
+
+[tool.ruff.lint.per-file-ignores]
+# The guide only wants test docstrings that add information.
+"tests/*" = ["D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+force-single-line = true
+single-line-exclusions = ["collections.abc", "typing"]
+force-sort-within-sections = true
+order-by-type = false
+case-sensitive = false
 
 [tool.ruff.format]
 # Preserve historical design examples and quoted upstream code in research notes.

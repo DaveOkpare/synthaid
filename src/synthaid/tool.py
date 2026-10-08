@@ -1,16 +1,16 @@
 """Tools an agent can offer to a model."""
 
-import json
 from collections.abc import Callable
-from dataclasses import dataclass
+import dataclasses
+import json
 from typing import Any
 
-from openai.types.chat import ChatCompletionFunctionToolParam
+from openai.types import chat
 
-from synthaid.message import Message, ToolCall
+from synthaid import message
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class Tool:
     """A function the model can ask to run.
 
@@ -26,21 +26,23 @@ class Tool:
     parameters: dict[str, Any]
     function: Callable[..., Any]
 
-    def __call__(self, call: ToolCall) -> Message:
-        """Run the tool for one call and return its result Message.
+    def __call__(self, call: message.ToolCall) -> message.Message:
+        """Runs the tool for one call and returns its result Message.
 
-        Calls `function(**call.arguments)` and returns
-        `Message(role="tool", content=<result as text>, tool_call_id=call.id)`.
-        A result that is not a string is turned into JSON.
+        Args:
+            call: The tool call from the model. Its arguments are passed to
+                `function` as keyword arguments.
+
+        Returns:
+            A tool Message with the result as text and `tool_call_id` set
+            to `call.id`. A result that is not a string is turned into JSON.
         """
         result = self.function(**call.arguments)
         content = result if isinstance(result, str) else json.dumps(result)
-        return Message("tool", content, tool_call_id=call.id)
+        return message.Message("tool", content, tool_call_id=call.id)
 
-    def to_chat_completions(self) -> ChatCompletionFunctionToolParam:
-        """This tool as a Chat Completions function tool dict:
-        `{"type": "function", "function": {"name", "description", "parameters"}}`.
-        """
+    def to_chat_completions(self) -> chat.ChatCompletionFunctionToolParam:
+        """Returns this tool as a Chat Completions function tool dict."""
         return {
             "type": "function",
             "function": {

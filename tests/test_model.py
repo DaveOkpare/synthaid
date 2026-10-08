@@ -7,27 +7,31 @@ are set.
 
 import os
 
+import pydantic
 import pytest
-from pydantic import BaseModel
 
-from synthaid.message import Message
-from synthaid.model import Model
-from synthaid.tool import Tool
+from synthaid import message
+from synthaid import model
+from synthaid import tool
 
-LIVE_ENV = ("SYNTHAID_TEST_BASE_URL", "SYNTHAID_TEST_API_KEY", "SYNTHAID_TEST_MODEL")
+_LIVE_ENV = (
+    "SYNTHAID_TEST_BASE_URL",
+    "SYNTHAID_TEST_API_KEY",
+    "SYNTHAID_TEST_MODEL",
+)
 live = pytest.mark.skipif(
-    not all(os.environ.get(name) for name in LIVE_ENV),
-    reason=f"set {', '.join(LIVE_ENV)} to run live tests",
+    not all(os.environ.get(name) for name in _LIVE_ENV),
+    reason=f"set {', '.join(_LIVE_ENV)} to run live tests",
 )
 
 
-class CalendarEvent(BaseModel):
+class CalendarEvent(pydantic.BaseModel):
     name: str
     date: str
     participants: list[str]
 
 
-WEATHER = Tool(
+_WEATHER = tool.Tool(
     name="get_weather",
     description="Get the weather for a city",
     parameters={
@@ -39,8 +43,8 @@ WEATHER = Tool(
 )
 
 
-def live_model() -> Model:
-    return Model(
+def _live_model() -> model.Model:
+    return model.Model(
         model_name=os.environ["SYNTHAID_TEST_MODEL"],
         base_url=os.environ["SYNTHAID_TEST_BASE_URL"],
         api_key=os.environ["SYNTHAID_TEST_API_KEY"],
@@ -48,17 +52,23 @@ def live_model() -> Model:
 
 
 def test_generate_rejects_tools_with_structured_output() -> None:
-    model = Model(model_name="any", base_url="http://unused", api_key="unused")
+    offline = model.Model(
+        model_name="any", base_url="http://unused", api_key="unused"
+    )
 
     with pytest.raises(ValueError):
-        model.generate(
-            [Message("user", "hi")], tools=[WEATHER], output_type=CalendarEvent
+        offline.generate(
+            [message.Message("user", "hi")],
+            tools=[_WEATHER],
+            output_type=CalendarEvent,
         )
 
 
 @live
 def test_live_text_reply() -> None:
-    reply = live_model().generate([Message("user", "Say hello in one word.")])
+    reply = _live_model().generate(
+        [message.Message("user", "Say hello in one word.")]
+    )
 
     assert reply.role == "assistant"
     assert isinstance(reply.content, str) and reply.content
@@ -67,10 +77,12 @@ def test_live_text_reply() -> None:
 
 @live
 def test_live_structured_reply() -> None:
-    reply = live_model().generate(
+    reply = _live_model().generate(
         [
-            Message("system", "Extract the event information."),
-            Message("user", "Alice and Bob are going to a science fair on Friday."),
+            message.Message("system", "Extract the event information."),
+            message.Message(
+                "user", "Alice and Bob are going to a science fair on Friday."
+            ),
         ],
         output_type=CalendarEvent,
     )
@@ -81,13 +93,13 @@ def test_live_structured_reply() -> None:
 
 @live
 def test_live_tool_round_trip() -> None:
-    model = live_model()
-    messages = [Message("user", "What's the weather in Lagos?")]
+    live_model = _live_model()
+    conversation = [message.Message("user", "What's the weather in Lagos?")]
 
-    call_reply = model.generate(messages, tools=[WEATHER])
+    call_reply = live_model.generate(conversation, tools=[_WEATHER])
     (call,) = call_reply.tool_calls
-    messages += [call_reply, WEATHER(call)]
-    answer = model.generate(messages, tools=[WEATHER])
+    conversation += [call_reply, _WEATHER(call)]
+    answer = live_model.generate(conversation, tools=[_WEATHER])
 
     assert call.arguments == {"city": "Lagos"}
     assert isinstance(answer.content, str) and "31" in answer.content

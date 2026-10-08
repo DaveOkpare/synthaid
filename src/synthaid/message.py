@@ -1,20 +1,16 @@
 """Messages exchanged between agents, models and tools."""
 
+import dataclasses
 import json
-from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Any, cast, Literal, Self, TypeAlias
 
-from openai.types.chat import (
-    ChatCompletionMessage,
-    ChatCompletionMessageFunctionToolCall,
-    ChatCompletionMessageParam,
-)
-from pydantic import BaseModel
+from openai.types import chat
+import pydantic
 
-Role = Literal["system", "user", "assistant", "tool"]
+Role: TypeAlias = Literal["system", "user", "assistant", "tool"]
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class ToolCall:
     """A request from the model to run one tool.
 
@@ -30,7 +26,7 @@ class ToolCall:
     arguments: dict[str, Any]
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class Message:
     """One message in a conversation.
 
@@ -46,10 +42,17 @@ class Message:
 
     Reasoning is kept for logs and history but is never sent back to a
     model.
+
+    Attributes:
+        role: Who wrote the message.
+        content: The text, structured output, or None.
+        reasoning: The model's reasoning, if the server returned any.
+        tool_calls: The tools the model asked to run.
+        tool_call_id: The call a tool result answers.
     """
 
     role: Role
-    content: str | BaseModel | None
+    content: str | pydantic.BaseModel | None
     reasoning: str | None = None
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str | None = None
@@ -61,12 +64,12 @@ class Message:
         Structured content is turned into JSON. Missing content is an
         empty string. Use this whenever content is passed on or stored.
         """
-        if isinstance(self.content, BaseModel):
+        if isinstance(self.content, pydantic.BaseModel):
             return self.content.model_dump_json()
         return self.content or ""
 
-    def to_chat_completions(self) -> ChatCompletionMessageParam:
-        """This message as a Chat Completions message dict.
+    def to_chat_completions(self) -> chat.ChatCompletionMessageParam:
+        """Returns this message as a Chat Completions message dict.
 
         Drops reasoning. Sends structured content as JSON. Tool calls are
         written as `tool_calls` entries of type "function" with the
@@ -91,25 +94,37 @@ class Message:
             ]
         if self.tool_call_id is not None:
             wire["tool_call_id"] = self.tool_call_id
-        return cast(ChatCompletionMessageParam, wire)
+        return cast(chat.ChatCompletionMessageParam, wire)
 
     @classmethod
-    def from_chat_completions(cls, message: ChatCompletionMessage) -> "Message":
-        """Build an assistant Message from a Chat Completions reply.
+    def from_chat_completions(cls, message: chat.ChatCompletionMessage) -> Self:
+        """Builds an assistant Message from a Chat Completions reply.
 
-        Uses `parsed` as content when present, otherwise `content`. Reads
-        reasoning from the `reasoning_content` field when the server sends
-        it. Decodes each tool call's arguments from JSON.
+        Uses `parsed` as content when the reply came from `parse()` and
+        has one, otherwise `content`. Reads reasoning from the
+        `reasoning_content` field when the server sends it. Decodes each
+        tool call's arguments from JSON.
+
+        Args:
+            message: The `choices[0].message` of a completion.
+
+        Returns:
+            An assistant Message with content, reasoning and tool calls.
 
         Raises:
-            json.JSONDecodeError: a tool call's arguments were not valid
+            json.JSONDecodeError: A tool call's arguments were not valid
                 JSON.
         """
-        parsed = getattr(message, "parsed", None)
+        content: str | pydantic.BaseModel | None = message.content
+        if (
+            isinstance(message, chat.ParsedChatCompletionMessage)
+            and message.parsed is not None
+        ):
+            content = message.parsed
         extra = message.model_extra or {}
         return cls(
             role="assistant",
-            content=parsed if parsed is not None else message.content,
+            content=content,
             reasoning=extra.get("reasoning_content"),
             tool_calls=tuple(
                 ToolCall(
@@ -118,6 +133,6 @@ class Message:
                     arguments=json.loads(call.function.arguments),
                 )
                 for call in message.tool_calls or ()
-                if isinstance(call, ChatCompletionMessageFunctionToolCall)
+                if isinstance(call, chat.ChatCompletionMessageFunctionToolCall)
             ),
         )

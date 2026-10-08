@@ -1,43 +1,44 @@
 import json
 from typing import Any
 
-from synthaid.message import Message, ToolCall
-from synthaid.tool import Tool
+from synthaid import message
+from synthaid import tool
 
-PARAMETERS = {
+_PARAMETERS = {
     "type": "object",
     "properties": {"city": {"type": "string"}},
     "required": ["city"],
 }
+_CALL = message.ToolCall(
+    id="call-1", name="get_weather", arguments={"city": "Lagos"}
+)
 
 
-def get_weather(city: str) -> dict[str, Any]:
+def _get_weather(city: str) -> dict[str, Any]:
     return {"city": city, "temp_c": 31}
 
 
-WEATHER = Tool(
+_WEATHER = tool.Tool(
     name="get_weather",
     description="Get the weather for a city",
-    parameters=PARAMETERS,
-    function=get_weather,
+    parameters=_PARAMETERS,
+    function=_get_weather,
 )
 
 
 def test_to_chat_completions() -> None:
-    assert WEATHER.to_chat_completions() == {
+    assert _WEATHER.to_chat_completions() == {
         "type": "function",
         "function": {
             "name": "get_weather",
             "description": "Get the weather for a city",
-            "parameters": PARAMETERS,
+            "parameters": _PARAMETERS,
         },
     }
 
 
 def test_call_returns_tool_result_message() -> None:
-    call = ToolCall(id="call-1", name="get_weather", arguments={"city": "Lagos"})
-
-    result = WEATHER(call)
+    result = _WEATHER(_CALL)
 
     assert result.role == "tool"
     assert result.tool_call_id == "call-1"
@@ -45,8 +46,8 @@ def test_call_returns_tool_result_message() -> None:
 
 
 def test_call_keeps_string_result() -> None:
-    echo = Tool("echo", "Echo the text", PARAMETERS, function=lambda city: city)
+    echo = tool.Tool("echo", "Echo the city", _PARAMETERS, lambda city: city)
 
-    result = echo(ToolCall(id="call-1", name="echo", arguments={"city": "Lagos"}))
-
-    assert result == Message("tool", "Lagos", tool_call_id="call-1")
+    assert echo(_CALL) == message.Message(
+        "tool", "Lagos", tool_call_id="call-1"
+    )
