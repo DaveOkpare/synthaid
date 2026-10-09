@@ -1,6 +1,9 @@
 import json
 from typing import Any
 
+import pytest
+
+from synthaid import exception
 from synthaid import message
 from synthaid import tool
 
@@ -43,6 +46,18 @@ def test_call_returns_tool_result_message() -> None:
     assert result.role == "tool"
     assert result.tool_call_id == "call-1"
     assert json.loads(result.text) == {"city": "Lagos", "temp_c": 31}
+
+
+def test_call_wraps_function_errors() -> None:
+    def broken(city: str) -> str:
+        raise RuntimeError("weather service down")
+
+    failing = tool.Tool("get_weather", "Get the weather", _PARAMETERS, broken)
+
+    with pytest.raises(exception.ToolExecutionError, match="call-1") as caught:
+        failing(_CALL)
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert caught.value.call == _CALL
 
 
 def test_call_keeps_string_result() -> None:

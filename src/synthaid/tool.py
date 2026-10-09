@@ -7,6 +7,7 @@ from typing import Any
 
 from openai.types import chat
 
+from synthaid import exception
 from synthaid import message
 
 
@@ -36,8 +37,15 @@ class Tool:
         Returns:
             A tool Message with the result as text and `tool_call_id` set
             to `call.id`. A result that is not a string is turned into JSON.
+
+        Raises:
+            exception.ToolExecutionError: `function` raised. The original
+                exception is its `__cause__`.
         """
-        result = self.function(**call.arguments)
+        try:
+            result = self.function(**call.arguments)
+        except Exception as error:
+            raise exception.ToolExecutionError(call) from error
         content = result if isinstance(result, str) else json.dumps(result)
         return message.Message("tool", content, tool_call_id=call.id)
 
