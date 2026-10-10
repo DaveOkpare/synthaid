@@ -1,15 +1,21 @@
 """An agent that answers with a model, its tools and an optional evaluator."""
 
+from __future__ import annotations
+
 from collections.abc import Callable, Sequence
 import dataclasses
+import typing
 
 import pydantic
 
-from synthaid import evaluation
 from synthaid import exception
 from synthaid import message
 from synthaid import model
 from synthaid import tool
+
+if typing.TYPE_CHECKING:
+    # evaluation imports agent for LLMJudge.
+    from synthaid import evaluation
 
 
 @dataclasses.dataclass(eq=False)

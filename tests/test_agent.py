@@ -48,11 +48,11 @@ class _ScriptedModel(model.Model):
 
 
 def _passed() -> evaluation.EvalResult:
-    return evaluation.EvalResult("", score=1.0, passed=True)
+    return evaluation.EvalResult("", passed=True)
 
 
 def _failed(feedback: str) -> evaluation.EvalResult:
-    return evaluation.EvalResult(feedback, score=0.0, passed=False)
+    return evaluation.EvalResult(feedback, passed=False)
 
 
 @dataclasses.dataclass
