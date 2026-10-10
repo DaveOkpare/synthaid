@@ -5,6 +5,7 @@ from synthaid import evaluation
 from synthaid import exception
 from synthaid import message
 from synthaid import model
+from synthaid import task
 from synthaid import tool
 
 __all__ = [
@@ -13,5 +14,6 @@ __all__ = [
     "exception",
     "message",
     "model",
+    "task",
     "tool",
 ]
