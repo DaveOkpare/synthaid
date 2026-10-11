@@ -31,13 +31,10 @@ class Draft:
         context: The messages of the current step so far, followed by this
             turn's accepted drafts and tool results. Rejected drafts and
             critiques are not included.
-        instruction: The step instruction when an Environment runs the
-            agent, otherwise None.
     """
 
     message: message.Message
     context: _Messages
-    instruction: str | None = None
 
 
 Evaluator: typing.TypeAlias = Callable[[Draft], "evaluation.EvalResult"]
@@ -109,7 +106,6 @@ class Agent:
         self,
         messages: Sequence[message.Message],
         *,
-        instruction: str | None = None,
         context_start: int = 0,
     ) -> list[message.Message]:
         """Takes one turn in the conversation and returns what it added.
@@ -135,7 +131,6 @@ class Agent:
         Args:
             messages: The conversation so far, as this agent should see it.
                 Reasoning in it is never sent to the model.
-            instruction: Passed to the evaluator as `Draft.instruction`.
             context_start: Where the current step starts in `messages`.
 
         Returns:
@@ -174,13 +169,8 @@ class Agent:
                     self._logs.append(draft)
                     if self.evaluator is None:
                         break
-                    result = self.evaluator(
-                        Draft(
-                            draft,
-                            context=[*messages[context_start:], *output],
-                            instruction=instruction,
-                        )
-                    )
+                    context = [*messages[context_start:], *output]
+                    result = self.evaluator(Draft(draft, context))
                     if result.passed:
                         break
                     feedback = message.Message("user", result.feedback)
@@ -202,7 +192,7 @@ class Agent:
 
     @property
     def logs(self) -> list[message.Message]:
-        """Every message this agent has working_history or produced, oldest first.
+        """Every message this agent has seen or produced, oldest first.
 
         Reads as one growing conversation: the system message once, then
         each run's input, every draft (accepted or rejected), every

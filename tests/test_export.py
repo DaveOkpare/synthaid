@@ -1,5 +1,3 @@
-from collections.abc import Sequence
-import dataclasses
 import json
 import pathlib
 from typing import Any
@@ -13,6 +11,7 @@ from synthaid import message
 from synthaid import model
 from synthaid import task
 from synthaid import tool
+from tests import fakes
 
 _MODEL = model.Model("test-model", "http://localhost")
 _STEP = task.Step("Ask about the weather in Lagos.")
@@ -29,26 +28,6 @@ _WEATHER = tool.Tool(
 
 class _Forecast(pydantic.BaseModel):
     city: str
-
-
-@dataclasses.dataclass(frozen=True)
-class _ScriptedModel(model.Model):
-    """Returns `replies` in order."""
-
-    replies: list[message.Message] = dataclasses.field(default_factory=list)
-
-    def generate(
-        self,
-        messages: Sequence[message.Message],
-        *,
-        tools: Sequence[tool.Tool] = (),
-        output_type: type[str] | type[pydantic.BaseModel] = str,
-    ) -> message.Message:
-        return self.replies.pop(0)
-
-
-def _scripted(*replies: message.Message) -> _ScriptedModel:
-    return _ScriptedModel("test-model", "http://localhost", replies=[*replies])
 
 
 def _read(path: pathlib.Path) -> Any:
@@ -176,11 +155,14 @@ def test_save_writes_the_exchange_record(tmp_path: pathlib.Path) -> None:
 
 def test_save_writes_each_agent_logs(tmp_path: pathlib.Path) -> None:
     assistant = agent.Agent(
-        _scripted(message.Message("assistant", "Sunny.", reasoning="Easy.")),
+        fakes.scripted(
+            message.Message("assistant", "Sunny.", reasoning="Easy.")
+        ),
         "Be helpful.",
     )
     user = agent.Agent(
-        _scripted(message.Message("assistant", "Weather?")), "Act as a user."
+        fakes.scripted(message.Message("assistant", "Weather?")),
+        "Act as a user.",
     )
     asked = user.run([message.Message("user", "Start.")])
     assistant.run([message.Message("user", asked[-1].text)])
@@ -222,7 +204,7 @@ def test_save_writes_evaluator_logs_when_it_is_an_agent(
         feedback="Fine.",
     )
     judge = evaluation.LLMJudge(
-        _scripted(message.Message("assistant", verdict)), [criterion]
+        fakes.scripted(message.Message("assistant", verdict)), [criterion]
     )
     judge(agent.Draft(message.Message("assistant", "Sunny."), context=[]))
     assistant = agent.Agent(_MODEL, "Be helpful.", evaluator=judge)

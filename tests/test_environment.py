@@ -5,8 +5,6 @@ SYNTHAID_TEST_BASE_URL, SYNTHAID_TEST_API_KEY and SYNTHAID_TEST_MODEL
 are set.
 """
 
-from collections.abc import Sequence
-import dataclasses
 import os
 
 import pydantic
@@ -20,6 +18,7 @@ from synthaid import message
 from synthaid import model
 from synthaid import task
 from synthaid import tool
+from tests import fakes
 
 _LIVE_ENV = (
     "SYNTHAID_TEST_BASE_URL",
@@ -51,34 +50,6 @@ class _Forecast(pydantic.BaseModel):
     city: str
 
 
-@dataclasses.dataclass(frozen=True)
-class _ScriptedModel(model.Model):
-    """Returns `replies` in order and records every request's messages."""
-
-    replies: list[message.Message] = dataclasses.field(default_factory=list)
-    requests: list[list[message.Message]] = dataclasses.field(
-        default_factory=list
-    )
-
-    def generate(
-        self,
-        messages: Sequence[message.Message],
-        *,
-        tools: Sequence[tool.Tool] = (),
-        output_type: type[str] | type[pydantic.BaseModel] = str,
-    ) -> message.Message:
-        self.requests.append(list(messages))
-        return self.replies.pop(0)
-
-    def seen(self, index: int) -> list[message.Message]:
-        """The messages of request `index`, without the system message."""
-        return self.requests[index][1:]
-
-
-def _scripted(*replies: message.Message) -> _ScriptedModel:
-    return _ScriptedModel("test-model", "http://localhost", replies=[*replies])
-
-
 def _says(text: str) -> message.Message:
     return message.Message("assistant", text)
 
@@ -92,12 +63,12 @@ def _weather_result() -> message.Message:
 
 
 def _run(the_task: task.Task) -> list[message.Message]:
-    environment.Environment().run(the_task)
+    environment.run(the_task)
     return the_task.chat_history
 
 
 def test_single_agent_adds_instruction_and_reply() -> None:
-    assistant = _scripted(_says("It is sunny."))
+    assistant = fakes.scripted(_says("It is sunny."))
 
     history = _run(
         task.Task(
@@ -114,7 +85,7 @@ def test_single_agent_adds_instruction_and_reply() -> None:
 
 
 def test_single_agent_runs_later_steps_on_history() -> None:
-    assistant = _scripted(_says("It is sunny."), _says("Rain later."))
+    assistant = fakes.scripted(_says("It is sunny."), _says("Rain later."))
 
     _run(
         task.Task(
@@ -131,8 +102,8 @@ def test_single_agent_runs_later_steps_on_history() -> None:
 
 
 def test_simulator_speaks_first_for_max_turns() -> None:
-    user = _scripted(_says("u1"), _says("u2"), _says("u3"))
-    assistant = _scripted(_says("a1"), _says("a2"), _says("a3"))
+    user = fakes.scripted(_says("u1"), _says("u2"), _says("u3"))
+    assistant = fakes.scripted(_says("a1"), _says("a2"), _says("a3"))
 
     history = _run(
         task.Task(
@@ -153,8 +124,8 @@ def test_simulator_speaks_first_for_max_turns() -> None:
 
 
 def test_simulator_opens_every_step() -> None:
-    user = _scripted(_says("u1"), _says("u2"))
-    assistant = _scripted(_says("a1"), _says("a2"))
+    user = fakes.scripted(_says("u1"), _says("u2"))
+    assistant = fakes.scripted(_says("a1"), _says("a2"))
 
     history = _run(
         task.Task(
@@ -174,8 +145,8 @@ def test_simulator_opens_every_step() -> None:
 
 
 def test_simulator_sees_note_alone_when_history_is_empty() -> None:
-    user = _scripted(_says("u1"))
-    assistant = _scripted(_says("a1"))
+    user = fakes.scripted(_says("u1"))
+    assistant = fakes.scripted(_says("a1"))
 
     _run(
         task.Task(
@@ -191,9 +162,9 @@ def test_simulator_sees_note_alone_when_history_is_empty() -> None:
     assert "turn 1 of 1" in note.text
 
 
-def test_simulator_sees_swapped_roles_with_note_merged() -> None:
-    user = _scripted(_says("u1"), _says("u2"))
-    assistant = _scripted(_says("a1"), _says("a2"))
+def test_simulator_sees_swapped_roles_then_a_separate_note() -> None:
+    user = fakes.scripted(_says("u1"), _says("u2"))
+    assistant = fakes.scripted(_says("a1"), _says("a2"))
 
     _run(
         task.Task(
@@ -203,17 +174,17 @@ def test_simulator_sees_swapped_roles_with_note_merged() -> None:
         )
     )
 
-    _, own, reply = user.seen(1)
+    _, own, reply, note = user.seen(1)
     assert own == _says("u1")
-    assert reply.role == "user"
-    assert reply.text.startswith("a1\n\n")
-    assert _INSTRUCTION in reply.text
-    assert "turn 2 of 2" in reply.text
+    assert reply == message.Message("user", "a1")
+    assert note.role == "user"
+    assert _INSTRUCTION in note.text
+    assert "turn 2 of 2" in note.text
 
 
 def test_simulator_view_only_grows_across_turns_and_steps() -> None:
-    user = _scripted(_says("u1"), _says("u2"), _says("u3"))
-    assistant = _scripted(_says("a1"), _says("a2"), _says("a3"))
+    user = fakes.scripted(_says("u1"), _says("u2"), _says("u3"))
+    assistant = fakes.scripted(_says("a1"), _says("a2"), _says("a3"))
     simulator = agent.Agent(user, "Act as a customer.")
 
     _run(
@@ -227,21 +198,24 @@ def test_simulator_view_only_grows_across_turns_and_steps() -> None:
         )
     )
 
-    # Each request is the last one, the simulator's reply, and one new
-    # user message holding the assistant's reply and the next note.
+    # Each request is the last one, then the simulator's reply, the
+    # assistant's reply, and the next note.
     for index in (1, 2):
         before = user.seen(index - 1)
         after = user.seen(index)
         assert after[: len(before)] == before
-        assert after[len(before)] == _says(f"u{index}")
-        assert after[len(before) + 1 :] == [after[-1]]
-        assert after[-1].text.startswith(f"a{index}\n\n")
+        added = after[len(before) :]
+        assert added[:2] == [
+            _says(f"u{index}"),
+            message.Message("user", f"a{index}"),
+        ]
+        assert len(added) == 3
     assert [item.role for item in simulator.logs].count("system") == 1
 
 
 def test_note_asks_to_close_on_last_turn_only() -> None:
-    user = _scripted(_says("u1"), _says("u2"))
-    assistant = _scripted(_says("a1"), _says("a2"))
+    user = fakes.scripted(_says("u1"), _says("u2"))
+    assistant = fakes.scripted(_says("a1"), _says("a2"))
 
     _run(
         task.Task(
@@ -256,8 +230,8 @@ def test_note_asks_to_close_on_last_turn_only() -> None:
 
 
 def test_note_is_own_message_when_history_ends_with_user() -> None:
-    user = _scripted(_says("u1"))
-    assistant = _scripted(_says("a1"))
+    user = fakes.scripted(_says("u1"))
+    assistant = fakes.scripted(_says("a1"))
 
     _run(
         task.Task(
@@ -275,8 +249,8 @@ def test_note_is_own_message_when_history_ends_with_user() -> None:
 
 
 def test_simulator_builds_on_starting_history() -> None:
-    user = _scripted(_says("u1"))
-    assistant = _scripted(_says("a1"))
+    user = fakes.scripted(_says("u1"))
+    assistant = fakes.scripted(_says("a1"))
     starting = [message.Message("user", "Hi."), _says("Hello.")]
 
     history = _run(
@@ -288,16 +262,17 @@ def test_simulator_builds_on_starting_history() -> None:
         )
     )
 
-    own, reply = user.seen(0)
+    own, reply, note = user.seen(0)
     assert own == _says("Hi.")
-    assert reply.text.startswith("Hello.\n\n")
+    assert reply == message.Message("user", "Hello.")
+    assert _INSTRUCTION in note.text
     assert assistant.seen(0) == [*starting, message.Message("user", "u1")]
     assert history[:2] == starting
 
 
 def test_assistant_never_sees_instruction_or_note() -> None:
-    user = _scripted(_says("u1"), _says("u2"))
-    assistant = _scripted(_says("a1"), _says("a2"))
+    user = fakes.scripted(_says("u1"), _says("u2"))
+    assistant = fakes.scripted(_says("a1"), _says("a2"))
 
     _run(
         task.Task(
@@ -315,8 +290,8 @@ def test_assistant_never_sees_instruction_or_note() -> None:
 
 
 def test_history_keeps_assistant_tool_messages() -> None:
-    user = _scripted(_says("u1"))
-    assistant = _scripted(_calls_weather(), _says("It is 31°C."))
+    user = fakes.scripted(_says("u1"))
+    assistant = fakes.scripted(_calls_weather(), _says("It is 31°C."))
 
     history = _run(
         task.Task(
@@ -335,8 +310,10 @@ def test_history_keeps_assistant_tool_messages() -> None:
 
 
 def test_simulator_does_not_see_assistant_tool_messages() -> None:
-    user = _scripted(_says("u1"), _says("u2"))
-    assistant = _scripted(_calls_weather(), _says("It is 31°C."), _says("a2"))
+    user = fakes.scripted(_says("u1"), _says("u2"))
+    assistant = fakes.scripted(
+        _calls_weather(), _says("It is 31°C."), _says("a2")
+    )
 
     _run(
         task.Task(
@@ -346,15 +323,14 @@ def test_simulator_does_not_see_assistant_tool_messages() -> None:
         )
     )
 
-    _, own, reply = user.seen(1)
+    _, own, reply, _ = user.seen(1)
     assert own == _says("u1")
-    assert reply.text.startswith("It is 31°C.\n\n")
-    assert not reply.tool_calls
+    assert reply == message.Message("user", "It is 31°C.")
 
 
 def test_simulator_tool_messages_stay_out_of_history() -> None:
-    user = _scripted(_calls_weather(), _says("Is it hot?"))
-    assistant = _scripted(_says("Yes."))
+    user = fakes.scripted(_calls_weather(), _says("Is it hot?"))
+    assistant = fakes.scripted(_says("Yes."))
     simulator = agent.Agent(user, "Act as a customer.", tools=[_WEATHER])
 
     history = _run(
@@ -370,10 +346,10 @@ def test_simulator_tool_messages_stay_out_of_history() -> None:
 
 
 def test_simulator_reply_keeps_reasoning_as_user_message() -> None:
-    user = _scripted(
+    user = fakes.scripted(
         message.Message("assistant", "Hi.", reasoning="Start small.")
     )
-    assistant = _scripted(_says("Hello."))
+    assistant = fakes.scripted(_says("Hello."))
 
     history = _run(
         task.Task(
@@ -390,8 +366,8 @@ def test_simulator_reply_keeps_reasoning_as_user_message() -> None:
 
 def test_structured_reply_reaches_simulator_as_json() -> None:
     forecast = _Forecast(city="Lagos")
-    user = _scripted(_says("u1"), _says("u2"))
-    assistant = _scripted(
+    user = fakes.scripted(_says("u1"), _says("u2"))
+    assistant = fakes.scripted(
         message.Message("assistant", forecast),
         message.Message("assistant", _Forecast(city="Abuja")),
     )
@@ -405,12 +381,12 @@ def test_structured_reply_reaches_simulator_as_json() -> None:
     )
 
     assert history[1].content == forecast
-    assert user.seen(1)[-1].text.startswith('{"city":"Lagos"}\n\n')
+    assert user.seen(1)[-2] == message.Message("user", '{"city":"Lagos"}')
 
 
 def test_history_keeps_finished_turns_when_assistant_fails() -> None:
-    user = _scripted(_says("u1"), _says("u2"))
-    assistant = _scripted(_says("a1"), _calls_weather())
+    user = fakes.scripted(_says("u1"), _says("u2"))
+    assistant = fakes.scripted(_says("a1"), _calls_weather())
     the_task = task.Task(
         agent.Agent(assistant, "Be helpful."),
         [task.Step(_INSTRUCTION, max_turns=2)],
@@ -418,7 +394,7 @@ def test_history_keeps_finished_turns_when_assistant_fails() -> None:
     )
 
     with pytest.raises(exception.UnknownToolError):
-        environment.Environment().run(the_task)
+        environment.run(the_task)
 
     assert the_task.chat_history == [
         message.Message("user", "u1"),
@@ -427,15 +403,15 @@ def test_history_keeps_finished_turns_when_assistant_fails() -> None:
     ]
 
 
-def test_assistant_evaluator_sees_step_instruction_and_step_messages() -> None:
+def test_assistant_evaluator_sees_step_messages() -> None:
     drafts: list[agent.Draft] = []
 
     def evaluate(draft: agent.Draft) -> evaluation.EvalResult:
         drafts.append(draft)
         return evaluation.EvalResult("", passed=True)
 
-    user = _scripted(_says("u1"), _says("u2"), _says("u3"))
-    assistant = _scripted(_says("a1"), _says("a2"), _says("a3"))
+    user = fakes.scripted(_says("u1"), _says("u2"), _says("u3"))
+    assistant = fakes.scripted(_says("a1"), _says("a2"), _says("a3"))
 
     _run(
         task.Task(
@@ -448,17 +424,39 @@ def test_assistant_evaluator_sees_step_instruction_and_step_messages() -> None:
         )
     )
 
-    assert [item.instruction for item in drafts] == [
-        _INSTRUCTION,
-        "Ask about tomorrow.",
-        "Ask about tomorrow.",
-    ]
     assert drafts[1].context == [message.Message("user", "u2")]
     assert drafts[2].context == [
         message.Message("user", "u2"),
         _says("a2"),
         message.Message("user", "u3"),
     ]
+
+
+def test_judge_never_sees_the_step_instruction() -> None:
+    criterion = evaluation.Criterion(content="Answers the question.")
+    verdict = evaluation.Verdict(
+        answers=[
+            evaluation.Answer(content=criterion.content, met=evaluation.Met.YES)
+        ],
+        feedback="Fine.",
+    )
+    judge_model = fakes.scripted(message.Message("assistant", verdict))
+
+    _run(
+        task.Task(
+            agent.Agent(
+                fakes.scripted(_says("a1")),
+                "Be helpful.",
+                evaluator=evaluation.LLMJudge(judge_model, [criterion]),
+            ),
+            [task.Step(_INSTRUCTION)],
+            user=agent.Agent(fakes.scripted(_says("u1")), "Act as a user."),
+        )
+    )
+
+    prompt = judge_model.seen(0)[0].text
+    assert _INSTRUCTION not in prompt
+    assert "Step instruction" not in prompt
 
 
 _REPEATS = evaluation.Criterion(
@@ -480,7 +478,7 @@ def test_live_simulator_does_not_repeat_an_answered_question(
         base_url=os.environ["SYNTHAID_TEST_BASE_URL"],
         api_key=os.environ["SYNTHAID_TEST_API_KEY"],
     )
-    assistant = _scripted(
+    assistant = fakes.scripted(
         _says("Today in Lagos it is 31°C, humid, with clear skies."),
         _says("Happy to help with anything else about your trip."),
     )

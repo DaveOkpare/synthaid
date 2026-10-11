@@ -1,10 +1,10 @@
 """Checking an agent's draft: the result, and an LLM judge."""
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 import dataclasses
 import enum
 import json
-from typing import Any, Self, TypeAlias
+from typing import Any
 
 import pydantic
 
@@ -32,8 +32,8 @@ class EvalResult:
 
 _INSTRUCTIONS = """\
 You are a strict judge. You will be shown a list of criteria, the \
-instruction and conversation of the current step when there are any, and \
-one draft reply written by an assistant. Use the conversation, including \
+conversation of the current step when there is one, and one draft reply \
+written by an assistant. Use the conversation, including \
 tool results, to check the draft. Decide, for each criterion, whether the \
 draft meets it: `met` is "yes" only when the draft clearly has what the \
 criterion describes, "no" when it does not, and "n/a" when the criterion \
@@ -111,9 +111,6 @@ class Verdict(pydantic.BaseModel):
     """The judge's output for one draft. The output type of an LLMJudge.
 
     It holds only what the model wrote, so it never has weights.
-    Validating with `context={"criteria": criteria}` checks that there is
-    one answer per criterion, in the same order, with the content copied
-    exactly. Without that context, any answers are accepted.
 
     Attributes:
         answers: One answer per criterion, in order.
@@ -130,48 +127,6 @@ class Verdict(pydantic.BaseModel):
         "fixing."
     )
 
-    @pydantic.model_validator(mode="after")
-    def _check_answers(self, info: pydantic.ValidationInfo) -> Self:
-        """Checks the answers against the criteria in the context.
-
-        Raises:
-            ValueError: The answers are not one per criterion, in order,
-                with the content copied exactly.
-        """
-        if not info.context or "criteria" not in info.context:
-            return self
-        criteria: Sequence[Criterion] = info.context["criteria"]
-        expected = [item.content for item in criteria]
-        answered = [item.content for item in self.answers]
-        if answered != expected:
-            raise ValueError(
-                f"Answer each criterion once, in order: {answered=}"
-            )
-        return self
-
-
-Passes: TypeAlias = Callable[[Sequence[Criterion], float], bool]
-"""Decides from the answered criteria and a threshold whether a draft passes."""
-
-
-def _weighted_score_passes(
-    criteria: Sequence[Criterion], threshold: float
-) -> bool:
-    """Returns whether the weights of the met criteria reach `threshold`.
-
-    The default Passes of an LLMJudge. A met negative criterion lowers
-    the score. An unmet or NA criterion adds 0.
-
-    Args:
-        criteria: The criteria with `met` filled in.
-        threshold: The lowest weighted score that passes.
-
-    Returns:
-        True when the weighted score is at least `threshold`.
-    """
-    score = sum(item.weight for item in criteria if item.met == Met.YES)
-    return score >= threshold
-
 
 class LLMJudge(agent.Agent):
     """An Agent that judges drafts against its criteria.
@@ -180,10 +135,10 @@ class LLMJudge(agent.Agent):
     `Agent(..., evaluator=LLMJudge(...))`. A code eval is any other
     function that takes an `agent.Draft` and returns an `EvalResult`.
 
-    Its output type is Verdict. `passes` decides from the answered
-    criteria and the threshold whether the draft passes. By default, a
-    draft passes when the weights of its met criteria reach the
-    threshold.
+    Its output type is Verdict. A draft passes when the weights of its
+    YES criteria add up to at least the threshold. NO and NA add 0, so a
+    met negative criterion lowers the score. For any other rule, write a
+    code eval instead.
 
     It is also an Agent, so `run()` and `logs` work as usual, and `logs`
     keeps every draft it has judged. Like any Agent, give each
@@ -200,7 +155,6 @@ class LLMJudge(agent.Agent):
         criteria: Sequence[Criterion],
         instructions: str = _INSTRUCTIONS,
         *,
-        passes: Passes | None = None,
         threshold: float | None = None,
     ) -> None:
         """Checks the criteria and builds the Agent with Verdict as output.
@@ -212,14 +166,11 @@ class LLMJudge(agent.Agent):
                 unique and there must be at least one.
             instructions: The judge's system message. Defaults to a strict
                 judge prompt.
-            passes: Decides from the answered criteria and `threshold`
-                whether the draft passes. None compares the weighted score
-                with `threshold`.
-            threshold: Passed to `passes`. None means the sum of the
-                positive weights of the criteria that are not NA, worked
-                out for each verdict. So by default a draft passes only
-                when every applicable positive criterion is met and no
-                negative one is.
+            threshold: The lowest weighted score that passes. None means
+                the sum of the positive weights of the criteria that are
+                not NA, worked out for each verdict. So by default a draft
+                passes only when every applicable positive criterion is
+                met and no negative one is.
 
         Raises:
             ValueError: `criteria` is empty or two criteria share a
@@ -233,21 +184,18 @@ class LLMJudge(agent.Agent):
         )
         if duplicates:
             raise ValueError(f"Duplicate criterion contents: {duplicates}")
-        if passes is None:
-            passes = _weighted_score_passes
         super().__init__(
             model, instructions, output_type=Verdict, max_iterations=1
         )
         self.criteria = tuple(criteria)
-        self._passes = passes
         self._threshold = threshold
 
     def __call__(self, draft: agent.Draft) -> EvalResult:
         """Judges one draft in the context of its step.
 
         Sends one user message through `run()` with these sections: the
-        criteria as JSON, the step instruction when there is one, the
-        step's conversation when it is not empty, and the draft. Messages
+        criteria as JSON, the step's conversation when it is not empty,
+        and the draft. Messages
         are shown as their content (JSON when structured) and their tool
         calls. Reasoning is never shown.
 
@@ -255,21 +203,26 @@ class LLMJudge(agent.Agent):
             draft: The assistant Message to judge, with its context.
 
         Returns:
-            An EvalResult with the verdict's feedback and `passed` from
-            `passes`. `metadata["verdict"]` is the Verdict as the model
-            wrote it, and `metadata["criteria"]` is our criteria, in
-            order and with their weights, with `met` from the answers.
+            An EvalResult with the verdict's feedback and whether the
+            weighted score reaches the threshold. `metadata["verdict"]`
+            is the Verdict as the model wrote it, and
+            `metadata["criteria"]` is our criteria, in order and with
+            their weights, with `met` from the answers.
 
         Raises:
-            pydantic.ValidationError: The reply was not a Verdict, or did
-                not answer each criterion once, in order.
+            pydantic.ValidationError: The reply was not a Verdict.
+            ValueError: The reply did not answer each criterion once, in
+                order, with its content copied exactly.
             openai.APIError: Any transport or server error.
         """
         prompt = message.Message("user", self._prompt(draft))
         reply = self.run([prompt])[-1]
-        verdict = Verdict.model_validate(
-            reply.content, context={"criteria": self.criteria}
-        )
+        verdict = Verdict.model_validate(reply.content)
+        answered = [item.content for item in verdict.answers]
+        if answered != [item.content for item in self.criteria]:
+            raise ValueError(
+                f"Answer each criterion once, in order: {answered=}"
+            )
         criteria = [
             item.model_copy(update={"met": answer.met})
             for item, answer in zip(self.criteria, verdict.answers, strict=True)
@@ -281,9 +234,10 @@ class LLMJudge(agent.Agent):
                 for item in criteria
                 if item.weight > 0 and item.met != Met.NA
             )
+        score = sum(item.weight for item in criteria if item.met == Met.YES)
         return EvalResult(
             verdict.feedback,
-            passed=self._passes(criteria, threshold),
+            passed=score >= threshold,
             metadata={"verdict": verdict, "criteria": criteria},
         )
 
@@ -297,8 +251,6 @@ class LLMJudge(agent.Agent):
         sections = [
             "Criteria:\n" + json.dumps(criteria, indent=2, ensure_ascii=False)
         ]
-        if draft.instruction is not None:
-            sections.append(f"Step instruction:\n{draft.instruction}")
         if draft.context:
             conversation = "\n".join(_line(item) for item in draft.context)
             sections.append(f"Conversation in this step:\n{conversation}")

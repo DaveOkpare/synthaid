@@ -1,4 +1,4 @@
-"""The definition of a conversation for an Environment to run."""
+"""The definition of a conversation for `environment.run()` to run."""
 
 from collections.abc import Sequence
 import dataclasses
@@ -37,7 +37,7 @@ class Step:
 class Task:
     """A conversation to generate: who takes part and how it should go.
 
-    An Environment runs the task and appends every message the agents
+    `environment.run()` runs the task and appends every message the agents
     produce to `chat_history`. A Task is not frozen because its history
     grows. Give each Task its own agents, because one Agent serves one
     role in one conversation.

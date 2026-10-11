@@ -6,7 +6,6 @@ are set.
 """
 
 from collections.abc import Sequence
-import dataclasses
 import json
 import os
 
@@ -17,7 +16,7 @@ from synthaid import agent
 from synthaid import evaluation
 from synthaid import message
 from synthaid import model
-from synthaid import tool
+from tests import fakes
 
 _LIVE_ENV = (
     "SYNTHAID_TEST_BASE_URL",
@@ -44,37 +43,6 @@ _DRAFT = agent.Draft(
 _CALL = message.ToolCall(
     id="call-1", name="get_weather", arguments={"city": "Lagos"}
 )
-
-
-@dataclasses.dataclass(frozen=True)
-class _Request:
-    messages: list[message.Message]
-    tools: Sequence[tool.Tool]
-    output_type: type[str] | type[pydantic.BaseModel]
-
-
-@dataclasses.dataclass(frozen=True)
-class _ScriptedModel(model.Model):
-    """Returns `replies` in order and records every request."""
-
-    replies: list[message.Message] = dataclasses.field(default_factory=list)
-    requests: list[_Request] = dataclasses.field(default_factory=list)
-
-    def generate(
-        self,
-        messages: Sequence[message.Message],
-        *,
-        tools: Sequence[tool.Tool] = (),
-        output_type: type[str] | type[pydantic.BaseModel] = str,
-    ) -> message.Message:
-        self.requests.append(_Request(list(messages), tools, output_type))
-        return self.replies.pop(0)
-
-
-def _model(*replies: message.Message) -> _ScriptedModel:
-    return _ScriptedModel(
-        model_name="fake", base_url="http://unused", replies=list(replies)
-    )
 
 
 def _verdict(
@@ -130,16 +98,16 @@ def test_criterion_is_unanswered_until_judged() -> None:
 
 def test_rejects_empty_criteria() -> None:
     with pytest.raises(ValueError, match="at least one criterion"):
-        evaluation.LLMJudge(_model(), [])
+        evaluation.LLMJudge(fakes.scripted(), [])
 
 
 def test_rejects_duplicate_contents() -> None:
     with pytest.raises(ValueError, match="Duplicate criterion contents"):
-        evaluation.LLMJudge(_model(), [_SKY, _SKY])
+        evaluation.LLMJudge(fakes.scripted(), [_SKY, _SKY])
 
 
 def test_judge_is_an_agent_with_verdict_output() -> None:
-    helper = evaluation.LLMJudge(_model(), _CRITERIA)
+    helper = evaluation.LLMJudge(fakes.scripted(), _CRITERIA)
 
     assert isinstance(helper, agent.Agent)
     assert helper.output_type is evaluation.Verdict
@@ -150,7 +118,7 @@ def test_judge_is_an_agent_with_verdict_output() -> None:
 
 
 def test_call_sends_criteria_and_draft_without_weights_or_reasoning() -> None:
-    fake = _model(_verdict(*_ALL_GOOD))
+    fake = fakes.scripted(_verdict(*_ALL_GOOD))
     helper = evaluation.LLMJudge(fake, _CRITERIA, "Judge it.")
 
     helper(_DRAFT)
@@ -169,7 +137,7 @@ def test_call_sends_criteria_and_draft_without_weights_or_reasoning() -> None:
 
 
 def test_call_lists_criteria_as_json_contents_in_order() -> None:
-    fake = _model(_verdict(*_ALL_GOOD))
+    fake = fakes.scripted(_verdict(*_ALL_GOOD))
 
     evaluation.LLMJudge(fake, _CRITERIA)(_DRAFT)
 
@@ -180,8 +148,8 @@ def test_call_lists_criteria_as_json_contents_in_order() -> None:
     assert sections["Draft"] == "Sunny, 31C."
 
 
-def test_call_shows_step_instruction_and_conversation() -> None:
-    fake = _model(_verdict(*_ALL_GOOD))
+def test_call_shows_step_conversation() -> None:
+    fake = fakes.scripted(_verdict(*_ALL_GOOD))
     draft = agent.Draft(
         message.Message("assistant", "Sunny, 31C."),
         context=[
@@ -191,7 +159,6 @@ def test_call_shows_step_instruction_and_conversation() -> None:
             ),
             message.Message("tool", "Sunny, 31C", tool_call_id="call-1"),
         ],
-        instruction="Ask about the weather in Lagos.",
     )
 
     evaluation.LLMJudge(fake, _CRITERIA)(draft)
@@ -199,11 +166,9 @@ def test_call_shows_step_instruction_and_conversation() -> None:
     sections = _sections(fake.requests[0].messages[1].text)
     assert list(sections) == [
         "Criteria",
-        "Step instruction",
         "Conversation in this step",
         "Draft",
     ]
-    assert sections["Step instruction"] == "Ask about the weather in Lagos."
     assert sections["Conversation in this step"] == (
         "[user] What is the weather in Lagos?\n"
         '[assistant] calls get_weather({"city": "Lagos"})\n'
@@ -211,8 +176,8 @@ def test_call_shows_step_instruction_and_conversation() -> None:
     )
 
 
-def test_call_leaves_out_missing_instruction_and_empty_context() -> None:
-    fake = _model(_verdict(*_ALL_GOOD))
+def test_call_leaves_out_empty_context() -> None:
+    fake = fakes.scripted(_verdict(*_ALL_GOOD))
 
     evaluation.LLMJudge(fake, _CRITERIA)(
         agent.Draft(message.Message("assistant", "Sunny."), context=[])
@@ -223,7 +188,7 @@ def test_call_leaves_out_missing_instruction_and_empty_context() -> None:
 
 
 def test_call_shows_tool_calls_in_the_draft() -> None:
-    fake = _model(_verdict(*_ALL_GOOD))
+    fake = fakes.scripted(_verdict(*_ALL_GOOD))
     draft = message.Message("assistant", None, tool_calls=(_CALL,))
 
     evaluation.LLMJudge(fake, _CRITERIA)(agent.Draft(draft, context=[]))
@@ -235,7 +200,7 @@ def test_call_shows_tool_calls_in_the_draft() -> None:
 
 def test_call_returns_raw_verdict_and_answered_criteria() -> None:
     reply = _verdict(_YES, _YES, _NO, feedback="Nice.")
-    helper = evaluation.LLMJudge(_model(reply), _CRITERIA)
+    helper = evaluation.LLMJudge(fakes.scripted(reply), _CRITERIA)
 
     result = helper(_DRAFT)
 
@@ -250,7 +215,9 @@ def test_call_returns_raw_verdict_and_answered_criteria() -> None:
 
 
 def test_logged_verdict_has_no_weights() -> None:
-    helper = evaluation.LLMJudge(_model(_verdict(*_ALL_GOOD)), _CRITERIA)
+    helper = evaluation.LLMJudge(
+        fakes.scripted(_verdict(*_ALL_GOOD)), _CRITERIA
+    )
 
     helper(_DRAFT)
 
@@ -258,7 +225,9 @@ def test_logged_verdict_has_no_weights() -> None:
 
 
 def test_default_passes_when_every_criterion_is_right() -> None:
-    helper = evaluation.LLMJudge(_model(_verdict(*_ALL_GOOD)), _CRITERIA)
+    helper = evaluation.LLMJudge(
+        fakes.scripted(_verdict(*_ALL_GOOD)), _CRITERIA
+    )
 
     assert helper(_DRAFT).passed
 
@@ -267,7 +236,7 @@ def test_default_passes_when_every_criterion_is_right() -> None:
 def test_default_fails_on_a_missing_or_unwanted_criterion(
     met: tuple[evaluation.Met, ...],
 ) -> None:
-    helper = evaluation.LLMJudge(_model(_verdict(*met)), _CRITERIA)
+    helper = evaluation.LLMJudge(fakes.scripted(_verdict(*met)), _CRITERIA)
 
     assert not helper(_DRAFT).passed
 
@@ -286,82 +255,36 @@ def test_default_fails_on_a_missing_or_unwanted_criterion(
 def test_threshold_is_the_lowest_weighted_score_that_passes(
     met: tuple[evaluation.Met, ...], passed: bool
 ) -> None:
-    helper = evaluation.LLMJudge(_model(_verdict(*met)), _CRITERIA, threshold=2)
+    helper = evaluation.LLMJudge(
+        fakes.scripted(_verdict(*met)), _CRITERIA, threshold=2
+    )
 
     assert helper(_DRAFT).passed is passed
-
-
-def test_custom_passes_gets_answered_criteria_and_threshold() -> None:
-    seen: list[tuple[list[evaluation.Criterion], float]] = []
-
-    def always_pass(
-        criteria: Sequence[evaluation.Criterion], threshold: float
-    ) -> bool:
-        seen.append((list(criteria), threshold))
-        return True
-
-    helper = evaluation.LLMJudge(
-        _model(_verdict(_NO, _NO, _YES)),
-        _CRITERIA,
-        passes=always_pass,
-        threshold=7,
-    )
-
-    assert helper(_DRAFT).passed
-    ((criteria, threshold),) = seen
-    assert [item.met for item in criteria] == [_NO, _NO, _YES]
-    assert [item.weight for item in criteria] == [2, 1, -1]
-    assert threshold == 7
-
-
-def test_custom_passes_gets_default_threshold() -> None:
-    thresholds: list[float] = []
-
-    def record(
-        criteria: Sequence[evaluation.Criterion], threshold: float
-    ) -> bool:
-        thresholds.append(threshold)
-        return False
-
-    helper = evaluation.LLMJudge(
-        _model(_verdict(*_ALL_GOOD)), _CRITERIA, passes=record
-    )
-
-    assert not helper(_DRAFT).passed
-    # The sum of the positive weights.
-    assert thresholds == [3]
 
 
 def test_na_criterion_adds_nothing_and_is_left_out_of_default_threshold() -> (
     None
 ):
     # Sky (weight 1) does not apply, so the threshold is 2, not 3.
-    helper = evaluation.LLMJudge(_model(_verdict(_YES, _NA, _NO)), _CRITERIA)
+    helper = evaluation.LLMJudge(
+        fakes.scripted(_verdict(_YES, _NA, _NO)), _CRITERIA
+    )
 
     assert helper(_DRAFT).passed
 
 
-def test_custom_passes_gets_default_threshold_without_na_criteria() -> None:
-    thresholds: list[float] = []
-
-    def record(
-        criteria: Sequence[evaluation.Criterion], threshold: float
-    ) -> bool:
-        thresholds.append(threshold)
-        return False
-
+def test_default_threshold_is_the_sum_of_applicable_positive_weights() -> None:
+    # Only Sky applies, so the threshold is 1, and Sky alone passes.
     helper = evaluation.LLMJudge(
-        _model(_verdict(_NA, _YES, _NA)), _CRITERIA, passes=record
+        fakes.scripted(_verdict(_NA, _YES, _NA)), _CRITERIA
     )
 
-    helper(_DRAFT)
-
-    assert thresholds == [1]
+    assert helper(_DRAFT).passed
 
 
 def test_given_threshold_ignores_na() -> None:
     helper = evaluation.LLMJudge(
-        _model(_verdict(_YES, _NA, _NO)), _CRITERIA, threshold=3
+        fakes.scripted(_verdict(_YES, _NA, _NO)), _CRITERIA, threshold=3
     )
 
     assert not helper(_DRAFT).passed
@@ -383,17 +306,17 @@ _CONTENTS = [item.content for item in _CRITERIA]
 def test_call_rejects_replies_that_do_not_answer_each_criterion_in_order(
     reply: message.Message,
 ) -> None:
-    helper = evaluation.LLMJudge(_model(reply), _CRITERIA)
+    helper = evaluation.LLMJudge(fakes.scripted(reply), _CRITERIA)
 
     with pytest.raises(
-        pydantic.ValidationError, match="Answer each criterion once, in order"
+        ValueError, match="Answer each criterion once, in order"
     ):
         helper(_DRAFT)
 
 
 def test_call_rejects_replies_that_are_not_a_verdict() -> None:
     helper = evaluation.LLMJudge(
-        _model(message.Message("assistant", "I can't help with that.")),
+        fakes.scripted(message.Message("assistant", "I can't help with that.")),
         _CRITERIA,
     )
 
@@ -401,18 +324,9 @@ def test_call_rejects_replies_that_are_not_a_verdict() -> None:
         helper(_DRAFT)
 
 
-def test_verdict_accepts_any_answers_without_context() -> None:
-    verdict = evaluation.Verdict(
-        answers=[evaluation.Answer(content="Anything", met=_YES)],
-        feedback="",
-    )
-
-    assert [item.content for item in verdict.answers] == ["Anything"]
-
-
 def test_logs_keep_every_judged_draft() -> None:
     helper = evaluation.LLMJudge(
-        _model(_verdict(*_ALL_GOOD), _verdict(*_ALL_GOOD)), _CRITERIA
+        fakes.scripted(_verdict(*_ALL_GOOD), _verdict(*_ALL_GOOD)), _CRITERIA
     )
 
     helper(agent.Draft(message.Message("assistant", "First."), context=[]))
@@ -432,13 +346,13 @@ def test_logs_keep_every_judged_draft() -> None:
 
 def test_judge_works_as_agent_evaluator() -> None:
     critic = evaluation.LLMJudge(
-        _model(
+        fakes.scripted(
             _verdict(_NO, _YES, _NO, feedback="Add the temperature."),
             _verdict(*_ALL_GOOD),
         ),
         _CRITERIA,
     )
-    writer = _model(
+    writer = fakes.scripted(
         message.Message("assistant", "Sunny."),
         message.Message("assistant", "Sunny, 31C."),
     )

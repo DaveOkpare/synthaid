@@ -139,7 +139,7 @@ def main() -> None:
     )
 
     try:
-        environment.Environment().run(weather_task)
+        environment.run(weather_task)
     finally:
         directory = export.save(weather_task, _RUNS)
         print(f"saved to {directory}")

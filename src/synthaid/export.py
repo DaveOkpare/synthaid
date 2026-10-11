@@ -1,6 +1,6 @@
 """Writes finished tasks: training records, and a directory per run."""
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 import datetime
 import json
 import os
@@ -24,7 +24,7 @@ def to_record(task: task_lib.Task) -> dict[str, Any]:
     there are none.
 
     Args:
-        task: A task that an Environment has run.
+        task: A task that `environment.run()` has run.
 
     Returns:
         A dict that `json.dumps` can write as is.
@@ -48,7 +48,7 @@ def write_jsonl(
     not as escapes.
 
     Args:
-        tasks: Tasks that an Environment has run.
+        tasks: Tasks that `environment.run()` has run.
         path: The file to append to.
     """
     with open(path, "a", encoding="utf-8") as file:
@@ -104,7 +104,7 @@ def _logs(member: agent.Agent) -> list[dict[str, Any]]:
 
 
 def _write_json(
-    path: pathlib.Path, data: Sequence[Any] | dict[str, Any]
+    path: pathlib.Path, data: Sequence[Any] | Mapping[str, Any]
 ) -> None:
     """Writes `data` to `path` as indented UTF-8 JSON."""
     path.write_text(
