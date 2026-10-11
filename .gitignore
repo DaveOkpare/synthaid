@@ -16,3 +16,6 @@ wheels/
 
 # Local generation artifacts and live-provider evidence
 /runs/
+
+# Claude Code local state and worktrees
+.claude/

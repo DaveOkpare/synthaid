@@ -1,179 +1,360 @@
-"""Native SDK generation and private reviewer feedback, with offline HTTP."""
+import dataclasses
 
-import asyncio
-import json
-from collections.abc import Mapping, Sequence
-from typing import Any
-
-import httpx
+import pydantic
 import pytest
 
-from agentinstruct import Agent
-from agentinstruct.agent import ReviewExhausted
-from agentinstruct.episode import Message
-from agentinstruct.judge import Judgment
-from tests.model_fixtures import Check, Transport, client, response
+from synthaid import agent
+from synthaid import evaluation
+from synthaid import exception
+from synthaid import message
+from synthaid import tool
+from tests import fakes
+
+_SYSTEM = message.Message("system", "Be helpful.")
+_QUESTION = message.Message("user", "What is the weather in Lagos?")
+_CALL = message.ToolCall(
+    id="call-1", name="get_weather", arguments={"city": "Lagos"}
+)
 
 
-@pytest.mark.asyncio
-async def test_review_revises_native_output_without_mutating_history() -> None:
-    reviews: list[Sequence[Mapping[str, Any]]] = []
-    key = "input"
-
-    async def sample(request: httpx.Request) -> httpx.Response:
-        history = json.loads(request.content)[key]
-        corrected = history[-1]["content"] == "Use correct"
-        return response("correct" if corrected else "wrong")
-
-    def review(messages: Sequence[Mapping[str, Any]]) -> Judgment:
-        reviews.append(messages)
-        return Judgment('"correct"' in json.dumps(messages[-1]), "Use correct")
-
-    transport = Transport(sample, sample)
-    history = [Message(role="user", content="Question")]
-    async with client(transport) as borrowed:
-        agent = Agent("model", "Be accurate", reviewer=Check(check=review))
-        result = await agent.generate(history, client=borrowed, temperature=0.2)
-        assert not borrowed.is_closed()
-    assert result.output_text == "correct"
-    assert history == [{"role": "user", "content": "Question"}]
-    requests = [json.loads(request.content) for request in transport.requests]
-    assert requests[0][key] == [{"role": "system", "content": "Be accurate"}, *history]
-    assert requests[1][key][-1] == {"role": "user", "content": "Use correct"}
-    assert requests[1][key][-2] == reviews[0][-1]
-    assert all(request["temperature"] == 0.2 for request in requests)
-    assert [len(review) for review in reviews] == [3, 5]
-    assert "wrong" in json.dumps(agent.history)
-    assert agent.history[-2] == {"role": "user", "content": "Use correct"}
-    assert '"correct"' in json.dumps(agent.history[-1])
+class _Forecast(pydantic.BaseModel):
+    city: str
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("max_revisions", [0, 1, 3])
-async def test_revision_limit(max_revisions: int) -> None:
-    transport = Transport(*(response("draft") for _ in range(max_revisions + 1)))
-    agent = Agent(
-        "model", reviewer=Check(check=lambda m: False), max_revisions=max_revisions
+def _passed() -> evaluation.EvalResult:
+    return evaluation.EvalResult("", passed=True)
+
+
+def _failed(feedback: str) -> evaluation.EvalResult:
+    return evaluation.EvalResult(feedback, passed=False)
+
+
+@dataclasses.dataclass
+class _ScriptedEvaluator:
+    """Returns `results` in order and records every draft it sees."""
+
+    results: list[evaluation.EvalResult]
+    drafts: list[agent.Draft] = dataclasses.field(default_factory=list)
+
+    def __call__(self, draft: agent.Draft) -> evaluation.EvalResult:
+        self.drafts.append(draft)
+        return self.results.pop(0)
+
+    @property
+    def messages(self) -> list[message.Message]:
+        return [item.message for item in self.drafts]
+
+
+def _assistant(content: str) -> message.Message:
+    return message.Message("assistant", content)
+
+
+def _weather_tool(name: str = "get_weather") -> tool.Tool:
+    return tool.Tool(
+        name=name,
+        description="Get the weather for a city",
+        parameters={"type": "object"},
+        function=lambda city: f"Sunny in {city}",
     )
-    async with client(transport) as borrowed:
-        with pytest.raises(ReviewExhausted):
-            await agent.generate([], client=borrowed)
-    assert len(transport.requests) == max_revisions + 1
 
 
-@pytest.mark.asyncio
-async def test_separate_agents_keep_concurrent_feedback_private() -> None:
-    async def sample(request: httpx.Request) -> httpx.Response:
-        await asyncio.sleep(0)
-        return response(json.loads(request.content)["input"][-1]["content"])
+_TOOL_DRAFT = message.Message("assistant", None, tool_calls=(_CALL,))
+_TOOL_RESULT = message.Message("tool", "Sunny in Lagos", tool_call_id="call-1")
 
-    reviewer = Check(
-        check=lambda m: Judgment(
-            m[-1]["content"][0]["text"] == "fixed " + m[1]["content"],
-            "fixed " + m[1]["content"],
+
+def test_rejects_tools_with_structured_output() -> None:
+    with pytest.raises(ValueError, match="structured output"):
+        agent.Agent(
+            fakes.scripted(), "Be helpful.", _Forecast, tools=[_weather_tool()]
         )
+
+
+def test_rejects_duplicate_tool_names() -> None:
+    with pytest.raises(ValueError, match="get_weather"):
+        agent.Agent(
+            fakes.scripted(),
+            "Be helpful.",
+            tools=[_weather_tool(), _weather_tool()],
+        )
+
+
+def test_rejects_max_iterations_below_one() -> None:
+    with pytest.raises(ValueError, match="max_iterations"):
+        agent.Agent(fakes.scripted(), "Be helpful.", max_iterations=0)
+
+
+def test_rejects_max_tool_rounds_below_one() -> None:
+    with pytest.raises(ValueError, match="max_tool_rounds"):
+        agent.Agent(fakes.scripted(), "Be helpful.", max_tool_rounds=0)
+
+
+def test_run_allows_exactly_max_tool_rounds() -> None:
+    fake = fakes.scripted(_TOOL_DRAFT, _TOOL_DRAFT, _assistant("Sunny."))
+    helper = agent.Agent(
+        fake, "Be helpful.", tools=[_weather_tool()], max_tool_rounds=2
     )
-    agents = [Agent("model", reviewer=reviewer) for _ in range(2)]
-    transport = Transport(sample, sample, sample, sample)
-    async with client(transport) as borrowed:
-        results = await asyncio.gather(
-            *(
-                agent.generate([{"role": "user", "content": value}], client=borrowed)
-                for agent, value in zip(agents, ("one", "two"), strict=True)
-            )
-        )
-    assert [r.output_text for r in results] == ["fixed one", "fixed two"]
-    assert "two" not in json.dumps(agents[0].history)
-    assert "one" not in json.dumps(agents[1].history)
+
+    turn = helper.run([_QUESTION])
+
+    assert turn[-1] == _assistant("Sunny.")
+    assert turn.count(_TOOL_RESULT) == 2
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("max_revisions", [-1, True, 1.5])
-async def test_invalid_revision_budget(max_revisions: Any) -> None:
-    with pytest.raises(ValueError, match="max_revisions"):
-        await Agent("model", max_revisions=max_revisions).generate([])
-
-
-@pytest.mark.asyncio
-async def test_responses_keeps_reasoning_when_revising() -> None:
-    reasoning = {
-        "id": "rs_1",
-        "type": "reasoning",
-        "summary": [{"type": "summary_text", "text": "Check the answer."}],
-        "encrypted_content": "opaque",
-    }
-    draft = {
-        "id": "msg_1",
-        "type": "message",
-        "role": "assistant",
-        "status": "completed",
-        "content": [{"type": "output_text", "text": "wrong", "annotations": []}],
-    }
-    transport = Transport(
-        response(output=[reasoning, draft]),
-        response("correct"),
+def test_run_raises_when_tool_rounds_run_out() -> None:
+    fake = fakes.scripted(_TOOL_DRAFT, _TOOL_DRAFT)
+    helper = agent.Agent(
+        fake, "Be helpful.", tools=[_weather_tool()], max_tool_rounds=1
     )
-    judge = Check(
-        check=lambda m: Judgment('"correct"' in json.dumps(m[-1]), "Use correct")
+
+    with pytest.raises(exception.ToolRoundsError, match="1"):
+        helper.run([_QUESTION])
+
+    # The first round ran, and the draft over the limit is in the logs.
+    assert helper.logs[-2:] == [_TOOL_RESULT, _TOOL_DRAFT]
+
+
+def test_tool_rounds_count_per_turn() -> None:
+    fake = fakes.scripted(
+        _TOOL_DRAFT, _assistant("Sunny."), _TOOL_DRAFT, _assistant("Still.")
     )
-    async with client(transport) as borrowed:
-        result = await Agent("model", reviewer=judge).generate(
-            [],
-            client=borrowed,
-            store=False,
-            reasoning={"effort": "medium", "summary": "auto"},
-            include=["reasoning.encrypted_content"],
-        )
-    assert result.output_text == "correct"
-    for request in transport.requests:
-        body = json.loads(request.content)
-        assert body["reasoning"] == {"effort": "medium", "summary": "auto"}
-        assert body["include"] == ["reasoning.encrypted_content"]
-    assert json.loads(transport.requests[1].content)["input"][1:3] == [reasoning, draft]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("role", ["system", "developer"])
-async def test_explicit_instruction_is_forwarded(role: str) -> None:
-    history = [{"role": role, "content": "Override"}, {"role": "user", "content": "Hi"}]
-    transport = Transport(response())
-    async with client(transport) as borrowed:
-        await Agent("model", "Default").generate(history, client=borrowed)
-    assert json.loads(transport.requests[0].content)["input"] == history
-
-
-@pytest.mark.asyncio
-async def test_tool_review_supplies_feedback_without_running_tools() -> None:
-    from agentinstruct import Tool
-    from tests.model_fixtures import Check, function
-
-    effects: list[bool] = []
-
-    async def lookup(arguments: Any) -> None:
-        effects.append(True)
-
-    async def sample(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        history = body["input"]
-        revised = history[-1]["content"] == "Use safe"
-        call = function(
-            "safe" if revised else "unsafe", "safe" if revised else "unsafe"
-        )
-        if revised:
-            rejected = history[-2]
-            assert rejected["role"] == "assistant"
-            assert "call_id" not in rejected
-            assert "unsafe" in rejected["content"]
-        return response("", output=[call])
-
-    judge = Check(
-        check=lambda m: Judgment("unsafe" not in json.dumps(m[-1]), "Use safe")
+    helper = agent.Agent(
+        fake, "Be helpful.", tools=[_weather_tool()], max_tool_rounds=1
     )
-    transport = Transport(sample, sample)
-    tool = Tool(lookup)
-    async with client(transport) as borrowed:
-        raw = await Agent("model", tools=[tool], reviewer=judge).generate(
-            [], client=borrowed
-        )
-    assert "safe" in raw.model_dump_json() and not effects
-    assert json.loads(transport.requests[0].content)["tools"] == [tool.schema()]
+
+    helper.run([_QUESTION])
+    turn = helper.run([_QUESTION])
+
+    assert turn[-1] == _assistant("Still.")
+
+
+def test_run_without_evaluator_returns_first_reply() -> None:
+    fake = fakes.scripted(_assistant("Sunny."))
+    weather = _weather_tool()
+    helper = agent.Agent(fake, "Be helpful.", tools=[weather])
+
+    assert helper.run([_QUESTION]) == [_assistant("Sunny.")]
+    assert fake.requests == [
+        fakes.Request([_SYSTEM, _QUESTION], [weather], str)
+    ]
+
+
+def test_run_passes_output_type() -> None:
+    forecast = message.Message("assistant", _Forecast(city="Lagos"))
+    fake = fakes.scripted(forecast)
+    helper = agent.Agent(fake, "Be helpful.", _Forecast)
+
+    assert helper.run([_QUESTION]) == [forecast]
+    assert fake.requests[0].output_type is _Forecast
+
+
+def test_run_returns_draft_that_passes_first_time() -> None:
+    fake = fakes.scripted(_assistant("Sunny."))
+    evaluator = _ScriptedEvaluator([_passed()])
+    helper = agent.Agent(fake, "Be helpful.", evaluator=evaluator)
+
+    assert helper.run([_QUESTION]) == [_assistant("Sunny.")]
+    assert evaluator.messages == [_assistant("Sunny.")]
+
+
+def test_run_sends_rejected_draft_and_feedback_back() -> None:
+    fake = fakes.scripted(_assistant("Sunny."), _assistant("Sunny, 31C."))
+    evaluator = _ScriptedEvaluator(
+        [
+            _failed("Add the temperature."),
+            _passed(),
+        ]
+    )
+    helper = agent.Agent(fake, "Be helpful.", evaluator=evaluator)
+
+    assert helper.run([_QUESTION]) == [_assistant("Sunny, 31C.")]
+    assert fake.requests[1].messages == [
+        _SYSTEM,
+        _QUESTION,
+        _assistant("Sunny."),
+        message.Message("user", "Add the temperature."),
+    ]
+
+
+def test_run_returns_last_draft_when_none_pass() -> None:
+    fake = fakes.scripted(_assistant("one"), _assistant("two"))
+    evaluator = _ScriptedEvaluator([_failed("no"), _failed("no")])
+    helper = agent.Agent(
+        fake, "Be helpful.", evaluator=evaluator, max_iterations=2
+    )
+
+    assert helper.run([_QUESTION]) == [_assistant("two")]
+    assert len(fake.requests) == 2
+
+
+def test_run_executes_tool_calls_and_asks_again() -> None:
+    fake = fakes.scripted(_TOOL_DRAFT, _assistant("Sunny in Lagos."))
+    helper = agent.Agent(fake, "Be helpful.", tools=[_weather_tool()])
+
+    turn = helper.run([_QUESTION])
+
+    assert turn == [_TOOL_DRAFT, _TOOL_RESULT, _assistant("Sunny in Lagos.")]
+    assert fake.requests[1].messages == [
+        _SYSTEM,
+        _QUESTION,
+        _TOOL_DRAFT,
+        _TOOL_RESULT,
+    ]
+
+
+def test_run_critiques_tool_calls_and_resets_count() -> None:
+    fake = fakes.scripted(
+        _assistant("I don't know."),
+        _TOOL_DRAFT,
+        _assistant("Maybe sunny."),
+        _assistant("Sunny in Lagos."),
+    )
+    evaluator = _ScriptedEvaluator(
+        [
+            _failed("Use the tool."),
+            _passed(),
+            _failed("Be certain."),
+            _passed(),
+        ]
+    )
+    helper = agent.Agent(
+        fake,
+        "Be helpful.",
+        tools=[_weather_tool()],
+        evaluator=evaluator,
+        max_iterations=2,
+    )
+
+    turn = helper.run([_QUESTION])
+
+    assert turn == [_TOOL_DRAFT, _TOOL_RESULT, _assistant("Sunny in Lagos.")]
+    assert evaluator.messages[1] == _TOOL_DRAFT
+    # Critiques of earlier drafts are not carried into later requests.
+    assert fake.requests[2].messages == [
+        _SYSTEM,
+        _QUESTION,
+        _TOOL_DRAFT,
+        _TOOL_RESULT,
+    ]
+
+
+def test_evaluator_sees_whole_conversation() -> None:
+    earlier = [message.Message("user", "Hi."), _assistant("Hello.")]
+    evaluator = _ScriptedEvaluator([_passed()])
+    helper = agent.Agent(
+        fakes.scripted(_assistant("Sunny.")), "Be helpful.", evaluator=evaluator
+    )
+
+    helper.run([*earlier, _QUESTION])
+
+    (draft,) = evaluator.drafts
+    assert draft.context == [*earlier, _QUESTION]
+
+
+def test_evaluator_sees_accepted_turn_messages() -> None:
+    earlier = [message.Message("user", "Hi."), _assistant("Hello.")]
+    fake = fakes.scripted(
+        _TOOL_DRAFT, _assistant("Maybe."), _assistant("Sunny.")
+    )
+    evaluator = _ScriptedEvaluator([_passed(), _failed("Be sure."), _passed()])
+    helper = agent.Agent(
+        fake, "Be helpful.", tools=[_weather_tool()], evaluator=evaluator
+    )
+
+    helper.run([*earlier, _QUESTION])
+
+    asked = [*earlier, _QUESTION]
+    assert [item.context for item in evaluator.drafts] == [
+        asked,
+        [*asked, _TOOL_DRAFT, _TOOL_RESULT],
+        # The rejected "Maybe." and its critique are not context.
+        [*asked, _TOOL_DRAFT, _TOOL_RESULT],
+    ]
+
+
+def test_run_raises_for_unknown_tool() -> None:
+    fake = fakes.scripted(_TOOL_DRAFT)
+    helper = agent.Agent(fake, "Be helpful.", tools=[_weather_tool("other")])
+
+    with pytest.raises(exception.UnknownToolError, match="get_weather"):
+        helper.run([_QUESTION])
+
+
+def test_logs_keep_rejected_drafts_and_critiques() -> None:
+    fake = fakes.scripted(_assistant("Sunny."), _assistant("Sunny, 31C."))
+    evaluator = _ScriptedEvaluator([_failed("Add temp."), _passed()])
+    helper = agent.Agent(fake, "Be helpful.", evaluator=evaluator)
+
+    helper.run([_QUESTION])
+
+    assert helper.logs == [
+        _SYSTEM,
+        _QUESTION,
+        _assistant("Sunny."),
+        message.Message("user", "Add temp."),
+        _assistant("Sunny, 31C."),
+    ]
+
+
+def test_logs_have_system_message_once_and_only_new_input() -> None:
+    fake = fakes.scripted(_assistant("Sunny."), _assistant("Rain later."))
+    helper = agent.Agent(fake, "Be helpful.")
+    tomorrow = message.Message("user", "And tomorrow?")
+
+    helper.run([_QUESTION])
+    helper.run([_QUESTION, _assistant("Sunny."), tomorrow])
+
+    assert helper.logs == [
+        _SYSTEM,
+        _QUESTION,
+        _assistant("Sunny."),
+        tomorrow,
+        _assistant("Rain later."),
+    ]
+
+
+def test_logs_continue_after_critiques_and_tool_calls() -> None:
+    fake = fakes.scripted(
+        _TOOL_DRAFT,
+        _assistant("Maybe."),
+        _assistant("Sunny in Lagos."),
+        _assistant("Rain later."),
+    )
+    evaluator = _ScriptedEvaluator(
+        [_passed(), _failed("Be sure."), _passed(), _passed()]
+    )
+    helper = agent.Agent(
+        fake, "Be helpful.", tools=[_weather_tool()], evaluator=evaluator
+    )
+    tomorrow = message.Message("user", "And tomorrow?")
+
+    turn = helper.run([_QUESTION])
+    helper.run([_QUESTION, *turn, tomorrow])
+
+    assert helper.logs == [
+        _SYSTEM,
+        _QUESTION,
+        _TOOL_DRAFT,
+        _TOOL_RESULT,
+        _assistant("Maybe."),
+        message.Message("user", "Be sure."),
+        _assistant("Sunny in Lagos."),
+        tomorrow,
+        _assistant("Rain later."),
+    ]
+
+
+def test_logs_repeat_input_that_does_not_continue_and_survive_errors() -> None:
+    fake = fakes.scripted(_assistant("Sunny."), _TOOL_DRAFT)
+    helper = agent.Agent(fake, "Be helpful.")
+
+    helper.run([_QUESTION])
+    with pytest.raises(exception.UnknownToolError):
+        helper.run([_QUESTION])
+
+    assert helper.logs == [
+        _SYSTEM,
+        _QUESTION,
+        _assistant("Sunny."),
+        _QUESTION,
+        _TOOL_DRAFT,
+    ]

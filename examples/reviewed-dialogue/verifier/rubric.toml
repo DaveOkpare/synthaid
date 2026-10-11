@@ -1,5 +1,0 @@
-threshold = 0.9
-
-[[criteria]]
-context = "The Conversation contains an accepted assistant reply."
-weight = 1.0

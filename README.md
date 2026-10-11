@@ -1,298 +1,533 @@
 # synthaid
 
-Generate reviewed synthetic data directly in Python through seven imports:
-`Task`, `Runner`, `Environment`, `Agent`, `Episode`, `Tool`, and `Judge`.
+Generate synthetic conversations with LLM agents, tools, and draft evaluation.
+An optional user simulator drives the conversation. Evaluators give agents
+feedback to revise their drafts; the final exchange and detailed logs can be
+saved for training or inspection.
 
-A Task immediately owns a fresh Episode and UUID. Runner chooses
-`output_dir / episode.id / trace.json`, invokes its Environment and collects Episodes.
-Environment defines one method, `run()`. The default `UserSimEnv(Environment)`
-lets Agents speak in turn, records their messages, then applies an optional final
-verifier. Each Agent handles its own optional review and revisions.
+[Get started](#get-started) · [Python API](#python-api) ·
+[Evaluators and reflection](#evaluators-and-reflection) ·
+[Tools](#tools) · [Structured output](#structured-output) ·
+[TOML](#toml) · [CLI](#cli) · [Results](#results) · [Errors](#errors)
 
-Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/).
+## Get started
 
-Install into another Python project:
-
-```sh
-uv add "synthaid @ git+https://github.com/DaveOkpare/synthaid.git"
-```
-
-For development from a checkout:
+Requires Python 3.13 or newer. From a source checkout, install with uv:
 
 ```sh
-uv sync --locked
-uv run python examples/direct-dialogue/run.py --output /tmp/synthaid-retail
+git clone https://github.com/DaveOkpare/synthaid.git
+cd synthaid
+uv sync
 ```
 
-The retail example runs offline and reuses Agent and Judge definitions across
-independent Tasks. Its checks test structure; they do not establish semantic quality.
+Alternatively, run `python -m pip install .` in the checkout to install into
+an existing Python environment. You can then use `synthaid` directly instead
+of `uv run synthaid`.
 
-## Use Agents and a reusable Judge
+The bundled weather example uses Doubleword and a Python tool with made-up
+forecasts. Set your provider key, validate the definitions, then run them:
 
-Your application owns the inference client around the entire batch. The core
-borrows it and never closes it between Tasks, reviews, or verification calls.
-Set `MODEL_BASE_URL`, `MODEL_API_KEY`, `MODEL_NAME`, and `JUDGE_MODEL` for your server.
-
-```python
-import asyncio
-import os
-from openai import AsyncOpenAI
-from synthaid import Agent, Judge, Runner, Task
-from synthaid.judge import Criterion, Rubric
-
-
-async def main():
-    async with AsyncOpenAI(
-        base_url=os.environ["MODEL_BASE_URL"],
-        api_key=os.environ["MODEL_API_KEY"],
-        max_retries=0,
-    ) as client:
-        correctness = Judge(
-            client=client,
-            model=os.environ["JUDGE_MODEL"],
-            prompt="Evaluate the criteria carefully and give specific repair feedback.",
-            rubric=Rubric(
-                [Criterion("The mathematics is correct.")],
-                threshold=0.9,
-            ),
-        )
-        assistant = Agent(
-            os.environ["MODEL_NAME"],
-            "Explain the topic with a worked teaching example.",
-            reviewer=correctness,
-            max_revisions=2,
-        )
-        user = Agent(os.environ["MODEL_NAME"], "Ask questions about the supplied topic.")
-        tasks = [
-            Task(
-                agents={"user": user, "assistant": assistant},
-                input={"topic": topic},
-                max_turns=6,
-                verifier=correctness,
-            )
-            for topic in ("fractions", "decimals")
-        ]
-        episodes = await Runner(tasks, output_dir="runs", client=client).run()
-        for episode in episodes:
-            print(episode.verification, episode.messages)
-
-
-asyncio.run(main())
+```sh
+export DOUBLEWORD_API_KEY="your-api-key"
+uv run synthaid validate examples/weather.toml
+uv run synthaid run examples/weather.toml
 ```
 
-Agent and Judge use the Responses API. The configured server must support
-`/v1/responses`. OpenAI SDK 2.30.0 is pinned. Agent uses the supplied client
-and its configured retry policy.
-Configure different endpoints with separate application-owned clients, supplied to Agent
-or Judge. An Agent's explicit client takes precedence over Runner.client.
+Validation makes no model requests and needs no credentials. Running prints
+status and a saved directory containing `exchange.txt`, `exchange.json`, and
+logs. Credentials are read from the environment; `.env` files are not loaded
+automatically.
 
-Agents can declare Tools for direct generation, but UserSimEnv only supports
-conversation messages. It rejects Tool calls.
-Tool execution and other execution policies require a custom Environment.
+## Supported implementations
 
-Tool holds an async function, its `id`, `description` and `input_schema`.
-`schema()` returns the Responses function schema; `call(arguments)` awaits
-the function with the supplied argument mapping and returns its result unchanged.
-The ID defaults to the function name. Validation and error handling belong in the
-function when needed; exceptions propagate directly.
-
-## Customize generation and scheduling
-
-Agent calls the OpenAI SDK directly. Set its model, instruction, tools, optional
-reviewer and revision limit. `generate()` makes one request, then optionally
-reviews and revises the result. Each Agent owns a private `history`. Pass only new
-messages to `generate()`; it appends them and retains its outputs and review
-feedback for subsequent turns. It returns the native SDK response, preserving
-text, tool calls, status and other API fields. Additional request options go directly
-to the SDK through `generate(..., **options)`, including `reasoning` and `text.format`
-for reasoning summaries and structured output on compatible models. Reasoning summaries
-are distinct from raw internal reasoning, which OpenAI does not expose
-([reasoning guide](https://developers.openai.com/api/docs/guides/reasoning)).
-Generation is non-streaming.
-
-`Message` is a small `TypedDict` with `role` and `content`:
-
-```python
-from synthaid.episode import Message
-
-message = Message(role="user", content="Hello")
-```
-
-It is an ordinary OpenAI-format dictionary at runtime, with type checking for
-text conversation messages. Episode stores `list[Message]`. Agent and Judge
-also accept native API mappings for tool calls and multimodal content.
-There are no `actor_id` or `control` fields, conversion methods, or custom
-FunctionCall/ToolCall wrappers.
-
-Evaluation and execution have small structural protocols:
-
-| Seam | Interface | Usage |
+| Component | Python API | TOML |
 | --- | --- | --- |
-| judge.Evaluator | async evaluate(messages) -> Judgment | Agent.reviewer or Task.verifier |
-| Environment | async run(task, *, client) -> None | Runner(environment=...) |
+| Model | `model.Model`, using a Chat Completions endpoint | Named connection settings under `models` |
+| LLM agent | `agent.Agent` | Named definition under `agents`; LLM is implicit |
+| LLM evaluator | `evaluation.LLMJudge` | `evaluators.NAME` with `kind = "llm"` |
+| Python evaluator | A callable taking `Draft` and returning `EvalResult` | Not supported yet |
+| Python tool | `tool.Tool` wrapping a function and its argument schema | A `file` or `module` reference to an exported `Tool` |
+| Structured output | A Pydantic model class passed as `output_type` | Not supported yet |
 
-Task.agents requires `assistant`; an optional `user` uses the same Agent class.
-An assistant-only Task finishes after one response. Agents take turns in dictionary
-insertion order: `{"user": user, "assistant": assistant}` starts with the user.
-Dialogue ends at `max_turns` (20 messages by default). UserSimEnv records the role
-from Task.agents. On each turn it passes only the last published Episode message
-as a user message. Each Agent keeps its own earlier context, including private
-tool calls, tool results and review feedback. Only the reply text is published
-to the Episode and made available to the other Agent.
+Assistant and user simulator are roles assigned by a task. Both use `Agent`.
+`LLMJudge` is also an agent, specialized for evaluation. Each agent accepts
+one evaluator. Models can be shared; give each conversation fresh agents and
+judges because they keep state and logs.
 
-Task is a small dataclass holding `agents`, `input`, `verifier`, `max_turns` and an
-automatically created `episode`. Task copies each supplied Agent with a fresh
-history, including when the same configuration is used for both participants or
-across Tasks. Clients, Tools and reviewers remain shared as configured. Inspect
-`task.agents[role].history` for that participant's private context.
-Input is added once on each Agent's first turn and saved in `episode.metadata["input"]`.
-Add other trace metadata directly to `episode.metadata`. Construct another Task
-for another sample; Runner rejects an existing output directory.
+Only evaluator definitions currently accept `kind`, and its only supported
+value is `"llm"`. Agents and tools do not accept a `kind` field yet.
 
-Judge takes a Rubric and either a model/client or a `check=` callback.
-`Criterion(context, weight=1.0)` describes
-one condition; `Rubric(criteria, threshold)` holds a list of these conditions and an
-explicit threshold. Supply a nonempty list with positive weights. Evaluation returns
-one pass/fail grade per criterion and optional feedback. Judge computes
-`score = sum(weights of passed criteria) / sum(all weights)` and returns
-`Judgment(passed=score > threshold, feedback=..., score=...)`. Equality rejects;
-a threshold of 1.0 therefore never accepts. There are no criterion IDs,
-evidence records or Judge-specific timeout/error policies.
-A Judge can serve both review and verification when its criteria suit both uses.
-For model evaluation, `prompt="..."` replaces the default grading instructions.
-The rubric's criterion contexts and the messages are supplied with every request.
+The endpoint and selected model must support the features you use: Chat
+Completions for text, function calling for tools, and structured output for
+Pydantic replies and LLM judges. synthaid does not check provider capabilities
+before making a request.
 
-For code evaluation, pass a synchronous or asynchronous function. It receives the
-messages and returns `{"criteria": [True, False, ...], "feedback": "..."}` in rubric
-order; feedback can be omitted. Supplying `check=` uses that function without a model
-request. Judge still computes the score and acceptance:
+## Python API
+
+This complete example generates a conversation with a user simulator and
+an LLM judge, then saves it:
 
 ```python
-judge = Judge(
-    Rubric([Criterion("The conversation includes an assistant reply.")], 0.9),
-    check=lambda messages: {
-        "criteria": [any(m.get("role") == "assistant" for m in messages)]
+import os
+
+from synthaid import agent
+from synthaid import environment
+from synthaid import evaluation
+from synthaid import export
+from synthaid import model
+from synthaid import task
+
+gpt = model.Model(
+    model_name="openai/gpt-oss-120b",
+    base_url="https://api.doubleword.ai/v1",
+    api_key=os.environ["DOUBLEWORD_API_KEY"],
+)
+judge = evaluation.LLMJudge(
+    gpt,
+    [evaluation.Criterion(content="Answers the question asked.")],
+)
+assistant = agent.Agent(gpt, "You are a travel assistant.", evaluator=judge)
+traveller = agent.Agent(gpt, "You are a traveller planning a trip to Lagos.")
+trip = task.Task(
+    assistant,
+    [
+        task.Step("Ask what to see in Lagos.", max_turns=2),
+        task.Step("Ask about the best time of year to visit."),
+    ],
+    user=traveller,
+)
+
+environment.run(trip)
+directory = export.save(trip, "runs")
+print(directory)
+```
+
+`Model(model_name, base_url, api_key=None, temperature=0.7)` works with
+servers that implement Chat Completions. Omitting `api_key` lets the OpenAI
+SDK read `OPENAI_API_KEY`.
+`Model.generate(messages, *, tools=(), output_type=str)`
+makes one generation call, returns an assistant `Message`, and leaves tool
+execution and reflection to the agent. Transport retries come from the SDK.
+
+`Agent(model, instructions, ...)` accepts these optional settings:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `output_type` | `str` | Text, or a Pydantic model class for structured output |
+| `tools` | `()` | Tools available to the model; names must be unique |
+| `evaluator` | `None` | Checks each draft; absent means every draft is accepted |
+| `max_iterations` | `3` | Maximum evaluated drafts per accepted draft, including the first |
+| `max_tool_rounds` | `10` | Maximum accepted batches of tool calls per turn |
+
+Both limits must be at least 1. Tools cannot be combined with a Pydantic
+`output_type`.
+
+A `Task(assistant, steps, user=None, chat_history=[])` needs at least one
+`Step(instruction, max_turns=1)`. Its user and assistant must be different
+agent instances. Steps build on the same conversation:
+
+- With a simulator, the instruction is private to that simulator. Each step
+  adds `max_turns` user/assistant exchanges, with the simulator speaking first.
+- Without a simulator, each instruction is sent directly as a user message.
+  Each step gets one assistant turn; `max_turns` is ignored.
+
+`environment.run(task)` updates `task.chat_history` in place and returns
+`None`. You can supply starting history without system messages. Calling
+`run()` again repeats all steps on top of the existing history; it is not a
+resume operation. Saving is explicit for Python callers.
+
+For a single turn without a task, using the same model:
+
+```python
+from synthaid import message
+
+helper = agent.Agent(gpt, "You are a travel assistant.")
+replies = helper.run([message.Message("user", "What should I see in Lagos?")])
+print(replies[-1].text)
+```
+
+`Agent.run(messages)` adds its own system instructions, so the input must
+not contain system messages. It returns the accepted messages added by that
+turn: tool-call drafts, their tool results, and the final reply.
+`Agent.logs` returns a copy of its full log, including rejected drafts and
+feedback.
+
+### Messages
+
+`Message(role, content, reasoning=None, tool_calls=(), tool_call_id=None)`
+represents every message. Roles are `"system"`, `"user"`, `"assistant"`, and
+`"tool"`. Content is a string, a Pydantic instance, or `None`. Tool requests
+are `ToolCall(id, name, arguments)` objects attached to assistant messages;
+`arguments` is a dictionary. A tool result carries the matching call ID.
+
+`Message.text` returns text, JSON for structured content, or an empty string
+for missing content. `to_chat_completions()` and `from_chat_completions()`
+convert between these objects and SDK messages. Model reasoning, when supplied
+as `reasoning_content`, is retained in history and JSON logs but never sent
+back to a model.
+
+## Evaluators and reflection
+
+An evaluator is a callable taking `agent.Draft` and returning
+`evaluation.EvalResult`.
+
+`Draft.message` is the candidate reply, including any tool calls.
+`Draft.context` is the history supplied to that agent plus this turn's
+accepted drafts and tool results. It excludes reflection attempts, feedback,
+and the agent's system instructions. An assistant's evaluator sees the public
+conversation; a simulator's evaluator also sees its private step notes.
+Evaluators check tool-call drafts as well as final replies.
+
+`EvalResult(feedback, *, passed, metadata={})` contains the decision, feedback
+to use on failure, and optional details. For example, this Python evaluator
+checks a character limit using the `gpt` model from the Python example:
+
+```python
+def concise(draft: agent.Draft) -> evaluation.EvalResult:
+    length = len(draft.message.text)
+    return evaluation.EvalResult(
+        "Keep the reply within 280 characters.",
+        passed=length <= 280,
+        metadata={"characters": length},
+    )
+
+
+short_writer = agent.Agent(gpt, "Answer clearly.", evaluator=concise)
+```
+
+### LLM judges
+
+`LLMJudge(model, criteria, instructions=..., threshold=None)` checks drafts
+using structured output. Its default instructions provide the judging prompt;
+you may replace them. It has no tools or evaluator of its own.
+
+Each `Criterion(content=..., weight=1.0)` describes something to detect. Contents
+must be unique and the list must be nonempty. Use positive weights for desired
+behavior and negative weights for unwanted behavior:
+
+```python
+judge = evaluation.LLMJudge(
+    gpt,
+    [
+        evaluation.Criterion(content="Answers the question asked."),
+        evaluation.Criterion(content="Repeats the same sentence.", weight=-1.0),
+    ],
+)
+```
+
+The judge returns an `Answer(content=..., met=...)` for each criterion, in order,
+and a `Verdict(answers=..., feedback=...)`. `met` is `Met.YES` (`"yes"`), `Met.NO`
+(`"no"`), or `Met.NA` (`"n/a"`). For a negative criterion, `"yes"` means the
+unwanted behavior is present. Weights stay in Python and are not sent to the
+judge.
+
+The score is the sum of weights whose answer is `"yes"`. A draft passes when
+that score reaches the threshold. The default threshold is the sum of positive
+weights whose answer is not `"n/a"`: all applicable positive criteria must be
+met and no negative criterion may be met. An explicit `threshold` replaces
+that rule. `result.metadata["verdict"]` holds the raw verdict;
+`result.metadata["criteria"]` holds criteria with their weights and answers.
+
+### Reflection behavior
+
+For each draft, the agent evaluates and stops early when it passes. On
+failure, the draft and feedback go back to the model for another attempt.
+`max_iterations = 3` allows the first draft and up to two revisions. When
+all attempts fail, the last draft is still accepted.
+
+Accepted tool calls execute, their results enter the conversation, and the
+next draft gets a fresh reflection budget. One accepted draft with any number
+of tool calls counts as one tool round. Feedback from rejected drafts is
+kept in logs but dropped from subsequent requests once a draft is accepted.
+
+Reflection offers chances to improve; it does not guarantee a passing final
+reply. A completed CLI run means execution completed, even if drafts exhausted
+their evaluation budgets.
+
+## Tools
+
+A tool keeps its function and argument schema together. This example uses
+made-up weather data and the `gpt` model defined above:
+
+```python
+from synthaid import tool
+
+
+def get_weather(city: str) -> dict[str, str]:
+    return {"city": city, "forecast": "31°C, humid, clear"}
+
+
+weather = tool.Tool(
+    name="get_weather",
+    description="Gets a city's weather forecast.",
+    parameters={
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
     },
+    function=get_weather,
+)
+weather_assistant = agent.Agent(
+    gpt, "Use get_weather for weather questions.", tools=[weather]
 )
 ```
 
-`max_revisions` counts replacement attempts after the initial draft. A rejected
-final sample raises `ReviewExhausted` and is never accepted.
+Functions receive the model's arguments as keyword arguments. Return a
+string or a JSON-serializable value; non-string values are encoded as JSON.
+The schema is sent to the model; synthaid does not validate arguments against
+it locally. Tool failures raise errors rather than being returned to the model
+as feedback. The simulator may also have tools; its calls and results stay in
+its private logs and do not appear in the public exchange. The simulator sees
+the assistant's final replies, without the assistant's tool activity.
 
-Runner assigns each Episode a recording path and calls Environment.run(task, client=...).
-UserSimEnv appends each accepted message, then evaluates the optional verifier and
-stores its result in memory. Runner saves once per Task, including collected messages
-when execution raises or is cancelled, then propagates the error. Earlier Tasks in
-the batch are already saved.
-Applications own clients, deadlines (for example, `asyncio.timeout`) and any retry policy.
+## Structured output
 
-Standalone UserSimEnv runs entirely in memory. Use Runner to persist its traces.
-Episode has five ordinary fields: `id`, `messages`, `metadata`, `verification` and
-`path`; it has no methods.
-
-Different domains can supply instructions and an Evaluator to UserSimEnv.
-A custom Environment defines its own execution policy and updates the supplied
-Episode. Runner owns writing that data to disk.
-
-Generation can also be used directly without a Task or Episode:
+Pass a Pydantic model class as `output_type` to receive a validated instance.
+Using `gpt` from the Python example:
 
 ```python
-agent = Agent("model", "Write a worked example.", reviewer=correctness)
-reply = await agent.generate(
-    [{"role": "user", "content": "Explain fractions."}], client=client, temperature=0.2
+import pydantic
+
+from synthaid import message
+
+
+class Destination(pydantic.BaseModel):
+    city: str
+    country: str
+
+
+extractor = agent.Agent(
+    gpt, "Extract the destination.", output_type=Destination
 )
-print(reply.output_text)
+reply = extractor.run(
+    [message.Message("user", "I am visiting Lagos, Nigeria.")]
+)[-1]
+assert isinstance(reply.content, Destination)
+print(reply.content.city)
 ```
 
-Use this inside the application's async client scope. `generate()` uses the Agent's
-instruction unless its initial history starts with an explicit system or developer
-instruction. Direct calls continue the same conversation; use separate Agents for
-independent conversations. `generate()` returns a reviewed SDK response and retains
-it in the Agent's private history. Drafts and review feedback stay with that Agent.
-Rejected tool proposals are included as JSON text
-when requesting a revision, so no pending tool call requires execution.
-UserSimEnv records accepted conversation text.
+`reply.content` retains the instance; `reply.text` and saved JSON records
+represent it as JSON. Structured output requires provider support, cannot be
+combined with tools, and is currently available through Python only.
 
-Task.verifier receives a constructed Judge or an Evaluator, and Agent.reviewer
-accepts either. Task data and domain adapters carry no hidden client binding or
-resource manager. Custom adapters honor cancellation; their external dependencies have
-application-defined lifetimes.
+## TOML
 
-## Optional task files and CLI
+A file defines named models, agents, tools, evaluators, and tasks. Definitions
+can be reused by multiple tasks; each build creates fresh agents and judges.
+Names are local to that file. This is a complete task definition:
+
+```toml
+schema_version = 1
+
+[models.gpt]
+model_name = "openai/gpt-oss-120b"
+base_url = "https://api.doubleword.ai/v1"
+api_key_env = "DOUBLEWORD_API_KEY"
+
+[evaluators.quality]
+kind = "llm"
+model = "gpt"
+
+[[evaluators.quality.criteria]]
+content = "Answers the question asked."
+
+[agents.assistant]
+model = "gpt"
+instructions = "You are a travel assistant."
+evaluator = "quality"
+
+[agents.traveller]
+model = "gpt"
+instructions = "You are planning a trip to Lagos. Ask short questions."
+
+[tasks.trip]
+assistant = "assistant"
+user = "traveller"
+
+[[tasks.trip.steps]]
+instruction = "Ask what to see in Lagos."
+max_turns = 2
+
+[[tasks.trip.steps]]
+instruction = "Ask about the best time of year to visit."
+```
+
+Save it as `trip.toml` and run `uv run synthaid run trip.toml`. Omit `user`
+for direct prompts. Another `[tasks.NAME]` table adds a task. Each criterion
+and step gets its own `[[...]]` table, preserving declaration order.
+
+### Field reference
+
+| Table | Required fields | Optional fields and defaults |
+| --- | --- | --- |
+| Root | `schema_version = 1`, nonempty `models`, `agents`, and `tasks` | `tools` and `evaluators` default to empty tables |
+| `models.NAME` | `model_name`, `base_url` | `api_key_env = "OPENAI_API_KEY"`, `temperature = 0.7` |
+| `agents.NAME` | `model`, `instructions` | `tools = []`, no `evaluator`, `max_iterations = 3`, `max_tool_rounds = 10` |
+| `tools.NAME` | `object`, exactly one of `file` or `module` | None |
+| `evaluators.NAME` | `kind = "llm"`, `model`, nonempty `criteria` | Default judge `instructions`; `threshold` calculated per verdict |
+| `evaluators.NAME.criteria` | `content` | `weight = 1.0` |
+| `tasks.NAME` | `assistant`, nonempty `steps` | No `user` simulator |
+| `tasks.NAME.steps` | `instruction` | `max_turns = 1` |
+
+`model`, `tools`, `evaluator`, `assistant`, and `user` reference definitions
+by name. Unknown fields, unknown references, duplicate criterion contents,
+duplicate tool references, and limits below 1 are rejected. The user and
+assistant cannot reference the same agent. Temperature, weights, and thresholds
+must be finite numbers. Fields are strictly typed; booleans are not integers.
+
+### Python tool references
+
+The weather example exports a `tool.Tool` named `WEATHER`. A TOML file in
+`examples/` references it like this:
+
+```toml
+[tools.weather]
+file = "weather_tools.py"
+object = "WEATHER"
+```
+
+Set `tools = ["weather"]` on the agent. For an installed module, use
+`module = "your_package.tools"` instead of `file`. File paths resolve relative
+to the TOML file. Imports do not change Python's module search path, so sibling
+imports must already be available through your environment or package.
+
+Validation checks referenced files exist without executing them. Building a
+task imports its selected tools and checks they are `Tool` objects. Referenced
+Python code executes during import; module names and exported objects are only
+checked at build time.
+
+### Load TOML from Python
 
 ```python
-from synthaid.adapters.task_files import compile_records, load_tasks
+from synthaid import config
+from synthaid import environment
+from synthaid import export
 
-tasks = load_tasks("examples/verified-single", client=client)
-# Ordinary Python input instead of the configured source:
-tasks = load_tasks(
-    "examples/verified-single", seeds=({"name": n} for n in ["Ada", "Grace"]), client=client
-)
+definitions = config.load("examples/weather.toml")
+print(definitions.task_names)
+weather_task = definitions.build("weather")
+environment.run(weather_task)
+export.save(weather_task, "runs")
 ```
 
-`compile_records` validates and renders without custom imports, inference, or
-output files. `load_tasks` constructs the same core objects; model-backed settings
-need supplied `client` or named `clients`. JSON, JSONL, CSV, directories, and Python
-iterables retain record origins. Invalid records and source-enumeration failures
-are distinct. Agent table order determines turn order. Task files reject removed
-scripted/custom generators, steps, `max_rounds`, `initiator` and environment deadlines; use `max_turns` for the
-conversation limit. Record provenance is placed in Episode metadata.
-See [examples](examples/README.md) for the supported conversations.
+`config.load(path)` returns validated definitions without imports, credentials,
+or model calls. `Config.path` is the absolute source path; `task_names` is a
+tuple in declaration order. `Config.build(name)` resolves selected credentials
+and tools and returns a fresh `Task`, without model calls.
+`config.discover(path, recursive=False, exclude=None)` returns sorted absolute
+TOML paths from a file or directory; `exclude` omits an output directory.
+
+## CLI
+
+| Command | Behavior |
+| --- | --- |
+| `synthaid validate PATH` | Validate a file or directory without imports or model calls |
+| `synthaid run PATH` | Run all tasks and save each in a separate directory |
+| `synthaid run FILE --task NAME` | Select one task from a single TOML file |
+| `synthaid run DIRECTORY --recursive` | Include TOML files in subdirectories |
+| `synthaid run PATH --root results` | Save under `results` instead of `runs` |
+
+`validate` also accepts `--recursive` and `--root`. `python -m synthaid`
+is equivalent to `synthaid`; use `uv run` before either command in a checkout.
+
+Directory discovery finds immediate `*.toml` files by default, skips hidden
+paths and the output root, and sorts file paths. Within each file, tasks run in
+declaration order. Explicitly selecting a file includes it even in a hidden
+path. Empty directories are errors. `--task` only works with a single file.
+
+Before execution, the CLI validates every discovered file and builds all
+selected tasks, resolving their credentials and Python tools. A preparation
+error prevents the batch from starting. Execution is sequential. A failed task
+is saved when possible and the remaining tasks continue. Interruption saves
+the current task when possible and stops the batch. Only status and save paths
+are printed; conversations are written to files.
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | Validation succeeded, or every task completed and saved |
+| `1` | At least one task failed during execution or saving |
+| `2` | Invalid input or preparation failure |
+| `130` | Interrupted |
+
+The current CLI supports foreground validation and execution. Background jobs,
+listing/viewing runs, cancellation, resume, and rerun commands are not
+implemented yet.
+
+## Results
+
+`export.save(task, root)` creates a new `root/<time>-<id>/` directory and
+returns its path. It also saves tasks that failed partway. The CLI calls it
+automatically; Python callers call it explicitly.
+
+| File | Contents |
+| --- | --- |
+| `exchange.txt` | Public conversation with role labels and inline tool calls |
+| `exchange.json` | Assistant system instructions, public messages, and available tool schemas |
+| `logs/assistant.json` | Assistant inputs, accepted/rejected drafts, feedback, and tool results |
+| `logs/user.json` | Simulator log, including its private notes and tools; only when a simulator exists |
+| `logs/assistant-evaluator.json` | Assistant evaluator's log when it is an `Agent`, such as `LLMJudge` |
+| `logs/user-evaluator.json` | Simulator evaluator's log under the same condition |
+
+For example, `exchange.txt` reads:
+
+```text
+[user] What's the weather in Lagos?
+[assistant] calls get_weather({"city": "Lagos", "day": "today"})
+[tool] {"city": "Lagos", "day": "today", "forecast": "31°C, humid, clear"}
+[assistant] It is 31°C, humid, and clear in Lagos today.
+```
+
+JSON messages use the Chat Completions shape, retain available reasoning as
+`reasoning_content`, and serialize structured content as JSON text. The text
+transcript omits system instructions and reasoning. Rejected drafts, critiques,
+and simulator tool activity stay out of the public exchange.
+
+`export.to_record(task)` returns the training record as a dictionary with
+`messages` and optional `tools`. `export.write_jsonl(tasks, path)` appends one
+record per task to a UTF-8 JSON Lines file, creating it when needed:
+
+```python
+export.write_jsonl([trip], "training.jsonl")
+```
+
+Evaluation decisions and `EvalResult.metadata` are not saved as separate
+records. LLM judge answers are available in evaluator logs; Python evaluators
+have no automatic result log. Run directories do not currently contain a
+manifest with configuration, execution status, or evaluation-budget outcomes.
+
+## Errors
+
+| Error | Cause |
+| --- | --- |
+| `config.ConfigError` | Invalid TOML, missing reference or credential, or unusable Python tool |
+| `ValueError` | Invalid runtime configuration, or a judge's answers do not match its criteria |
+| `exception.UnknownToolError` | The model requested an unavailable tool |
+| `exception.ToolExecutionError` | A tool function raised; the original error is `__cause__` |
+| `exception.ToolRoundsError` | A turn exceeded its tool-round limit |
+| `openai.APIError` | Provider or transport failure |
+| `pydantic.ValidationError` | Invalid structured output |
+| `openai.LengthFinishReasonError` / `openai.ContentFilterFinishReasonError` | A structured reply was cut off or filtered |
+| `json.JSONDecodeError` / `TypeError` | Invalid tool-argument JSON or a non-serializable tool result |
+
+Import `exception` from `synthaid` for the tool errors. Unknown tool and tool
+execution errors inherit from `ToolError` and expose the failing `call`.
+Tool-round errors expose `max_tool_rounds`. Python callers receive exceptions;
+the CLI reports them with the exit codes above. Agent logs survive failures.
+If an assistant turn fails, public history retains previous turns and the
+current user prompt; unfinished turn details remain in the agent's logs.
+
+## Development
+
+Follow the [Google Python Style Guide](https://google.github.io/styleguide/pyguide.html).
+Use clear names, focused functions, and small public interfaces. Document
+caller contracts and non-obvious decisions.
 
 ```sh
-uv run synthaid validate examples/verified-single --json
-uv run synthaid run examples/verified-single --output runs/demo --json
-uv run synthaid inspect runs/demo
-uv run synthaid inspect runs/demo --tui
-uv run synthaid export runs/demo --output /tmp/dataset.jsonl
+uv run pytest
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy
 ```
 
-CLI run creates an optional manifest alongside Episode directories. Choose a fresh
-output root for each CLI batch. CLI model clients use their configured credential
-environment variable, defaulting to `OPENAI_API_KEY`.
-
-## Read, inspect, and export
-
-`episode.messages` is an ordinary list of accepted OpenAI message dictionaries. `episode.verification`
-is a Judgment or None. Episode does no judging, history filtering, sealing, loading,
-or exporting. Rejected drafts and reviewer feedback remain in the owning Agent's
-private history.
-
-Runner writes one JSON snapshot containing `id`, `messages`, `metadata` and
-`verification`. It writes and flushes a temporary file beside the destination, then
-atomically publishes the trace. Write errors propagate; traces from earlier Tasks
-remain intact. An abrupt process termination can lose the current Task's unsaved
-messages. The record contains trace data, not live clients.
-Message and feedback text are recorded as supplied; there is no automatic redaction.
-
-Read a trace with `json.loads(path.read_text())`. The optional Inspector and CLI
-read the same JSON, and CLI export produces message datasets. Exports select passed
-verification by default; use `--status unverified` for traces without a verifier.
-An absent verification result alone does not distinguish an unfinished run from a
-completed run without a verifier.
-
-Inspector accepts a trace file, an Episode directory, or a batch directory.
-Its four views are `summary`, `conversation`, `verification`, and `metadata`.
-For example, `synthaid inspect runs/demo --trace 1 --view verification`
-shows the saved Judge verdict, score and feedback for the first trace.
-Conversation shows published role/content messages; private Agent histories are
-not saved in the Episode. `--json` returns the selected view as JSON.
-
-The former trace format, event ledgers, verification sidecars and `reverify` command
-are retired. There is no automatic migration or historical loader.
-
-## Optional vLLM startup
-
-```sh
-uv run synthaid vllm --model your-model \
-  --server-python /path/to/vllm-env/bin/python -- python generate.py
-```
-
-`synthaid.integrations.vllm.serve.vllm_server(...)` also provides a Python
-context manager yielding the ready API URL. It owns and stops its server process
-and restores signals. Initialize your separate inference client using that URL.
-Core imports and task validation do not start servers or import the vLLM SDK.
-
-See [migration notes](docs/migration-seven-modules.md) for interface changes.
-The [library design audit](.scratch/library-design-audit/map.md) preserves historical
-measurements and completed refactor records.
+Live provider tests require `SYNTHAID_TEST_BASE_URL`, `SYNTHAID_TEST_API_KEY`,
+and `SYNTHAID_TEST_MODEL`; otherwise they are skipped.

@@ -1,5 +1,0 @@
-threshold = 0.9
-
-[[criteria]]
-context = "Require a nonempty greeting for {{ name }}.\nThe Message has nonempty text."
-weight = 1.0

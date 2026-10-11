@@ -1,5 +1,0 @@
-threshold = 0.9
-
-[[criteria]]
-context = "Review the exact proposed Message for {{ name }} using every active Criterion.\nThe Message contains a polite greeting."
-weight = 1.0

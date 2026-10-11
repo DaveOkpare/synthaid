@@ -1,0 +1,59 @@
+schema_version = 1
+
+[models.gpt]
+model_name = "openai/gpt-oss-120b"
+base_url = "https://api.doubleword.ai/v1"
+api_key_env = "DOUBLEWORD_API_KEY"
+temperature = 0.7
+
+[tools.weather]
+file = "weather_tools.py"
+object = "WEATHER"
+
+[evaluators.weather]
+kind = "llm"
+model = "gpt"
+
+[[evaluators.weather.criteria]]
+content = """\
+Applies only when the draft calls get_weather or states weather facts: \
+it calls get_weather, or its weather facts match a get_weather result \
+in the conversation."""
+weight = 1.0
+
+[[evaluators.weather.criteria]]
+content = """\
+States weather facts that no get_weather result in the conversation provided."""
+weight = -1.0
+
+[[evaluators.weather.criteria]]
+content = "Repeats the same sentence more than once within the draft."
+weight = -1.0
+
+[agents.assistant]
+model = "gpt"
+instructions = """\
+You are a travel assistant. Use get_weather for every weather fact. \
+Answer in two or three sentences."""
+tools = ["weather"]
+evaluator = "weather"
+max_iterations = 3
+max_tool_rounds = 10
+
+[agents.traveller]
+model = "gpt"
+instructions = """\
+You are a traveller planning a trip to Lagos. Write short, casual messages, \
+one question at a time."""
+
+[tasks.weather]
+assistant = "assistant"
+user = "traveller"
+
+[[tasks.weather.steps]]
+instruction = "Ask what the weather is like in Lagos today."
+max_turns = 2
+
+[[tasks.weather.steps]]
+instruction = "Ask whether to pack an umbrella for tomorrow."
+max_turns = 1

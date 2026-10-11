@@ -1,5 +1,0 @@
-threshold = 0.9
-
-[[criteria]]
-context = "reply"
-weight = 1.0

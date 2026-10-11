@@ -1,5 +1,0 @@
-threshold = 0.9
-
-[[criteria]]
-context = "Judge whether the completed Conversation addresses {{ name }}.\nThe completed Conversation addresses the requested person."
-weight = 1.0

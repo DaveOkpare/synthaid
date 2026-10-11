@@ -1,5 +1,0 @@
-threshold = 0.9
-
-[[criteria]]
-context = "The concluding Message has a nonempty explanation."
-weight = 1.0
