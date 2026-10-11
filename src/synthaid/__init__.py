@@ -4,6 +4,7 @@ from synthaid import agent
 from synthaid import environment
 from synthaid import evaluation
 from synthaid import exception
+from synthaid import export
 from synthaid import message
 from synthaid import model
 from synthaid import task
@@ -14,6 +15,7 @@ __all__ = [
     "environment",
     "evaluation",
     "exception",
+    "export",
     "message",
     "model",
     "task",
