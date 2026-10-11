@@ -1,6 +1,7 @@
 """Generate verified traces from agent interactions."""
 
 from synthaid import agent
+from synthaid import config
 from synthaid import environment
 from synthaid import evaluation
 from synthaid import exception
@@ -12,6 +13,7 @@ from synthaid import tool
 
 __all__ = [
     "agent",
+    "config",
     "environment",
     "evaluation",
     "exception",
