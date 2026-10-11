@@ -28,9 +28,9 @@ class Draft:
 
     Attributes:
         message: The assistant Message to check.
-        context: The messages of the current step so far, followed by this
-            turn's accepted drafts and tool results. Rejected drafts and
-            critiques are not included.
+        context: The whole conversation so far, followed by this turn's
+            accepted drafts and tool results. Rejected drafts and critiques
+            are not included.
     """
 
     message: message.Message
@@ -102,22 +102,17 @@ class Agent:
                 f"max_tool_rounds must be at least 1: {self.max_tool_rounds=}"
             )
 
-    def run(
-        self,
-        messages: Sequence[message.Message],
-        *,
-        context_start: int = 0,
-    ) -> list[message.Message]:
+    def run(self, messages: Sequence[message.Message]) -> list[message.Message]:
         """Takes one turn in the conversation and returns what it added.
 
         Adds the system message from `instructions`, so `messages` must not
         contain one.
 
         Each draft from `model.generate()` goes through the evaluator, when
-        there is one, as a Draft with its context: `messages` from
-        `context_start` on, followed by this turn's accepted drafts and
-        tool results. A failed draft goes back to the model as an assistant
-        message, followed by the feedback as a user message. This repeats
+        there is one, as a Draft with its context: `messages` followed by
+        this turn's accepted drafts and tool results. A failed draft goes
+        back to the model as an assistant message, followed by the
+        feedback as a user message. This repeats
         until a draft passes or `max_iterations` evaluator runs are used up.
         In the second case the last draft is accepted. The count starts
         over for every accepted draft, and critiques of earlier drafts are
@@ -131,7 +126,6 @@ class Agent:
         Args:
             messages: The conversation so far, as this agent should see it.
                 Reasoning in it is never sent to the model.
-            context_start: Where the current step starts in `messages`.
 
         Returns:
             The messages this turn added, in order: every accepted draft
@@ -169,7 +163,7 @@ class Agent:
                     self._logs.append(draft)
                     if self.evaluator is None:
                         break
-                    context = [*messages[context_start:], *output]
+                    context = [*messages, *output]
                     result = self.evaluator(Draft(draft, context))
                     if result.passed:
                         break

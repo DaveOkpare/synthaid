@@ -32,8 +32,8 @@ class EvalResult:
 
 _INSTRUCTIONS = """\
 You are a strict judge. You will be shown a list of criteria, the \
-conversation of the current step when there is one, and one draft reply \
-written by an assistant. Use the conversation, including \
+conversation so far when there is one, and one draft reply written by an \
+assistant. Use the conversation, including \
 tool results, to check the draft. Decide, for each criterion, whether the \
 draft meets it: `met` is "yes" only when the draft clearly has what the \
 criterion describes, "no" when it does not, and "n/a" when the criterion \
@@ -191,11 +191,11 @@ class LLMJudge(agent.Agent):
         self._threshold = threshold
 
     def __call__(self, draft: agent.Draft) -> EvalResult:
-        """Judges one draft in the context of its step.
+        """Judges one draft in the context of its conversation.
 
         Sends one user message through `run()` with these sections: the
-        criteria as JSON, the step's conversation when it is not empty,
-        and the draft. Messages
+        criteria as JSON, the conversation when it is not empty, and the
+        draft. Messages
         are shown as their content (JSON when structured) and their tool
         calls. Reasoning is never shown.
 
@@ -253,7 +253,7 @@ class LLMJudge(agent.Agent):
         ]
         if draft.context:
             conversation = "\n".join(_line(item) for item in draft.context)
-            sections.append(f"Conversation in this step:\n{conversation}")
+            sections.append(f"Conversation:\n{conversation}")
         lines = [draft.message.text]
         lines += [
             f"Tool call: {call.name}({json.dumps(call.arguments)})"

@@ -237,7 +237,7 @@ def test_run_critiques_tool_calls_and_resets_count() -> None:
     ]
 
 
-def test_evaluator_sees_whole_conversation_by_default() -> None:
+def test_evaluator_sees_whole_conversation() -> None:
     earlier = [message.Message("user", "Hi."), _assistant("Hello.")]
     evaluator = _ScriptedEvaluator([_passed()])
     helper = agent.Agent(
@@ -250,7 +250,7 @@ def test_evaluator_sees_whole_conversation_by_default() -> None:
     assert draft.context == [*earlier, _QUESTION]
 
 
-def test_evaluator_sees_step_context_and_accepted_turn_messages() -> None:
+def test_evaluator_sees_accepted_turn_messages() -> None:
     earlier = [message.Message("user", "Hi."), _assistant("Hello.")]
     fake = fakes.scripted(
         _TOOL_DRAFT, _assistant("Maybe."), _assistant("Sunny.")
@@ -260,13 +260,14 @@ def test_evaluator_sees_step_context_and_accepted_turn_messages() -> None:
         fake, "Be helpful.", tools=[_weather_tool()], evaluator=evaluator
     )
 
-    helper.run([*earlier, _QUESTION], context_start=2)
+    helper.run([*earlier, _QUESTION])
 
+    asked = [*earlier, _QUESTION]
     assert [item.context for item in evaluator.drafts] == [
-        [_QUESTION],
-        [_QUESTION, _TOOL_DRAFT, _TOOL_RESULT],
+        asked,
+        [*asked, _TOOL_DRAFT, _TOOL_RESULT],
         # The rejected "Maybe." and its critique are not context.
-        [_QUESTION, _TOOL_DRAFT, _TOOL_RESULT],
+        [*asked, _TOOL_DRAFT, _TOOL_RESULT],
     ]
 
 

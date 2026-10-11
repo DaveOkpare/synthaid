@@ -56,8 +56,7 @@ def _run_step(
        conversation, and the simulator runs on it. Its final reply is
        yielded as a user message. Its tool calls and tool results stay
        in its view and its logs.
-    2. The assistant gets the history as it is, with the step's start
-       for its evaluator. Everything
+    2. The assistant gets the history as it is. Everything
        `assistant.run()` returned is yielded: accepted drafts with
        tool calls, their tool results, and the final reply. The
        final reply is also added to `view`, swapped.
@@ -72,7 +71,6 @@ def _run_step(
         Each message to add to the history, in order.
     """
     history = list(task.chat_history)
-    step_start = len(history)
     turns = 1 if task.user is None else step.max_turns
     for turn in range(1, turns + 1):
         if task.user is None:
@@ -87,7 +85,7 @@ def _run_step(
             )
         history.append(prompt)
         yield prompt
-        replies = task.assistant.run(history, context_start=step_start)
+        replies = task.assistant.run(history)
         view += _swapped(replies)
         for item in replies:
             history.append(item)

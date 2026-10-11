@@ -403,7 +403,7 @@ def test_history_keeps_finished_turns_when_assistant_fails() -> None:
     ]
 
 
-def test_assistant_evaluator_sees_step_messages() -> None:
+def test_assistant_evaluator_sees_whole_conversation() -> None:
     drafts: list[agent.Draft] = []
 
     def evaluate(draft: agent.Draft) -> evaluation.EvalResult:
@@ -424,8 +424,15 @@ def test_assistant_evaluator_sees_step_messages() -> None:
         )
     )
 
-    assert drafts[1].context == [message.Message("user", "u2")]
+    # The judge of the second step still sees the first step.
+    assert drafts[1].context == [
+        message.Message("user", "u1"),
+        _says("a1"),
+        message.Message("user", "u2"),
+    ]
     assert drafts[2].context == [
+        message.Message("user", "u1"),
+        _says("a1"),
         message.Message("user", "u2"),
         _says("a2"),
         message.Message("user", "u3"),

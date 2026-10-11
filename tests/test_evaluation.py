@@ -148,7 +148,7 @@ def test_call_lists_criteria_as_json_contents_in_order() -> None:
     assert sections["Draft"] == "Sunny, 31C."
 
 
-def test_call_shows_step_conversation() -> None:
+def test_call_shows_conversation() -> None:
     fake = fakes.scripted(_verdict(*_ALL_GOOD))
     draft = agent.Draft(
         message.Message("assistant", "Sunny, 31C."),
@@ -166,10 +166,10 @@ def test_call_shows_step_conversation() -> None:
     sections = _sections(fake.requests[0].messages[1].text)
     assert list(sections) == [
         "Criteria",
-        "Conversation in this step",
+        "Conversation",
         "Draft",
     ]
-    assert sections["Conversation in this step"] == (
+    assert sections["Conversation"] == (
         "[user] What is the weather in Lagos?\n"
         '[assistant] calls get_weather({"city": "Lagos"})\n'
         "[tool] Sunny, 31C"
