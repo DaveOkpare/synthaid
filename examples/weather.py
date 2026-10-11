@@ -64,8 +64,9 @@ _WEATHER = tool.Tool(
 _CRITERIA = [
     evaluation.Criterion(
         content=(
-            "The draft calls get_weather, or its weather facts match a "
-            "get_weather result in the conversation."
+            "Applies only when the draft calls get_weather or states "
+            "weather facts: it calls get_weather, or its weather facts "
+            "match a get_weather result in the conversation."
         ),
     ),
     evaluation.Criterion(
