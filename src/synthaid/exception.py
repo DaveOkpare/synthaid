@@ -35,3 +35,18 @@ class ToolExecutionError(ToolError):
         super().__init__(
             call, f"Tool {call.name!r} failed for call {call.id!r}"
         )
+
+
+class ToolRoundsError(Exception):
+    """A turn asked for more rounds of tool calls than the agent allows.
+
+    Attributes:
+        max_tool_rounds: The agent's limit.
+    """
+
+    def __init__(self, max_tool_rounds: int) -> None:
+        """Stores the limit and builds a message naming it."""
+        super().__init__(
+            f"More than {max_tool_rounds} rounds of tool calls in one turn"
+        )
+        self.max_tool_rounds = max_tool_rounds

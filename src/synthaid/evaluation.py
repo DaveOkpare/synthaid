@@ -2,11 +2,11 @@
 
 from collections.abc import Callable, Mapping, Sequence
 import dataclasses
+import enum
 import json
 from typing import Any, Self, TypeAlias
 
 import pydantic
-from pydantic import json_schema
 
 from synthaid import agent
 from synthaid import message
@@ -31,13 +31,18 @@ class EvalResult:
 
 
 _INSTRUCTIONS = """\
-You are a strict judge. You will be shown a list of criteria and one draft \
-reply written by an assistant. Decide, for each criterion, whether the \
-draft meets it: `met` is true only when the draft clearly has what the \
-criterion describes. Some criteria describe things that should not be \
-there; judge them the same way, `met` is true when the thing is present.
+You are a strict judge. You will be shown a list of criteria, the \
+instruction and conversation of the current step when there are any, and \
+one draft reply written by an assistant. Use the conversation, including \
+tool results, to check the draft. Decide, for each criterion, whether the \
+draft meets it: `met` is "yes" only when the draft clearly has what the \
+criterion describes, "no" when it does not, and "n/a" when the criterion \
+does not apply to this draft. Some criteria describe things that should \
+not be there; judge them the same way, `met` is "yes" when the thing is \
+present.
 
-Answer every criterion exactly once, copying its title and content. Then \
+Answer every criterion exactly once, in the order given, copying its \
+content exactly. Then \
 write `feedback` for the assistant: say what to fix, specifically and \
 briefly. If nothing needs fixing, say so."""
 
@@ -47,61 +52,78 @@ def _drop_description(schema: dict[str, Any]) -> None:
     schema.pop("description", None)
 
 
+class Met(enum.StrEnum):
+    """The judge's answer for one criterion."""
+
+    YES = "yes"
+    NO = "no"
+    NA = "n/a"
+
+
 class Criterion(pydantic.BaseModel):
     """One thing the judge looks for in a draft, and the judge's answer.
 
-    You create a Criterion with `title`, `content` and `weight`. The judge
-    returns it with `met` filled in. The schema sent to the model holds
-    only `title`, `content` and `met`, so the model never sees `weight`,
-    and `met` is required in its reply.
+    You create a Criterion with `content` and `weight`. The judge never
+    sees this class: it gets the contents and replies with an Answer for
+    each, and an LLMJudge then fills in `met` here.
 
     `content` describes the thing itself, whether it is good or bad. The
     sign of `weight` says which: positive for something the draft should
     have, negative for something it should not have.
 
+    A YES answer adds `weight` to the score. NO and NA add 0, and an NA
+    criterion is also left out of an LLMJudge's default threshold.
+
     Attributes:
-        title: A short name, unique among a judge's criteria.
-        content: What the judge looks for, written for the judge.
+        content: What the judge looks for, written for the judge. Unique
+            among a judge's criteria.
         weight: What the criterion adds to the weighted score when it is
             met. Never sent to the model.
-        met: Whether the draft has what `content` describes. None until
-            the judge answers. For a negative criterion, met means the
-            unwanted thing is present.
+        met: The judge's answer. None until the judge answers. For a
+            negative criterion, YES means the unwanted thing is present.
     """
 
-    model_config = pydantic.ConfigDict(
-        frozen=True, json_schema_extra=_drop_description
-    )
+    model_config = pydantic.ConfigDict(frozen=True)
 
-    title: str = pydantic.Field(description="The criterion's title.")
-    content: str = pydantic.Field(description="What to look for.")
-    weight: json_schema.SkipJsonSchema[float] = 1.0
-    met: bool | json_schema.SkipJsonSchema[None] = pydantic.Field(
-        default=None,
-        description="Whether the draft has what `content` describes.",
+    content: str
+    weight: float = 1.0
+    met: Met | None = None
+
+
+class Answer(pydantic.BaseModel):
+    """The judge's answer for one criterion, as the model writes it.
+
+    Attributes:
+        content: The criterion's content, copied exactly.
+        met: Whether the draft has what `content` describes.
+    """
+
+    model_config = pydantic.ConfigDict(json_schema_extra=_drop_description)
+
+    content: str = pydantic.Field(description="The criterion, copied exactly.")
+    met: Met = pydantic.Field(
+        description="Whether the draft has what the criterion describes, or "
+        "n/a when the criterion does not apply."
     )
 
 
 class Verdict(pydantic.BaseModel):
     """The judge's output for one draft. The output type of an LLMJudge.
 
-    Validating with `context={"criteria": criteria}` checks the answers
-    against those criteria: each one must be answered exactly once. The
-    result holds those criteria, in their order and with their weights,
-    with `met` taken from the answers. Without that context, any criteria
-    are accepted as they are.
+    It holds only what the model wrote, so it never has weights.
+    Validating with `context={"criteria": criteria}` checks that there is
+    one answer per criterion, in the same order, with the content copied
+    exactly. Without that context, any answers are accepted.
 
     Attributes:
-        criteria: Every criterion, with `met` filled in.
+        answers: One answer per criterion, in order.
         feedback: What to fix, written for the agent.
     """
 
-    model_config = pydantic.ConfigDict(
-        revalidate_instances="always", json_schema_extra=_drop_description
-    )
+    model_config = pydantic.ConfigDict(json_schema_extra=_drop_description)
 
-    criteria: list[Criterion] = pydantic.Field(
-        description="Every criterion, each answered once."
+    answers: list[Answer] = pydantic.Field(
+        description="One answer per criterion, in the order given."
     )
     feedback: str = pydantic.Field(
         description="What the assistant should fix, or that nothing needs "
@@ -109,25 +131,22 @@ class Verdict(pydantic.BaseModel):
     )
 
     @pydantic.model_validator(mode="after")
-    def _answer_criteria(self, info: pydantic.ValidationInfo) -> Self:
-        """Puts the answers onto the criteria from the validation context.
+    def _check_answers(self, info: pydantic.ValidationInfo) -> Self:
+        """Checks the answers against the criteria in the context.
 
         Raises:
-            ValueError: The answers do not cover each criterion exactly
-                once.
+            ValueError: The answers are not one per criterion, in order,
+                with the content copied exactly.
         """
         if not info.context or "criteria" not in info.context:
             return self
         criteria: Sequence[Criterion] = info.context["criteria"]
-        met = {item.title: item.met for item in self.criteria}
-        expected = {item.title for item in criteria}
-        if len(self.criteria) != len(criteria) or met.keys() != expected:
-            titles = [item.title for item in self.criteria]
-            raise ValueError(f"Answer each criterion once: {titles=}")
-        self.criteria = [
-            item.model_copy(update={"met": met[item.title]})
-            for item in criteria
-        ]
+        expected = [item.content for item in criteria]
+        answered = [item.content for item in self.answers]
+        if answered != expected:
+            raise ValueError(
+                f"Answer each criterion once, in order: {answered=}"
+            )
         return self
 
 
@@ -141,7 +160,7 @@ def _weighted_score_passes(
     """Returns whether the weights of the met criteria reach `threshold`.
 
     The default Passes of an LLMJudge. A met negative criterion lowers
-    the score, and an unmet criterion adds 0.
+    the score. An unmet or NA criterion adds 0.
 
     Args:
         criteria: The criteria with `met` filled in.
@@ -150,7 +169,8 @@ def _weighted_score_passes(
     Returns:
         True when the weighted score is at least `threshold`.
     """
-    return sum(item.weight for item in criteria if item.met) >= threshold
+    score = sum(item.weight for item in criteria if item.met == Met.YES)
+    return score >= threshold
 
 
 class LLMJudge(agent.Agent):
@@ -158,7 +178,7 @@ class LLMJudge(agent.Agent):
 
     An LLMJudge is an evaluator for `agent.Agent`: pass it as
     `Agent(..., evaluator=LLMJudge(...))`. A code eval is any other
-    function that takes a draft and returns an `EvalResult`.
+    function that takes an `agent.Draft` and returns an `EvalResult`.
 
     Its output type is Verdict. `passes` decides from the answered
     criteria and the threshold whether the draft passes. By default, a
@@ -188,32 +208,33 @@ class LLMJudge(agent.Agent):
         Args:
             model: The model that judges. It must support structured
                 output.
-            criteria: What the judge checks. Titles must be unique and
-                there must be at least one.
+            criteria: What the judge checks, in order. Contents must be
+                unique and there must be at least one.
             instructions: The judge's system message. Defaults to a strict
                 judge prompt.
             passes: Decides from the answered criteria and `threshold`
                 whether the draft passes. None compares the weighted score
                 with `threshold`.
             threshold: Passed to `passes`. None means the sum of the
-                positive weights, so by default a draft passes only when
-                every positive criterion is met and no negative one is.
+                positive weights of the criteria that are not NA, worked
+                out for each verdict. So by default a draft passes only
+                when every applicable positive criterion is met and no
+                negative one is.
 
         Raises:
-            ValueError: `criteria` is empty or two criteria share a title.
+            ValueError: `criteria` is empty or two criteria share a
+                content.
         """
         if not criteria:
             raise ValueError("A judge needs at least one criterion")
-        titles = [item.title for item in criteria]
+        contents = [item.content for item in criteria]
         duplicates = sorted(
-            {title for title in titles if titles.count(title) > 1}
+            {content for content in contents if contents.count(content) > 1}
         )
         if duplicates:
-            raise ValueError(f"Duplicate criterion titles: {duplicates}")
+            raise ValueError(f"Duplicate criterion contents: {duplicates}")
         if passes is None:
             passes = _weighted_score_passes
-        if threshold is None:
-            threshold = sum(item.weight for item in criteria if item.weight > 0)
         super().__init__(
             model, instructions, output_type=Verdict, max_iterations=1
         )
@@ -221,25 +242,27 @@ class LLMJudge(agent.Agent):
         self._passes = passes
         self._threshold = threshold
 
-    def __call__(self, draft: message.Message) -> EvalResult:
-        """Judges one draft.
+    def __call__(self, draft: agent.Draft) -> EvalResult:
+        """Judges one draft in the context of its step.
 
-        Sends one user message with the criteria and the draft, through
-        `run()`. The draft is shown as its content (JSON when structured)
-        followed by its tool calls. Its reasoning is left out. The judge
-        never sees the conversation the draft came from.
+        Sends one user message through `run()` with these sections: the
+        criteria as JSON, the step instruction when there is one, the
+        step's conversation when it is not empty, and the draft. Messages
+        are shown as their content (JSON when structured) and their tool
+        calls. Reasoning is never shown.
 
         Args:
-            draft: The assistant Message to judge.
+            draft: The assistant Message to judge, with its context.
 
         Returns:
-            An EvalResult with the verdict's feedback, `passed` from
-            `passes`, and `metadata["verdict"]`: the Verdict, with the
-            criteria in order and with their weights.
+            An EvalResult with the verdict's feedback and `passed` from
+            `passes`. `metadata["verdict"]` is the Verdict as the model
+            wrote it, and `metadata["criteria"]` is our criteria, in
+            order and with their weights, with `met` from the answers.
 
         Raises:
             pydantic.ValidationError: The reply was not a Verdict, or did
-                not answer each criterion exactly once.
+                not answer each criterion once, in order.
             openai.APIError: Any transport or server error.
         """
         prompt = message.Message("user", self._prompt(draft))
@@ -247,19 +270,52 @@ class LLMJudge(agent.Agent):
         verdict = Verdict.model_validate(
             reply.content, context={"criteria": self.criteria}
         )
+        criteria = [
+            item.model_copy(update={"met": answer.met})
+            for item, answer in zip(self.criteria, verdict.answers, strict=True)
+        ]
+        threshold = self._threshold
+        if threshold is None:
+            threshold = sum(
+                item.weight
+                for item in criteria
+                if item.weight > 0 and item.met != Met.NA
+            )
         return EvalResult(
             verdict.feedback,
-            passed=self._passes(verdict.criteria, self._threshold),
-            metadata={"verdict": verdict},
+            passed=self._passes(criteria, threshold),
+            metadata={"verdict": verdict, "criteria": criteria},
         )
 
-    def _prompt(self, draft: message.Message) -> str:
-        """Returns the user message with the criteria and then the draft."""
-        lines = ["Criteria:"]
-        lines += [f"- {item.title}: {item.content}" for item in self.criteria]
-        lines += ["", "Draft:", draft.text]
+    def _prompt(self, draft: agent.Draft) -> str:
+        """Returns the user message for the judge, in "Heading:" sections.
+
+        The criteria are a JSON list of their contents, in order, so the
+        model can copy each one exactly into its answer.
+        """
+        criteria = [item.content for item in self.criteria]
+        sections = [
+            "Criteria:\n" + json.dumps(criteria, indent=2, ensure_ascii=False)
+        ]
+        if draft.instruction is not None:
+            sections.append(f"Step instruction:\n{draft.instruction}")
+        if draft.context:
+            conversation = "\n".join(_line(item) for item in draft.context)
+            sections.append(f"Conversation in this step:\n{conversation}")
+        lines = [draft.message.text]
         lines += [
             f"Tool call: {call.name}({json.dumps(call.arguments)})"
-            for call in draft.tool_calls
+            for call in draft.message.tool_calls
         ]
-        return "\n".join(lines)
+        sections.append("Draft:\n" + "\n".join(lines))
+        return "\n\n".join(sections)
+
+
+def _line(item: message.Message) -> str:
+    """Returns one context message as a line, without its reasoning."""
+    if not item.tool_calls:
+        return f"[{item.role}] {item.text}"
+    calls = ", ".join(
+        f"{call.name}({json.dumps(call.arguments)})" for call in item.tool_calls
+    )
+    return f"[{item.role}] calls {calls}"

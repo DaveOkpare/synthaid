@@ -21,3 +21,10 @@ def test_tool_execution_error_names_the_tool_and_call() -> None:
     assert error.call == _CALL
     assert "get_weather" in str(error)
     assert "call-1" in str(error)
+
+
+def test_tool_rounds_error_names_the_limit() -> None:
+    error = exception.ToolRoundsError(10)
+
+    assert error.max_tool_rounds == 10
+    assert "10" in str(error)

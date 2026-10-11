@@ -60,11 +60,15 @@ class _ScriptedEvaluator:
     """Returns `results` in order and records every draft it sees."""
 
     results: list[evaluation.EvalResult]
-    drafts: list[message.Message] = dataclasses.field(default_factory=list)
+    drafts: list[agent.Draft] = dataclasses.field(default_factory=list)
 
-    def __call__(self, draft: message.Message) -> evaluation.EvalResult:
+    def __call__(self, draft: agent.Draft) -> evaluation.EvalResult:
         self.drafts.append(draft)
         return self.results.pop(0)
+
+    @property
+    def messages(self) -> list[message.Message]:
+        return [item.message for item in self.drafts]
 
 
 def _model(*replies: message.Message) -> _ScriptedModel:
@@ -107,6 +111,50 @@ def test_rejects_max_iterations_below_one() -> None:
         agent.Agent(_model(), "Be helpful.", max_iterations=0)
 
 
+def test_rejects_max_tool_rounds_below_one() -> None:
+    with pytest.raises(ValueError, match="max_tool_rounds"):
+        agent.Agent(_model(), "Be helpful.", max_tool_rounds=0)
+
+
+def test_run_allows_exactly_max_tool_rounds() -> None:
+    fake = _model(_TOOL_DRAFT, _TOOL_DRAFT, _assistant("Sunny."))
+    helper = agent.Agent(
+        fake, "Be helpful.", tools=[_weather_tool()], max_tool_rounds=2
+    )
+
+    turn = helper.run([_QUESTION])
+
+    assert turn[-1] == _assistant("Sunny.")
+    assert turn.count(_TOOL_RESULT) == 2
+
+
+def test_run_raises_when_tool_rounds_run_out() -> None:
+    fake = _model(_TOOL_DRAFT, _TOOL_DRAFT)
+    helper = agent.Agent(
+        fake, "Be helpful.", tools=[_weather_tool()], max_tool_rounds=1
+    )
+
+    with pytest.raises(exception.ToolRoundsError, match="1"):
+        helper.run([_QUESTION])
+
+    # The first round ran, and the draft over the limit is in the logs.
+    assert helper.logs[-2:] == [_TOOL_RESULT, _TOOL_DRAFT]
+
+
+def test_tool_rounds_count_per_turn() -> None:
+    fake = _model(
+        _TOOL_DRAFT, _assistant("Sunny."), _TOOL_DRAFT, _assistant("Still.")
+    )
+    helper = agent.Agent(
+        fake, "Be helpful.", tools=[_weather_tool()], max_tool_rounds=1
+    )
+
+    helper.run([_QUESTION])
+    turn = helper.run([_QUESTION])
+
+    assert turn[-1] == _assistant("Still.")
+
+
 def test_run_without_evaluator_returns_first_reply() -> None:
     fake = _model(_assistant("Sunny."))
     weather = _weather_tool()
@@ -131,7 +179,7 @@ def test_run_returns_draft_that_passes_first_time() -> None:
     helper = agent.Agent(fake, "Be helpful.", evaluator=evaluator)
 
     assert helper.run([_QUESTION]) == [_assistant("Sunny.")]
-    assert evaluator.drafts == [_assistant("Sunny.")]
+    assert evaluator.messages == [_assistant("Sunny.")]
 
 
 def test_run_sends_rejected_draft_and_feedback_back() -> None:
@@ -205,7 +253,7 @@ def test_run_critiques_tool_calls_and_resets_count() -> None:
     turn = helper.run([_QUESTION])
 
     assert turn == [_TOOL_DRAFT, _TOOL_RESULT, _assistant("Sunny in Lagos.")]
-    assert evaluator.drafts[1] == _TOOL_DRAFT
+    assert evaluator.messages[1] == _TOOL_DRAFT
     # Critiques of earlier drafts are not carried into later requests.
     assert fake.requests[2].messages == [
         _SYSTEM,
@@ -213,6 +261,45 @@ def test_run_critiques_tool_calls_and_resets_count() -> None:
         _TOOL_DRAFT,
         _TOOL_RESULT,
     ]
+
+
+def test_evaluator_sees_whole_conversation_by_default() -> None:
+    earlier = [message.Message("user", "Hi."), _assistant("Hello.")]
+    evaluator = _ScriptedEvaluator([_passed()])
+    helper = agent.Agent(
+        _model(_assistant("Sunny.")), "Be helpful.", evaluator=evaluator
+    )
+
+    helper.run([*earlier, _QUESTION])
+
+    (draft,) = evaluator.drafts
+    assert draft.context == [*earlier, _QUESTION]
+    assert draft.instruction is None
+
+
+def test_evaluator_sees_step_context_and_accepted_turn_messages() -> None:
+    earlier = [message.Message("user", "Hi."), _assistant("Hello.")]
+    fake = _model(_TOOL_DRAFT, _assistant("Maybe."), _assistant("Sunny."))
+    evaluator = _ScriptedEvaluator([_passed(), _failed("Be sure."), _passed()])
+    helper = agent.Agent(
+        fake, "Be helpful.", tools=[_weather_tool()], evaluator=evaluator
+    )
+
+    helper.run(
+        [*earlier, _QUESTION],
+        instruction="Ask about the weather.",
+        context_start=2,
+    )
+
+    assert [item.context for item in evaluator.drafts] == [
+        [_QUESTION],
+        [_QUESTION, _TOOL_DRAFT, _TOOL_RESULT],
+        # The rejected "Maybe." and its critique are not context.
+        [_QUESTION, _TOOL_DRAFT, _TOOL_RESULT],
+    ]
+    assert {item.instruction for item in evaluator.drafts} == {
+        "Ask about the weather."
+    }
 
 
 def test_run_raises_for_unknown_tool() -> None:
@@ -239,7 +326,55 @@ def test_logs_keep_rejected_drafts_and_critiques() -> None:
     ]
 
 
-def test_logs_append_across_runs_and_survive_errors() -> None:
+def test_logs_have_system_message_once_and_only_new_input() -> None:
+    fake = _model(_assistant("Sunny."), _assistant("Rain later."))
+    helper = agent.Agent(fake, "Be helpful.")
+    tomorrow = message.Message("user", "And tomorrow?")
+
+    helper.run([_QUESTION])
+    helper.run([_QUESTION, _assistant("Sunny."), tomorrow])
+
+    assert helper.logs == [
+        _SYSTEM,
+        _QUESTION,
+        _assistant("Sunny."),
+        tomorrow,
+        _assistant("Rain later."),
+    ]
+
+
+def test_logs_continue_after_critiques_and_tool_calls() -> None:
+    fake = _model(
+        _TOOL_DRAFT,
+        _assistant("Maybe."),
+        _assistant("Sunny in Lagos."),
+        _assistant("Rain later."),
+    )
+    evaluator = _ScriptedEvaluator(
+        [_passed(), _failed("Be sure."), _passed(), _passed()]
+    )
+    helper = agent.Agent(
+        fake, "Be helpful.", tools=[_weather_tool()], evaluator=evaluator
+    )
+    tomorrow = message.Message("user", "And tomorrow?")
+
+    turn = helper.run([_QUESTION])
+    helper.run([_QUESTION, *turn, tomorrow])
+
+    assert helper.logs == [
+        _SYSTEM,
+        _QUESTION,
+        _TOOL_DRAFT,
+        _TOOL_RESULT,
+        _assistant("Maybe."),
+        message.Message("user", "Be sure."),
+        _assistant("Sunny in Lagos."),
+        tomorrow,
+        _assistant("Rain later."),
+    ]
+
+
+def test_logs_repeat_input_that_does_not_continue_and_survive_errors() -> None:
     fake = _model(_assistant("Sunny."), _TOOL_DRAFT)
     helper = agent.Agent(fake, "Be helpful.")
 
@@ -251,7 +386,6 @@ def test_logs_append_across_runs_and_survive_errors() -> None:
         _SYSTEM,
         _QUESTION,
         _assistant("Sunny."),
-        _SYSTEM,
         _QUESTION,
         _TOOL_DRAFT,
     ]

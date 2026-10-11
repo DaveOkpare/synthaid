@@ -1,16 +1,35 @@
+"""Environment tests.
+
+The live test calls a real server and is skipped unless
+SYNTHAID_TEST_BASE_URL, SYNTHAID_TEST_API_KEY and SYNTHAID_TEST_MODEL
+are set.
+"""
+
 from collections.abc import Sequence
 import dataclasses
+import os
 
 import pydantic
 import pytest
 
 from synthaid import agent
 from synthaid import environment
+from synthaid import evaluation
 from synthaid import exception
 from synthaid import message
 from synthaid import model
 from synthaid import task
 from synthaid import tool
+
+_LIVE_ENV = (
+    "SYNTHAID_TEST_BASE_URL",
+    "SYNTHAID_TEST_API_KEY",
+    "SYNTHAID_TEST_MODEL",
+)
+live = pytest.mark.skipif(
+    not all(os.environ.get(name) for name in _LIVE_ENV),
+    reason=f"set {', '.join(_LIVE_ENV)} to run live tests",
+)
 
 _INSTRUCTION = "Ask about the weather in Lagos."
 _CALL = message.ToolCall(
@@ -184,12 +203,40 @@ def test_simulator_sees_swapped_roles_with_note_merged() -> None:
         )
     )
 
-    own, reply = user.seen(1)
+    _, own, reply = user.seen(1)
     assert own == _says("u1")
     assert reply.role == "user"
     assert reply.text.startswith("a1\n\n")
     assert _INSTRUCTION in reply.text
     assert "turn 2 of 2" in reply.text
+
+
+def test_simulator_view_only_grows_across_turns_and_steps() -> None:
+    user = _scripted(_says("u1"), _says("u2"), _says("u3"))
+    assistant = _scripted(_says("a1"), _says("a2"), _says("a3"))
+    simulator = agent.Agent(user, "Act as a customer.")
+
+    _run(
+        task.Task(
+            agent.Agent(assistant, "Be helpful."),
+            [
+                task.Step(_INSTRUCTION, max_turns=2),
+                task.Step("Ask about tomorrow."),
+            ],
+            user=simulator,
+        )
+    )
+
+    # Each request is the last one, the simulator's reply, and one new
+    # user message holding the assistant's reply and the next note.
+    for index in (1, 2):
+        before = user.seen(index - 1)
+        after = user.seen(index)
+        assert after[: len(before)] == before
+        assert after[len(before)] == _says(f"u{index}")
+        assert after[len(before) + 1 :] == [after[-1]]
+        assert after[-1].text.startswith(f"a{index}\n\n")
+    assert [item.role for item in simulator.logs].count("system") == 1
 
 
 def test_note_asks_to_close_on_last_turn_only() -> None:
@@ -299,7 +346,7 @@ def test_simulator_does_not_see_assistant_tool_messages() -> None:
         )
     )
 
-    own, reply = user.seen(1)
+    _, own, reply = user.seen(1)
     assert own == _says("u1")
     assert reply.text.startswith("It is 31°C.\n\n")
     assert not reply.tool_calls
@@ -378,3 +425,79 @@ def test_history_keeps_finished_turns_when_assistant_fails() -> None:
         _says("a1"),
         message.Message("user", "u2"),
     ]
+
+
+def test_assistant_evaluator_sees_step_instruction_and_step_messages() -> None:
+    drafts: list[agent.Draft] = []
+
+    def evaluate(draft: agent.Draft) -> evaluation.EvalResult:
+        drafts.append(draft)
+        return evaluation.EvalResult("", passed=True)
+
+    user = _scripted(_says("u1"), _says("u2"), _says("u3"))
+    assistant = _scripted(_says("a1"), _says("a2"), _says("a3"))
+
+    _run(
+        task.Task(
+            agent.Agent(assistant, "Be helpful.", evaluator=evaluate),
+            [
+                task.Step(_INSTRUCTION),
+                task.Step("Ask about tomorrow.", max_turns=2),
+            ],
+            user=agent.Agent(user, "Act as a customer."),
+        )
+    )
+
+    assert [item.instruction for item in drafts] == [
+        _INSTRUCTION,
+        "Ask about tomorrow.",
+        "Ask about tomorrow.",
+    ]
+    assert drafts[1].context == [message.Message("user", "u2")]
+    assert drafts[2].context == [
+        message.Message("user", "u2"),
+        _says("a2"),
+        message.Message("user", "u3"),
+    ]
+
+
+_REPEATS = evaluation.Criterion(
+    content=(
+        "The draft asks again for information the assistant already gave "
+        "earlier in the conversation."
+    ),
+    weight=-1.0,
+)
+
+
+@live
+@pytest.mark.parametrize("trial", range(10))
+def test_live_simulator_does_not_repeat_an_answered_question(
+    trial: int,
+) -> None:
+    live_model = model.Model(
+        model_name=os.environ["SYNTHAID_TEST_MODEL"],
+        base_url=os.environ["SYNTHAID_TEST_BASE_URL"],
+        api_key=os.environ["SYNTHAID_TEST_API_KEY"],
+    )
+    assistant = _scripted(
+        _says("Today in Lagos it is 31°C, humid, with clear skies."),
+        _says("Happy to help with anything else about your trip."),
+    )
+    the_task = task.Task(
+        agent.Agent(assistant, "Be helpful."),
+        [task.Step("Ask what the weather is like in Lagos today.", 2)],
+        user=agent.Agent(
+            live_model,
+            "You are a traveller planning a trip to Lagos. Write short, "
+            "casual messages, one question at a time.",
+        ),
+    )
+
+    history = _run(the_task)
+
+    second = history[2]
+    result = evaluation.LLMJudge(live_model, [_REPEATS])(
+        agent.Draft(second, context=history[:2])
+    )
+    assert result.passed, f"{second.text!r}: {result.feedback}"
