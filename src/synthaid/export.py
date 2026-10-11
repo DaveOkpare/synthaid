@@ -64,6 +64,7 @@ def save(task: task_lib.Task, root: str | os.PathLike[str]) -> pathlib.Path:
     time plus a random suffix, so every call gets its own. It holds:
 
     - exchange.json: `to_record(task)`.
+    - exchange.txt: a readable transcript with role labels and tool calls.
     - logs/assistant.json and logs/user.json: each agent's `logs`, with
       rejected drafts, critiques and reasoning. user.json is left out
       when the task has no user simulator.
@@ -72,7 +73,8 @@ def save(task: task_lib.Task, root: str | os.PathLike[str]) -> pathlib.Path:
       Agent, such as an LLMJudge.
 
     Messages are in the Chat Completions shape, with reasoning kept as
-    `reasoning_content`. Files are indented JSON in UTF-8.
+    `reasoning_content`. The transcript shows the exchange without system
+    instructions or reasoning. All files use UTF-8.
 
     Args:
         task: The task to save. It may have failed partway, since logs
@@ -87,6 +89,7 @@ def save(task: task_lib.Task, root: str | os.PathLike[str]) -> pathlib.Path:
     directory = pathlib.Path(root) / f"{stamp}-{uuid.uuid4().hex[:8]}"
     (directory / "logs").mkdir(parents=True)
     _write_json(directory / "exchange.json", to_record(task))
+    _write_transcript(directory / "exchange.txt", task.chat_history)
     agents = {"assistant": task.assistant}
     if task.user is not None:
         agents["user"] = task.user
@@ -96,6 +99,21 @@ def save(task: task_lib.Task, root: str | os.PathLike[str]) -> pathlib.Path:
             path = directory / "logs" / f"{role}-evaluator.json"
             _write_json(path, _logs(member.evaluator))
     return directory
+
+
+def _write_transcript(
+    path: pathlib.Path, history: Sequence[message.Message]
+) -> None:
+    with path.open("w", encoding="utf-8") as file:
+        for item in history:
+            if item.text or not item.tool_calls:
+                file.write(f"[{item.role}] {item.text}\n")
+            if item.tool_calls:
+                calls = []
+                for call in item.tool_calls:
+                    arguments = json.dumps(call.arguments, ensure_ascii=False)
+                    calls.append(f"{call.name}({arguments})")
+                file.write(f"[{item.role}] calls {', '.join(calls)}\n")
 
 
 def _logs(member: agent.Agent) -> list[dict[str, Any]]:

@@ -153,6 +153,39 @@ def test_save_writes_the_exchange_record(tmp_path: pathlib.Path) -> None:
     assert _read(directory / "exchange.json") == export.to_record(finished)
 
 
+def test_save_writes_readable_transcript(tmp_path: pathlib.Path) -> None:
+    finished = _task(
+        [
+            message.Message("user", "Weather in Lagos?", reasoning="Private."),
+            message.Message("assistant", "Let me check.", tool_calls=(_CALL,)),
+            message.Message("tool", "31°C", tool_call_id="call-1"),
+            message.Message("assistant", "It is 31°C.\nEnjoy your trip."),
+        ],
+        tools=[_WEATHER],
+    )
+
+    directory = export.save(finished, tmp_path)
+
+    assert (directory / "exchange.txt").read_text(encoding="utf-8") == (
+        "[user] Weather in Lagos?\n"
+        "[assistant] Let me check.\n"
+        '[assistant] calls get_weather({"city": "Lagos"})\n'
+        "[tool] 31°C\n"
+        "[assistant] It is 31°C.\nEnjoy your trip.\n"
+    )
+
+
+def test_save_writes_structured_reply_as_text(tmp_path: pathlib.Path) -> None:
+    directory = export.save(
+        _task([message.Message("assistant", _Forecast(city="Lagos"))]),
+        tmp_path,
+    )
+
+    assert (directory / "exchange.txt").read_text(encoding="utf-8") == (
+        '[assistant] {"city":"Lagos"}\n'
+    )
+
+
 def test_save_writes_each_agent_logs(tmp_path: pathlib.Path) -> None:
     assistant = agent.Agent(
         fakes.scripted(
@@ -191,6 +224,7 @@ def test_save_leaves_out_missing_user(tmp_path: pathlib.Path) -> None:
     assert sorted(item.name for item in (directory / "logs").iterdir()) == [
         "assistant.json"
     ]
+    assert (directory / "exchange.txt").read_text(encoding="utf-8") == ""
 
 
 def test_save_writes_evaluator_logs_when_it_is_an_agent(
